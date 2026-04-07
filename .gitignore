@@ -19,3 +19,6 @@ build/
 
 # Pencil MCP temp
 *.pen.tmp
+
+# Shared design systems (junction link)
+design-systems/
