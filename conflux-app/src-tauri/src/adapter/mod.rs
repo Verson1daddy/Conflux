@@ -1,0 +1,20 @@
+// ===== Conflux 适配器系统 =====
+// 框架适配器层——将不同 CLI 框架（Claude Code、Codex CLI、Aider 等）统一为标准接口
+//
+// 模块结构：
+//   traits.rs     — AgentAdapter + AgentInstance 核心 trait 定义
+//   registry.rs   — AdapterRegistry 注册表（注册、查询、管理适配器）
+//   toml_parser.rs — TOML 适配器配置文件解析器
+//   builtin/      — 内置适配器实现（claude_code 等）
+
+/// 核心 trait 定义（AgentAdapter、AgentInstance）
+pub mod traits;
+
+/// 适配器注册表
+pub mod registry;
+
+/// TOML 配置解析器
+pub mod toml_parser;
+
+/// 内置适配器
+pub mod builtin;
