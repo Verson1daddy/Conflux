@@ -60,7 +60,11 @@ pub async fn create_agent_instance(
     //   let instance = adapter.spawn(&work_dir, &spawn_args).await?;
     //   let instance_id = instance.id().clone();
     //   state.pty_manager.register(instance).await?;
-    let _instance_id: InstanceId = todo!("BE-2/BE-3: adapter.spawn() + pty_manager.register()");
+    // TODO(集成): adapter.spawn() + pty_manager 桥接
+    // 完整流程: adapter.spawn(&work_dir, &spawn_args).await → pty_manager.register()
+    return Err(ConfluxError::OrchestrationError {
+        message: "Agent 实例创建尚未完成集成（等待 adapter ↔ PtyManager 桥接）".to_string(),
+    });
 
     // 5. 记录 instance_id -> adapter_id 映射
     {
@@ -112,7 +116,8 @@ pub async fn destroy_agent_instance(
     //   let instance = state.pty_manager.get(&instance_id)?;
     //   instance.kill().await?;
     //   state.pty_manager.remove(&instance_id)?;
-    let _: () = todo!("BE-2: pty_manager.get() + instance.kill() + pty_manager.remove()");
+    // TODO(集成): pty_manager.kill(&instance_id.0)
+    state.pty_manager.kill(&instance_id.0)?;
 
     // 3. 清理实例映射
     {
@@ -148,10 +153,7 @@ pub async fn list_agent_instances(
     //       let adapter_id = map.get(&instance.id().0);
     //       ...构建 AgentInstanceInfo...
     //   }
-    let _instances: Vec<AgentInstanceInfo> =
-        todo!("BE-2: pty_manager.list_instances() 遍历构建");
-
-    Ok(_instances)
+    Ok(state.pty_manager.list_instances())
 }
 
 /// 查询单个 Agent 实例的详细状态
@@ -192,12 +194,7 @@ pub async fn get_agent_state(
     // 预期调用:
     //   let instance = state.pty_manager.get(&instance_id)?;
     //   let agent_state = instance.get_state();
-    let (_status, _last_activity_at, _working_dir, _created_at): (
-        AgentStatus,
-        i64,
-        String,
-        i64,
-    ) = todo!("BE-2: pty_manager.get() + instance.get_state()");
+    let detail = state.pty_manager.get_instance_state(&instance_id.0)?;
 
     // 4. 检查是否为主框架
     let is_primary = {
@@ -209,11 +206,11 @@ pub async fn get_agent_state(
         instance_id,
         adapter_id: AdapterId(adapter_id),
         adapter_name,
-        status: _status,
-        working_dir: _working_dir,
+        status: detail.status,
+        working_dir: detail.working_dir,
         is_primary_framework: is_primary,
-        created_at: _created_at,
-        last_activity_at: _last_activity_at,
+        created_at: detail.created_at,
+        last_activity_at: detail.last_activity_at,
     })
 }
 
@@ -241,12 +238,17 @@ pub async fn get_agent_tree(
         }
     }
 
-    // 2. 获取实例的 sub-agent 树
-    // TODO(BE-2): 通过 pty_manager 获取实例并调用 get_tree()
-    // 预期调用:
-    //   let instance = state.pty_manager.get(&instance_id)?;
-    //   let tree = instance.get_tree();
-    let _tree: AgentTree = todo!("BE-2: pty_manager.get() + instance.get_tree()");
-
-    Ok(_tree)
+    // sub-agent 树尚未集成——PtyManager 管理进程级别，
+    // 树结构由 CC-1 解析器从 PTY 输出中提取（后续实现）
+    // 当前返回单节点树（仅根节点，无子节点）
+    let detail = state.pty_manager.get_instance_state(&instance_id.0)?;
+    Ok(AgentTree {
+        root: crate::core::SubAgentInfo {
+            id: instance_id.0.clone(),
+            name: detail.adapter_name,
+            status: detail.status,
+            parent_id: None,
+        },
+        children: Vec::new(),
+    })
 }

@@ -314,27 +314,28 @@ impl PtyManager {
     /// 向 child 进程发送终止信号，然后从映射表中移除。
     /// 后台输出读取线程会因管道断开而自动退出。
     pub fn kill(&self, instance_id: &str) -> Result<(), ConfluxError> {
-        let mut processes = self.processes.write();
-        let mut process =
+        // 1. 从映射表移除（持有写锁的时间最短化）
+        let mut process = {
+            let mut processes = self.processes.write();
             processes
                 .remove(instance_id)
                 .ok_or_else(|| ConfluxError::InstanceNotFound {
                     instance_id: instance_id.to_string(),
-                })?;
+                })?
+        };
+        // 写锁已释放——后续操作不阻塞其他 PtyManager 方法
 
-        // 发送终止信号
+        // 2. 发送终止信号
         if let Err(e) = process.child.kill() {
             log::error!(
                 "PTY kill 失败（可能进程已退出）: instance_id={}, error={}",
                 instance_id,
                 e
             );
-            // 不返回错误——进程可能已经退出，kill 失败是可接受的
         }
 
-        // 等待进程退出以回收资源（非阻塞式，设置短超时）
-        // portable-pty 的 wait() 可能阻塞，这里使用 try_wait
-        // 注意：即使 wait 失败，进程已从映射表移除，资源最终由 Drop 回收
+        // 3. 等待进程退出以回收资源（此时不持有任何锁）
+        // 即使 wait 阻塞或失败，进程已从映射表移除，资源最终由 Drop 回收
         let _ = process.child.wait();
 
         log::debug!("PTY kill 完成: instance_id={}", instance_id);

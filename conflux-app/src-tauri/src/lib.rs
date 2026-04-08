@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::adapter::registry::AdapterRegistry;
-use crate::core::{InstanceId, IslandMode};
+use crate::core::{InstanceId, IslandMode, StdinInjectionPolicy};
 use crate::pty::manager::PtyManager;
 
 /// 全局应用状态——通过 tauri::State 注入到 command handler
@@ -37,6 +37,10 @@ pub struct AppState {
     pub primary_framework: RwLock<Option<InstanceId>>,
     /// Agent 实例映射: instance_id -> adapter_id
     pub instance_adapter_map: RwLock<HashMap<String, String>>,
+    /// stdin 注入安全策略（附录 B1）
+    pub stdin_policy: RwLock<StdinInjectionPolicy>,
+    /// 注入速率计数器：记录每次注入的时间戳（秒级），用于速率限制
+    pub injection_rate_counter: RwLock<Vec<u64>>,
 }
 
 impl AppState {
@@ -47,6 +51,8 @@ impl AppState {
             island_mode: RwLock::new(IslandMode::TopIsland),
             primary_framework: RwLock::new(None),
             instance_adapter_map: RwLock::new(HashMap::new()),
+            stdin_policy: RwLock::new(StdinInjectionPolicy::default()),
+            injection_rate_counter: RwLock::new(Vec::new()),
         }
     }
 }
@@ -78,6 +84,9 @@ pub fn run() {
             commands::window::focus_agent_card,
             commands::window::switch_island_mode,
             commands::window::get_island_mode,
+            // BE-2: PTY 操作
+            commands::pty_ops::inject_stdin,
+            commands::pty_ops::resize_pty,
             // BE-3: 适配器管理
             commands::adapter::list_adapters,
             commands::adapter::register_adapter,

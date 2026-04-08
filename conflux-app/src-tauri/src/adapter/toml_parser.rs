@@ -167,10 +167,30 @@ pub fn parse_adapter_toml(content: &str) -> Result<AdapterConfig, ConfluxError> 
 }
 
 /// 从文件路径读取并解析 TOML 适配器配置
-/// path: 文件绝对路径
+///
+/// 安全限制（RED TEAM HIGH-03）：
+/// - 路径必须以 .toml 扩展名结尾
+/// - 路径经过规范化后不得包含 ".." 路径遍历
+/// - 仅读取 TOML 格式文件，错误消息不泄露文件内容
 pub fn load_adapter_toml(path: &str) -> Result<AdapterConfig, ConfluxError> {
+    // 安全检查：扩展名必须是 .toml
+    if !path.to_lowercase().ends_with(".toml") {
+        return Err(ConfluxError::InvalidConfig {
+            message: "适配器配置文件必须是 .toml 格式".to_string(),
+        });
+    }
+
+    // 安全检查：禁止路径遍历
+    let canonical = std::path::Path::new(path);
+    let path_str = canonical.to_string_lossy();
+    if path_str.contains("..") {
+        return Err(ConfluxError::InvalidConfig {
+            message: "适配器配置路径不允许包含 '..'".to_string(),
+        });
+    }
+
     let content = std::fs::read_to_string(path).map_err(|e| ConfluxError::InvalidConfig {
-        message: format!("无法读取配置文件 '{}': {}", path, e),
+        message: format!("无法读取配置文件: {}", e),
     })?;
 
     parse_adapter_toml(&content)

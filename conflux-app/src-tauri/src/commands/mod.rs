@@ -4,3 +4,4 @@
 pub mod agent;
 pub mod window;
 pub mod adapter;
+pub mod pty_ops;
