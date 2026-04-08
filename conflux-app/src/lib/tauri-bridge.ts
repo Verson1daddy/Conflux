@@ -20,6 +20,7 @@ import type {
   SessionSummary,
   SessionEvent,
   WorkspaceLayout,
+  AutoPackConfig,
   IslandMode,
   InjectionSource,
   PermissionDecision,
@@ -311,6 +312,18 @@ export async function saveWorkspaceLayout(
  */
 export async function loadWorkspaceLayout(): Promise<WorkspaceLayout | null> {
   return invoke<WorkspaceLayout | null>("load_workspace_layout");
+}
+
+/**
+ * 触发 AutoPack 重排——根据配置重新计算所有卡片位置和尺寸
+ * 对应 Rust: auto_pack_layout(config)
+ */
+export async function autoPackLayout(
+  config: AutoPackConfig
+): Promise<WorkspaceLayout> {
+  return invoke<WorkspaceLayout>("auto_pack_layout", {
+    config,
+  });
 }
 
 // ===== 窗口管理 =====

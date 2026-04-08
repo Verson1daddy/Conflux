@@ -53,7 +53,12 @@ pub use types::Position;
 pub use types::Size;
 pub use types::CardLayout;
 pub use types::LayoutMode;
+pub use types::PackSortStrategy;
+pub use types::CardSizePreset;
+pub use types::CardSizeSlot;
+pub use types::AutoPackConfig;
 pub use types::WorkspaceLayout;
+pub use types::SNAP_GRID_PX;
 
 // 会话记录
 pub use types::SessionSummary;

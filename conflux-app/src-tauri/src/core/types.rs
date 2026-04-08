@@ -331,9 +331,79 @@ pub struct CardLayout {
 pub enum LayoutMode {
     /// 自由拖拽
     Free,
-    /// 网格自动排列
+    /// 网格自动排列（等尺寸）
     Grid,
+    /// 智能吸附排列（bin-packing，尊重各卡片不同尺寸）
+    AutoPack,
 }
+
+/// 吸附排列——排序策略
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackSortStrategy {
+    /// 按活跃度排序：正在 thinking/coding 的排前面、尺寸更大
+    ByActivity,
+    /// 按创建时间排序：先创建的在前
+    ByCreatedTime,
+    /// 按框架分组：同一 adapter 的卡片挨在一起
+    ByFrameworkGroup,
+}
+
+/// 吸附排列——卡片尺寸策略
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CardSizePreset {
+    /// 智能：根据卡片状态自动分配
+    ///   primary → Large, thinking/coding → Medium, idle → Small, done → Mini
+    Smart,
+    /// 统一：所有卡片使用相同尺寸（默认 1×1）
+    Uniform,
+    /// 随机：在 Mini~Large 档位间随机分配（杂志排版感），不低于 Mini
+    Shuffle,
+}
+
+/// 离散卡片尺寸档位（格子单位，1 格基准 = 200×140px，gap 8px）
+/// 隐形网格——不绘制可见格线，仅作为吸附对齐参考
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CardSizeSlot {
+    /// 最小 1×1（200×140px）— 标题 + 状态指示器可见
+    Mini,
+    /// 小 1×2（200×288px）
+    Small,
+    /// 中 2×2（408×288px）
+    Medium,
+    /// 大 2×3（408×436px）
+    Large,
+    /// 宽 3×2（616×288px）
+    Wide,
+}
+
+/// AutoPack 布局配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoPackConfig {
+    /// 排序策略
+    pub sort_strategy: PackSortStrategy,
+    /// 尺寸策略
+    pub size_preset: CardSizePreset,
+    /// 新增卡片时是否自动重排（否则需手动点"立即整理"）
+    pub auto_repack_on_add: bool,
+}
+
+impl Default for AutoPackConfig {
+    fn default() -> Self {
+        Self {
+            sort_strategy: PackSortStrategy::ByActivity,
+            size_preset: CardSizePreset::Smart,
+            auto_repack_on_add: true,
+        }
+    }
+}
+
+/// 画布吸附网格常量
+/// snap_grid = 8px — 拖拽时位置自动对齐到 8px 整数倍，肉眼无感知
+/// 与 CardSizeSlot 解耦：尺寸档位定义卡片大小，snap_grid 定义放置精度
+pub const SNAP_GRID_PX: u32 = 8;
 
 /// 工作台布局
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -342,6 +412,8 @@ pub struct WorkspaceLayout {
     pub cards: Vec<CardLayout>,
     /// 布局模式
     pub layout_mode: LayoutMode,
+    /// AutoPack 配置（仅 layout_mode == AutoPack 时生效）
+    pub auto_pack_config: Option<AutoPackConfig>,
     /// 更新时间（Unix 时间戳 ms）
     pub updated_at: i64,
 }

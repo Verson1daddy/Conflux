@@ -69,6 +69,10 @@ export type {
   Position,
   Size,
   LayoutMode,
+  PackSortStrategy,
+  CardSizePreset,
+  CardSizeSlot,
+  AutoPackConfig,
   CardLayout,
   WorkspaceLayout,
 } from "./layout";
