@@ -5,3 +5,5 @@ pub mod agent;
 pub mod window;
 pub mod adapter;
 pub mod pty_ops;
+pub mod orchestration;
+pub mod persistence;

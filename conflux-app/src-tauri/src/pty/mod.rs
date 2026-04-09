@@ -12,3 +12,6 @@ pub mod manager;
 
 /// PTY 输出环形缓冲区
 pub mod buffer;
+
+/// PTY 输出状态机解析器（从输出流提取状态和事件）
+pub mod parser;

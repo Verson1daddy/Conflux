@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Conflux global styles */
+:root {
+  --snap-grid: 8px;
+}
+
+/* Disable text selection globally (desktop app) */
+body {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Enable selection in terminal and input areas */
+.select-text {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Glass card utility */
+.glass {
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.glass:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+/* Glass header region */
+.glass-header {
+  background: rgba(255, 255, 255, 0.024);
+}
+
+/* Canvas gradient background */
+.canvas-gradient {
+  background: linear-gradient(180deg, #0D1117 0%, #111820 50%, #0A0F15 100%);
+}
+
+/* Scrollbar styling for dark theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}

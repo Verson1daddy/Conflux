@@ -1,0 +1,387 @@
+// ===== SessionPlayback 组件 =====
+// 会话回放主容器：深色主题
+// 布局：左侧 SessionList（w:300）+ 右侧回放区
+// 回放区：Header + Timeline 进度条 + EventList 纵向时间线
+// 支持播放/暂停、速度控制（1x/2x/4x）、进度条点击定位
+
+import { useCallback, useRef } from "react";
+import type { SessionEvent } from "@/types";
+import { useSessionPlayback } from "@/hooks/useSessionPlayback";
+import { SessionList } from "@/components/session/SessionList";
+
+/** 回放速度选项 */
+const SPEED_OPTIONS = [1, 2, 4] as const;
+
+/**
+ * 事件类型到图标颜色映射
+ */
+function getEventTypeColor(eventType: string): string {
+  switch (eventType) {
+    case "AgentStatusChanged":
+      return "bg-[#42A5F5]";
+    case "PermissionRequested":
+      return "bg-[#FFA726]";
+    case "SubAgentSpawned":
+      return "bg-[#AB47BC]";
+    case "SubAgentCompleted":
+      return "bg-[#66BB6A]";
+    case "TaskCompleted":
+      return "bg-[#66BB6A]";
+    case "ErrorOccurred":
+      return "bg-[#EF5350]";
+    case "DiscussionMessage":
+      return "bg-[#A8D8EA]";
+    case "CoordinationCommand":
+      return "bg-[#FFD54F]";
+    case "PtyOutput":
+      return "bg-[#78909C]";
+    case "StdinInjected":
+      return "bg-[#CE93D8]";
+    default:
+      return "bg-[#6B7280]";
+  }
+}
+
+/**
+ * 事件类型到图标标签映射
+ */
+function getEventTypeLabel(eventType: string): string {
+  switch (eventType) {
+    case "AgentStatusChanged":
+      return "Status";
+    case "PermissionRequested":
+      return "Permission";
+    case "SubAgentSpawned":
+      return "Spawn";
+    case "SubAgentCompleted":
+      return "Complete";
+    case "TaskCompleted":
+      return "Task Done";
+    case "ErrorOccurred":
+      return "Error";
+    case "DiscussionMessage":
+      return "Message";
+    case "CoordinationCommand":
+      return "Command";
+    case "PtyOutput":
+      return "Output";
+    case "StdinInjected":
+      return "Stdin";
+    default:
+      return eventType;
+  }
+}
+
+/**
+ * 格式化事件时间戳为 HH:mm:ss 格式
+ */
+function formatEventTime(timestamp: number): string {
+  const date = new Date(timestamp);
+  const hours = date.getHours().toString().padStart(2, "0");
+  const minutes = date.getMinutes().toString().padStart(2, "0");
+  const seconds = date.getSeconds().toString().padStart(2, "0");
+  return `${hours}:${minutes}:${seconds}`;
+}
+
+/**
+ * 截取事件数据摘要（最多 120 字符）
+ */
+function getEventSummary(event: SessionEvent): string {
+  try {
+    const parsed = JSON.parse(event.data) as Record<string, unknown>;
+    // 尝试提取有意义的字段
+    if (typeof parsed.summary === "string") {
+      return truncate(parsed.summary, 120);
+    }
+    if (typeof parsed.error_message === "string") {
+      return truncate(parsed.error_message, 120);
+    }
+    if (typeof parsed.content === "string") {
+      return truncate(parsed.content, 120);
+    }
+    if (
+      typeof parsed.old_status === "string" &&
+      typeof parsed.new_status === "string"
+    ) {
+      return `${parsed.old_status} -> ${parsed.new_status}`;
+    }
+    if (typeof parsed.action === "string") {
+      return truncate(parsed.action, 120);
+    }
+    // 回退：显示 JSON 前 120 字符
+    return truncate(event.data, 120);
+  } catch {
+    return truncate(event.data, 120);
+  }
+}
+
+function truncate(text: string, maxLength: number): string {
+  if (text.length <= maxLength) {
+    return text;
+  }
+  return text.slice(0, maxLength) + "...";
+}
+
+/** SessionPlayback 组件 */
+export function SessionPlayback() {
+  const {
+    sessions,
+    selectedSessionId,
+    events,
+    currentEventIndex,
+    isPlaying,
+    playbackSpeed,
+    selectSession,
+    togglePlay,
+    setSpeed,
+    seekTo,
+  } = useSessionPlayback();
+
+  const timelineRef = useRef<HTMLDivElement>(null);
+
+  // ===== Timeline 点击定位 =====
+  const handleTimelineClick = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const el = timelineRef.current;
+      if (!el || events.length === 0) {
+        return;
+      }
+      const rect = el.getBoundingClientRect();
+      const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      const targetIndex = Math.round(ratio * (events.length - 1));
+      seekTo(targetIndex);
+    },
+    [events.length, seekTo]
+  );
+
+  // 进度百分比
+  const progressPercent =
+    events.length > 1
+      ? (currentEventIndex / (events.length - 1)) * 100
+      : 0;
+
+  return (
+    <div className="flex h-full bg-canvas-1">
+      {/* ===== 左侧会话列表 ===== */}
+      <SessionList
+        sessions={sessions}
+        selectedId={selectedSessionId}
+        onSelect={selectSession}
+      />
+
+      {/* ===== 右侧回放区 ===== */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[#2A2A2A]">
+          <h2 className="font-display text-xl font-bold text-[#F2F2F2] tracking-tight">
+            Session Playback
+          </h2>
+
+          {events.length > 0 && (
+            <div className="flex items-center gap-3">
+              {/* 回放速度选择 */}
+              <div className="flex items-center gap-1">
+                {SPEED_OPTIONS.map((speed) => (
+                  <button
+                    key={speed}
+                    type="button"
+                    onClick={() => setSpeed(speed)}
+                    className={`px-2 py-1 text-xs rounded font-mono transition-colors ${
+                      playbackSpeed === speed
+                        ? "bg-[#A8D8EA] text-[#1A1A1A] font-medium"
+                        : "text-[#B8B3B0] hover:text-[#F2F2F2] hover:bg-surface-dark-secondary"
+                    }`}
+                  >
+                    {speed}x
+                  </button>
+                ))}
+              </div>
+
+              {/* 播放/暂停按钮 */}
+              <button
+                type="button"
+                onClick={togglePlay}
+                className="flex items-center justify-center w-8 h-8 rounded-lg bg-surface-dark-secondary hover:bg-[#3A3A3A] text-[#F2F2F2] transition-colors"
+                aria-label={isPlaying ? "Pause playback" : "Start playback"}
+              >
+                {isPlaying ? (
+                  /* Pause 图标 */
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 14 14"
+                    fill="currentColor"
+                  >
+                    <rect x="2" y="1" width="4" height="12" rx="1" />
+                    <rect x="8" y="1" width="4" height="12" rx="1" />
+                  </svg>
+                ) : (
+                  /* Play 图标 */
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 14 14"
+                    fill="currentColor"
+                  >
+                    <path d="M3 1.5v11l9-5.5z" />
+                  </svg>
+                )}
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* 无选中会话时的空状态 */}
+        {!selectedSessionId && (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center">
+              <p className="text-sm text-[#6B7280]">
+                Select a session to view its playback
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* 有选中会话但无事件 */}
+        {selectedSessionId && events.length === 0 && (
+          <div className="flex-1 flex items-center justify-center">
+            <p className="text-sm text-[#6B7280]">
+              No events recorded for this session
+            </p>
+          </div>
+        )}
+
+        {/* 有事件时显示 Timeline + EventList */}
+        {events.length > 0 && (
+          <>
+            {/* ===== Timeline 进度条 ===== */}
+            <div className="px-6 py-3 border-b border-[#2A2A2A]">
+              <div className="flex items-center gap-3">
+                {/* 当前时间 */}
+                <span className="text-xs font-mono text-[#B8B3B0] w-16 flex-shrink-0">
+                  {events[currentEventIndex]
+                    ? formatEventTime(events[currentEventIndex].timestamp)
+                    : "--:--:--"}
+                </span>
+
+                {/* 进度条 */}
+                <div
+                  ref={timelineRef}
+                  onClick={handleTimelineClick}
+                  className="flex-1 h-2 bg-surface-dark-secondary rounded-full cursor-pointer relative group"
+                  role="slider"
+                  aria-valuemin={0}
+                  aria-valuemax={events.length - 1}
+                  aria-valuenow={currentEventIndex}
+                  tabIndex={0}
+                >
+                  {/* 已播放进度 */}
+                  <div
+                    className="absolute inset-y-0 left-0 bg-[#A8D8EA] rounded-full transition-all duration-150"
+                    style={{ width: `${progressPercent}%` }}
+                  />
+                  {/* 拖拽指示器 */}
+                  <div
+                    className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-[#F2F2F2] rounded-full shadow-md opacity-0 group-hover:opacity-100 transition-opacity"
+                    style={{ left: `calc(${progressPercent}% - 6px)` }}
+                  />
+                </div>
+
+                {/* 结束时间 */}
+                <span className="text-xs font-mono text-[#6B7280] w-16 text-right flex-shrink-0">
+                  {events.length > 0
+                    ? formatEventTime(events[events.length - 1].timestamp)
+                    : "--:--:--"}
+                </span>
+              </div>
+
+              {/* 事件计数 */}
+              <p className="text-[11px] text-[#6B7280] mt-1">
+                Event {currentEventIndex + 1} / {events.length}
+              </p>
+            </div>
+
+            {/* ===== EventList 纵向时间线 ===== */}
+            <div className="flex-1 overflow-y-auto px-6 py-4">
+              <div className="relative">
+                {/* 纵向连接线 */}
+                <div className="absolute left-[7px] top-0 bottom-0 w-px bg-[#2A2A2A]" />
+
+                {events.map((event, index) => {
+                  const isCurrent = index === currentEventIndex;
+                  const isPast = index < currentEventIndex;
+
+                  return (
+                    <button
+                      key={event.id}
+                      type="button"
+                      onClick={() => seekTo(index)}
+                      className={`relative flex gap-4 py-2.5 w-full text-left transition-colors ${
+                        isCurrent
+                          ? "bg-surface-dark-secondary/60 -mx-2 px-2 rounded-lg"
+                          : ""
+                      }`}
+                    >
+                      {/* 时间线圆点 */}
+                      <div className="flex-shrink-0 relative z-10">
+                        <div
+                          className={`w-[15px] h-[15px] rounded-full border-2 ${
+                            isCurrent
+                              ? `${getEventTypeColor(event.event_type)} border-[#F2F2F2] ring-2 ring-[#A8D8EA]/30`
+                              : isPast
+                                ? `${getEventTypeColor(event.event_type)} border-transparent opacity-70`
+                                : "bg-surface-dark border-[#3A3A3A]"
+                          }`}
+                        />
+                      </div>
+
+                      {/* 事件内容 */}
+                      <div className="flex-1 min-w-0 -mt-0.5">
+                        <div className="flex items-center gap-2 mb-0.5">
+                          {/* 时间戳 */}
+                          <span
+                            className={`text-[11px] font-mono flex-shrink-0 ${
+                              isCurrent ? "text-[#A8D8EA]" : "text-[#6B7280]"
+                            }`}
+                          >
+                            {formatEventTime(event.timestamp)}
+                          </span>
+
+                          {/* 事件类型标签 */}
+                          <span
+                            className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                              isCurrent
+                                ? "bg-[#A8D8EA]/20 text-[#A8D8EA]"
+                                : isPast
+                                  ? "bg-surface-dark-secondary text-[#B8B3B0]"
+                                  : "bg-surface-dark-secondary text-[#6B7280]"
+                            }`}
+                          >
+                            {getEventTypeLabel(event.event_type)}
+                          </span>
+                        </div>
+
+                        {/* 事件摘要 */}
+                        <p
+                          className={`text-xs leading-relaxed truncate ${
+                            isCurrent
+                              ? "text-[#F2F2F2]"
+                              : isPast
+                                ? "text-[#B8B3B0]"
+                                : "text-[#6B7280]"
+                          }`}
+                        >
+                          {getEventSummary(event)}
+                        </p>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}

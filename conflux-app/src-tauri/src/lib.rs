@@ -16,16 +16,27 @@ pub mod core;
 pub mod commands;
 pub mod pty;
 pub mod adapter;
+pub mod orchestration;
+pub mod persistence;
 
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tauri::Manager;
 
 use crate::adapter::registry::AdapterRegistry;
 use crate::core::{InstanceId, IslandMode, StdinInjectionPolicy};
+use crate::orchestration::discussion::DiscussionEngine;
 use crate::pty::manager::PtyManager;
 
 /// 全局应用状态——通过 tauri::State 注入到 command handler
+///
+/// ## 锁获取协议（HIGH-04 修复）
+/// 当需要同时持有多把锁时，必须按以下顺序获取，防止死锁：
+///   1. `discussion_engine` (RwLock)
+///   2. `db` (Mutex)
+///   3. `pty_manager` / `adapter_registry`（Arc 内部锁）
+/// 任何代码路径不得逆序获取这些锁。
 pub struct AppState {
     /// PTY 进程管理器
     pub pty_manager: Arc<PtyManager>,
@@ -41,10 +52,21 @@ pub struct AppState {
     pub stdin_policy: RwLock<StdinInjectionPolicy>,
     /// 注入速率计数器：记录每次注入的时间戳（秒级），用于速率限制
     pub injection_rate_counter: RwLock<Vec<u64>>,
+    /// SQLite 数据库连接（BE-4 持久化层）
+    pub db: parking_lot::Mutex<rusqlite::Connection>,
+    /// 讨论引擎（BE-4 编排层）
+    pub discussion_engine: RwLock<DiscussionEngine>,
 }
 
 impl AppState {
-    pub fn new() -> Self {
+    /// 使用指定的数据库路径初始化 AppState
+    ///
+    /// db_path 应为绝对路径（由 Tauri setup hook 通过 app_data_dir 解析）。
+    /// CRIT-01 修复：不再使用相对路径，由 run() 中的 setup hook 传入安全目录。
+    pub fn new(db_path: &str) -> Self {
+        let db_conn = persistence::schema::init_database(db_path)
+            .expect("SQLite 数据库初始化失败");
+
         Self {
             pty_manager: Arc::new(PtyManager::new()),
             adapter_registry: Arc::new(RwLock::new(AdapterRegistry::new())),
@@ -53,6 +75,8 @@ impl AppState {
             instance_adapter_map: RwLock::new(HashMap::new()),
             stdin_policy: RwLock::new(StdinInjectionPolicy::default()),
             injection_rate_counter: RwLock::new(Vec::new()),
+            db: parking_lot::Mutex::new(db_conn),
+            discussion_engine: RwLock::new(DiscussionEngine::new()),
         }
     }
 }
@@ -61,17 +85,31 @@ impl AppState {
 pub fn run() {
     env_logger::init();
 
-    let app_state = AppState::new();
-
-    // 注册内置适配器
-    {
-        let mut registry = app_state.adapter_registry.write();
-        adapter::builtin::register_builtins(&mut registry);
-    }
-
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .manage(app_state)
+        .setup(|app| {
+            // CRIT-01 修复：使用 Tauri app_data_dir 解析安全的数据库路径
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .expect("无法获取应用数据目录");
+            std::fs::create_dir_all(&app_data_dir)
+                .expect("无法创建应用数据目录");
+            let db_path = app_data_dir.join("conflux.db");
+
+            let app_state = AppState::new(
+                db_path.to_str().expect("数据库路径包含非 UTF-8 字符"),
+            );
+
+            // 注册内置适配器
+            {
+                let mut registry = app_state.adapter_registry.write();
+                adapter::builtin::register_builtins(&mut registry);
+            }
+
+            app.manage(app_state);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             // BE-1: Agent 实例管理
             commands::agent::create_agent_instance,
@@ -87,11 +125,26 @@ pub fn run() {
             // BE-2: PTY 操作
             commands::pty_ops::inject_stdin,
             commands::pty_ops::resize_pty,
+            commands::pty_ops::respond_to_permission,
             // BE-3: 适配器管理
             commands::adapter::list_adapters,
             commands::adapter::register_adapter,
             commands::adapter::get_adapter_config,
             commands::adapter::unregister_adapter,
+            // BE-4: 编排操作
+            commands::orchestration::start_discussion,
+            commands::orchestration::send_discussion_message,
+            commands::orchestration::end_discussion,
+            commands::orchestration::set_primary_framework,
+            commands::orchestration::get_primary_framework,
+            // BE-4: 持久化查询
+            commands::persistence::list_sessions,
+            commands::persistence::query_session_events,
+            commands::persistence::list_discussions,
+            commands::persistence::get_discussion_messages,
+            commands::persistence::save_workspace_layout,
+            commands::persistence::load_workspace_layout,
+            commands::persistence::auto_pack_layout,
         ])
         .run(tauri::generate_context!())
         .expect("启动 Conflux 失败");

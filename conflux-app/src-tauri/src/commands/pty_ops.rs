@@ -5,7 +5,7 @@
 use tauri::State;
 
 use crate::AppState;
-use crate::core::{ConfluxError, InstanceId, InjectionSource};
+use crate::core::{ConfluxError, InstanceId, InjectionSource, PermissionDecision};
 
 /// 向 Agent 实例的 stdin 注入内容
 ///
@@ -118,4 +118,56 @@ pub async fn resize_pty(
 
     // 执行 resize
     state.pty_manager.resize(&instance_id.0, cols, rows)
+}
+
+/// 响应权限请求（F-02 修复：前端 PermissionDialog 调用此命令）
+///
+/// 根据用户决定（Approve/Deny）向 Agent 的 stdin 注入对应的响应。
+/// Approve → 注入 "Y\n"，Deny → 注入 "N\n"
+///
+/// # 参数
+/// - `permission_id`: 权限请求 ID（用于审计日志）
+/// - `decision`: 用户决定（approve 或 deny）
+#[tauri::command]
+pub async fn respond_to_permission(
+    state: State<'_, AppState>,
+    permission_id: String,
+    decision: PermissionDecision,
+) -> Result<(), ConfluxError> {
+    // 权限 ID 前缀 = instance_id（约定格式）
+    // 但由于当前权限系统尚未实现完整的 ID→instance 映射，
+    // 这里通过遍历活跃实例查找处于 waiting_permission 状态的实例
+    let instances = state.pty_manager.list_instances();
+    let target = instances
+        .iter()
+        .find(|inst| {
+            inst.status == crate::core::AgentStatus::WaitingPermission
+        });
+
+    let instance_id = match target {
+        Some(inst) => inst.instance_id.0.clone(),
+        None => {
+            log::warn!(
+                "respond_to_permission: 未找到等待权限的实例, permission_id={}",
+                permission_id
+            );
+            return Err(ConfluxError::InstanceNotFound {
+                instance_id: format!("waiting_permission (permission_id={})", permission_id),
+            });
+        }
+    };
+
+    let input = match decision {
+        PermissionDecision::Approve => "Y\n",
+        PermissionDecision::Deny => "N\n",
+    };
+
+    log::debug!(
+        "respond_to_permission: instance={}, decision={:?}, permission_id={}",
+        instance_id,
+        decision,
+        permission_id
+    );
+
+    state.pty_manager.inject_stdin(&instance_id, input)
 }
