@@ -52,6 +52,19 @@ const ICON_BOX = ({ size, color }: { size: number; color: string }) => (
   </svg>
 );
 
+const ICON_FOLDER = ({ size, color }: { size: number; color: string }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+  </svg>
+);
+
+const ICON_HOME = ({ size, color }: { size: number; color: string }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" />
+    <path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+  </svg>
+);
+
 const ICON_X = ({ size, color }: { size: number; color: string }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M18 6 6 18M6 6l12 12" />
@@ -79,15 +92,32 @@ function metaFor(adapterId: string): VendorMeta {
   };
 }
 
+// Best-effort default working dir.
+// Windows: HOMEDRIVE + HOMEPATH → e.g. "C:\Users\zwm"
+// Fallback: empty string (backend fallback to process cwd)
+function guessDefaultWorkingDir(): string {
+  const remembered = localStorage.getItem("conflux.lastWorkingDir");
+  if (remembered && remembered.trim().length > 0) return remembered;
+  // Browsers don't expose process env; leave empty so backend uses cwd
+  return "";
+}
+
 const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
   const addInstance = useAgentStore((s) => s.addInstance);
   const addCard = useWorkspaceStore((s) => s.addCard);
 
   const [adapters, setAdapters] = useState<AdapterInfo[]>([]);
   const [selectedId, setSelectedId] = useState<AdapterId | null>(null);
+  const [workingDir, setWorkingDir] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Restore last-used working dir from localStorage on mount / open
+  useEffect(() => {
+    if (!visible) return;
+    setWorkingDir(guessDefaultWorkingDir());
+  }, [visible]);
 
   // Load adapters when modal opens
   useEffect(() => {
@@ -131,7 +161,15 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
     setCreating(true);
     setError(null);
     try {
-      const instance: AgentInstanceInfo = await createAgentInstance(selectedId);
+      // Pass workingDir iff user provided one; empty string → undefined so
+      // backend falls back to std::env::current_dir().
+      const trimmedDir = workingDir.trim();
+      const dirArg = trimmedDir.length > 0 ? trimmedDir : undefined;
+      const instance: AgentInstanceInfo = await createAgentInstance(
+        selectedId,
+        dirArg,
+        undefined,
+      );
       addInstance(instance);
       addCard({
         instance_id: instance.instance_id,
@@ -139,6 +177,8 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
         size: { width: 420, height: 280 },
         z_index: 1,
       });
+      // Remember for next time (only on success)
+      if (dirArg) localStorage.setItem("conflux.lastWorkingDir", dirArg);
       onClose();
       setSelectedId(null);
     } catch (err) {
@@ -146,7 +186,7 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
     } finally {
       setCreating(false);
     }
-  }, [selectedId, creating, addInstance, addCard, onClose]);
+  }, [selectedId, creating, workingDir, addInstance, addCard, onClose]);
 
   if (!visible) return null;
 
@@ -309,6 +349,72 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
                 );
               })
             )}
+          </div>
+
+          {/* Working Directory section */}
+          <div className="flex flex-col" style={{ gap: 10, marginTop: 6 }}>
+            <div className="flex items-center" style={{ gap: 8 }}>
+              <ICON_FOLDER size={12} color="#6B7280" />
+              <span
+                style={{
+                  fontFamily: "'Geist Sans', sans-serif",
+                  fontSize: 10,
+                  fontWeight: 600,
+                  letterSpacing: 1.5,
+                  color: "#6B7280",
+                  textTransform: "uppercase",
+                }}
+              >
+                Working Directory
+              </span>
+            </div>
+            <div className="flex items-center" style={{ gap: 8 }}>
+              <input
+                type="text"
+                value={workingDir}
+                onChange={(e) => setWorkingDir(e.target.value)}
+                placeholder="e.g. D:\Projects\my-app  (leave blank for default)"
+                className="flex-1 min-w-0 outline-none"
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: 8,
+                  background: "rgba(255,255,255,0.04)",
+                  border: "1px solid rgba(255,255,255,0.082)",
+                  fontFamily: "'Geist Sans', sans-serif",
+                  fontSize: 12,
+                  color: "#F2F2F2",
+                }}
+              />
+              <button
+                onClick={() => {
+                  // Fallback to user home dir guess for Windows
+                  setWorkingDir("C:\\Users\\");
+                }}
+                className="shrink-0 flex items-center justify-center transition-colors"
+                style={{
+                  width: 36,
+                  height: 36,
+                  background: "rgba(255,255,255,0.055)",
+                  border: "1px solid rgba(255,255,255,0.082)",
+                  borderRadius: 8,
+                  color: "#B8B3B0",
+                }}
+                title="Fill with C:\\Users\\ as a starting point"
+                aria-label="Use home directory"
+              >
+                <ICON_HOME size={14} color="currentColor" />
+              </button>
+            </div>
+            <span
+              style={{
+                fontFamily: "'Geist Sans', sans-serif",
+                fontSize: 10,
+                color: "#6B7280",
+                lineHeight: 1.5,
+              }}
+            >
+              Agent binary will start with this as its cwd. Leave blank to use Conflux's own working directory.
+            </span>
           </div>
 
           {error && (

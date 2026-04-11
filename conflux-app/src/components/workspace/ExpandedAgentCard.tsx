@@ -169,7 +169,7 @@ const DEMO_TREE: DemoTreeNode[] = [
 
 const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = false }) => {
   const setExpanded = useAgentStore((s) => s.setExpandedCard);
-  const openDiscussion = useAgentStore((s) => s.openDiscussion);
+  const openDiscussionWizard = useAgentStore((s) => s.openDiscussionWizard);
   const instance = useAgentStore((s) => s.instances.get(instanceId));
   const status = useAgentStore(
     (s) => s.statuses.get(instanceId) ?? "idle"
@@ -455,7 +455,7 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
             data-no-expand
             onClick={(e) => {
               e.stopPropagation();
-              openDiscussion(instanceId);
+              openDiscussionWizard({ sourceInstanceId: instanceId });
             }}
             className="flex items-center"
             style={{

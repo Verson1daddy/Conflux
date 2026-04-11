@@ -1,6 +1,6 @@
 // ===== Agent Store =====
 // zustand store for agent instance state management
-// Manages agent instances, statuses, trees, and expanded card state
+// Manages agent instances, statuses, trees, expanded card, and discussion wizard
 
 import { create } from "zustand";
 import type {
@@ -8,6 +8,78 @@ import type {
   AgentStatus,
   AgentTree,
 } from "@/types";
+
+// ===== Discussion wizard types =====
+
+export type DiscussionStep = 1 | 2 | 3 | 4;
+
+export type TurnOrder = "primary_moderates" | "round_robin" | "free_form";
+export type MessageStyle = "concise" | "deep_dive";
+
+export interface DiscussionRules {
+  turnOrder: TurnOrder;
+  maxRounds: number;
+  turnTimeoutSec: number;
+  autoEndOnConsensus: boolean;
+  messageStyle: MessageStyle;
+}
+
+export interface DiscussionMessage {
+  id: string;
+  authorInstanceId: string | "user";
+  authorName: string;
+  initials: string;
+  avatarBg: string;
+  round: number;
+  /** True when this is a user Ctrl+Enter interject rather than an agent turn */
+  interject: boolean;
+  /** Epoch ms */
+  time: number;
+  body: string;
+}
+
+export interface DiscussionWizardState {
+  open: boolean;
+  step: DiscussionStep;
+  /** Step 1 — free-text goal of the discussion (required to advance) */
+  direction: string;
+  /** Step 1 — optional constraints / non-goals */
+  requirements: string;
+  /** Step 2 — editable rules, seeded with DEFAULT_RULES on open */
+  rules: DiscussionRules;
+  /** Step 3 — set of instance_id participating (primary always present) */
+  participantIds: Set<string>;
+  /** Step 4 — runtime message stream (seeded with demo openers on start) */
+  messages: DiscussionMessage[];
+  currentRound: number;
+  paused: boolean;
+  /** Optional source instance when launched from ExpandedAgentCard */
+  sourceInstanceId: string | null;
+}
+
+// maxRounds: 0 means unlimited
+// turnTimeoutSec: 0 means no timeout (agents get as long as they need)
+// Default 5 minutes accommodates deep-reasoning models that take minutes per turn.
+export const DEFAULT_DISCUSSION_RULES: DiscussionRules = {
+  turnOrder: "primary_moderates",
+  maxRounds: 8,
+  turnTimeoutSec: 300,
+  autoEndOnConsensus: true,
+  messageStyle: "concise",
+};
+
+const EMPTY_WIZARD: DiscussionWizardState = {
+  open: false,
+  step: 1,
+  direction: "",
+  requirements: "",
+  rules: { ...DEFAULT_DISCUSSION_RULES },
+  participantIds: new Set<string>(),
+  messages: [],
+  currentRound: 0,
+  paused: false,
+  sourceInstanceId: null,
+};
 
 // ===== State Interface =====
 
@@ -20,28 +92,106 @@ interface AgentStoreState {
   trees: Map<string, AgentTree>;
   /** Currently expanded card instance_id, or null when no card is expanded */
   expandedCardId: string | null;
-  /** Instance id whose DiscussionPanel is open, or null when closed */
-  discussionOpenForInstanceId: string | null;
+  /** Discussion wizard state (multi-step + runtime chatroom) */
+  discussion: DiscussionWizardState;
 
   // ===== Actions =====
 
-  /** Replace all instances from a list (e.g. initial load) */
   setInstances: (instances: AgentInstanceInfo[]) => void;
-  /** Add a single instance (e.g. after createAgentInstance) */
   addInstance: (instance: AgentInstanceInfo) => void;
-  /** Update the status of a single instance */
   updateStatus: (instanceId: string, status: AgentStatus) => void;
-  /** Update the agent tree of a single instance */
   updateTree: (instanceId: string, tree: AgentTree) => void;
-  /** Set the expanded card (or collapse with null) */
   setExpandedCard: (id: string | null) => void;
-  /** Open the DiscussionPanel anchored on a specific agent instance */
-  openDiscussion: (instanceId: string) => void;
-  /** Close the DiscussionPanel */
-  closeDiscussion: () => void;
-  /** Set a single instance as the primary framework (or clear with null).
-   *  Unpins all other instances automatically. */
   setPrimary: (instanceId: string | null) => void;
+
+  // Discussion wizard
+  openDiscussionWizard: (opts?: { sourceInstanceId?: string }) => void;
+  closeDiscussionWizard: () => void;
+  setDiscussionStep: (step: DiscussionStep) => void;
+  setDiscussionDirection: (text: string) => void;
+  setDiscussionRequirements: (text: string) => void;
+  setDiscussionRules: (partial: Partial<DiscussionRules>) => void;
+  toggleDiscussionParticipant: (instanceId: string) => void;
+  startDiscussion: () => void;
+  pauseDiscussion: () => void;
+  resumeDiscussion: () => void;
+  endDiscussion: () => void;
+  interjectDiscussion: (text: string) => void;
+}
+
+// ===== Helpers =====
+
+/** Look up the instance that should be primary for a freshly-opened wizard.
+ *  Preference order: pinned instance → first instance in store → null. */
+function resolvePrimaryInstance(
+  instances: Map<string, AgentInstanceInfo>
+): AgentInstanceInfo | null {
+  for (const info of instances.values()) {
+    if (info.is_primary_framework) return info;
+  }
+  const first = instances.values().next();
+  return first.done ? null : first.value;
+}
+
+/** Build opening demo messages so the chatroom isn't empty on entry. */
+function buildOpeningMessages(
+  direction: string,
+  participants: AgentInstanceInfo[]
+): DiscussionMessage[] {
+  if (participants.length === 0) return [];
+  const primary = participants[0];
+  const second = participants[1];
+  const now = Date.now();
+  const topic = direction.trim() || "the current task";
+
+  const msgs: DiscussionMessage[] = [
+    {
+      id: `m-${now}-1`,
+      authorInstanceId: primary.instance_id,
+      authorName: primary.adapter_name,
+      initials: initialsOf(primary.adapter_name),
+      avatarBg: colorOfAdapter(primary.adapter_id),
+      round: 1,
+      interject: false,
+      time: now,
+      body: `Kicking off the discussion. Goal: ${topic}. ${
+        second ? `${second.adapter_name}, want to share your angle first?` : "Who's first?"
+      }`,
+    },
+  ];
+
+  if (second) {
+    msgs.push({
+      id: `m-${now}-2`,
+      authorInstanceId: second.instance_id,
+      authorName: second.adapter_name,
+      initials: initialsOf(second.adapter_name),
+      avatarBg: colorOfAdapter(second.adapter_id),
+      round: 1,
+      interject: false,
+      time: now + 1,
+      body: `Sure. From my analysis, the main tradeoff here is between correctness and speed — I'd lean toward the safer path first and optimize once we have a baseline.`,
+    });
+  }
+
+  return msgs;
+}
+
+function initialsOf(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+function colorOfAdapter(adapterId: string): string {
+  switch (adapterId) {
+    case "claude-code": return "#B8D4E3";
+    case "codex":       return "#FFB800";
+    case "aider":       return "#8EA4B8";
+    case "opencode":    return "#C9B894";
+    default:            return "#8A8A8A";
+  }
 }
 
 // ===== Store =====
@@ -51,7 +201,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
   statuses: new Map(),
   trees: new Map(),
   expandedCardId: null,
-  discussionOpenForInstanceId: null,
+  discussion: { ...EMPTY_WIZARD, participantIds: new Set() },
 
   setInstances: (instances) =>
     set(() => {
@@ -77,7 +227,6 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
     set((state) => {
       const nextStatuses = new Map(state.statuses);
       nextStatuses.set(instanceId, status);
-      // Also update the status field within the instance info if it exists
       const nextInstances = new Map(state.instances);
       const existing = nextInstances.get(instanceId);
       if (existing) {
@@ -95,10 +244,6 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
 
   setExpandedCard: (id) => set({ expandedCardId: id }),
 
-  openDiscussion: (instanceId) => set({ discussionOpenForInstanceId: instanceId }),
-
-  closeDiscussion: () => set({ discussionOpenForInstanceId: null }),
-
   setPrimary: (instanceId) =>
     set((state) => {
       const nextInstances = new Map<string, AgentInstanceInfo>();
@@ -109,5 +254,121 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
         });
       });
       return { instances: nextInstances };
+    }),
+
+  // ===== Discussion wizard actions =====
+
+  openDiscussionWizard: (opts) =>
+    set((state) => {
+      const primary = resolvePrimaryInstance(state.instances);
+      const participantIds = new Set<string>();
+      // Primary is always in the set; discussion makes no sense without one.
+      if (primary) participantIds.add(primary.instance_id);
+      // Source instance (launched from ExpandedAgentCard) is auto-added too.
+      if (opts?.sourceInstanceId && opts.sourceInstanceId !== primary?.instance_id) {
+        participantIds.add(opts.sourceInstanceId);
+      }
+      return {
+        discussion: {
+          ...EMPTY_WIZARD,
+          participantIds,
+          rules: { ...DEFAULT_DISCUSSION_RULES },
+          open: true,
+          step: 1,
+          sourceInstanceId: opts?.sourceInstanceId ?? null,
+        },
+      };
+    }),
+
+  closeDiscussionWizard: () =>
+    set(() => ({
+      discussion: { ...EMPTY_WIZARD, participantIds: new Set() },
+    })),
+
+  setDiscussionStep: (step) =>
+    set((state) => ({ discussion: { ...state.discussion, step } })),
+
+  setDiscussionDirection: (text) =>
+    set((state) => ({ discussion: { ...state.discussion, direction: text } })),
+
+  setDiscussionRequirements: (text) =>
+    set((state) => ({ discussion: { ...state.discussion, requirements: text } })),
+
+  setDiscussionRules: (partial) =>
+    set((state) => ({
+      discussion: {
+        ...state.discussion,
+        rules: { ...state.discussion.rules, ...partial },
+      },
+    })),
+
+  toggleDiscussionParticipant: (instanceId) =>
+    set((state) => {
+      const primary = resolvePrimaryInstance(state.instances);
+      // Guard: primary can't be toggled off
+      if (primary?.instance_id === instanceId) return state;
+      const next = new Set(state.discussion.participantIds);
+      if (next.has(instanceId)) next.delete(instanceId);
+      else next.add(instanceId);
+      return { discussion: { ...state.discussion, participantIds: next } };
+    }),
+
+  startDiscussion: () =>
+    set((state) => {
+      const participants: AgentInstanceInfo[] = [];
+      // Primary always comes first
+      const primary = resolvePrimaryInstance(state.instances);
+      if (primary && state.discussion.participantIds.has(primary.instance_id)) {
+        participants.push(primary);
+      }
+      state.discussion.participantIds.forEach((id) => {
+        if (id === primary?.instance_id) return;
+        const info = state.instances.get(id);
+        if (info) participants.push(info);
+      });
+      const openers = buildOpeningMessages(state.discussion.direction, participants);
+      return {
+        discussion: {
+          ...state.discussion,
+          step: 4,
+          messages: openers,
+          currentRound: 1,
+          paused: false,
+        },
+      };
+    }),
+
+  pauseDiscussion: () =>
+    set((state) => ({ discussion: { ...state.discussion, paused: true } })),
+
+  resumeDiscussion: () =>
+    set((state) => ({ discussion: { ...state.discussion, paused: false } })),
+
+  endDiscussion: () =>
+    set(() => ({
+      discussion: { ...EMPTY_WIZARD, participantIds: new Set() },
+    })),
+
+  interjectDiscussion: (text) =>
+    set((state) => {
+      const trimmed = text.trim();
+      if (!trimmed) return state;
+      const msg: DiscussionMessage = {
+        id: `m-${Date.now()}-u`,
+        authorInstanceId: "user",
+        authorName: "You",
+        initials: "U",
+        avatarBg: "#1A1A1A",
+        round: state.discussion.currentRound || 1,
+        interject: true,
+        time: Date.now(),
+        body: trimmed,
+      };
+      return {
+        discussion: {
+          ...state.discussion,
+          messages: [...state.discussion.messages, msg],
+        },
+      };
     }),
 }));

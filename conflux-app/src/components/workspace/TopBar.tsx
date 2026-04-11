@@ -19,12 +19,13 @@ interface TopBarProps {
   onIslandClick: () => void;
   onTrayOpen: () => void;
   onSendToOpen: () => void;
+  onDiscussionOpen: () => void;
   onAddAgent: () => void;
   onSearch: () => void;
   onSettings: () => void;
 }
 
-const TopBar: FC<TopBarProps> = ({ onIslandClick, onTrayOpen, onSendToOpen, onAddAgent, onSearch, onSettings }) => {
+const TopBar: FC<TopBarProps> = ({ onIslandClick, onTrayOpen, onSendToOpen, onDiscussionOpen, onAddAgent, onSearch, onSettings }) => {
   const pendingPermissions = useIslandStore((s) => s.pendingPermissions);
   const notifications = useIslandStore((s) => s.notifications);
   const instances = useAgentStore((s) => s.instances);
@@ -254,8 +255,20 @@ const TopBar: FC<TopBarProps> = ({ onIslandClick, onTrayOpen, onSendToOpen, onAd
       {/* Spacer */}
       <div className="flex-1" />
 
-      {/* 右侧: 通知 + 搜索 + 设置 */}
+      {/* 右侧: 讨论 + 通知 + 搜索 + 设置 */}
       <div className="flex items-center gap-[10px]">
+        {/* Discussion — 独立入口，从 TopBar 任意时刻发起 wizard（全局上下文） */}
+        <button
+          className="text-[#6B7280] hover:text-[#B8B3B0] transition-colors"
+          onClick={onDiscussionOpen}
+          title="New Discussion"
+          aria-label="Start a new discussion"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4c0-1.1.9-2 2-2h8a2 2 0 0 1 2 2z"/>
+            <path d="M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1"/>
+          </svg>
+        </button>
         {/* Bell — 独立 Notifications tray 入口（可查看空态 / 通知历史） */}
         <button
           className={`relative transition-colors ${

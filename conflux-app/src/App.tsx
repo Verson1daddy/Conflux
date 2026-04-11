@@ -123,6 +123,7 @@ export default function App() {
   const setCards = useWorkspaceStore((s) => s.setCards);
   const setInstances = useAgentStore((s) => s.setInstances);
   const expandedCardId = useAgentStore((s) => s.expandedCardId);
+  const openDiscussionWizard = useAgentStore((s) => s.openDiscussionWizard);
   const addNotification = useIslandStore((s) => s.addNotification);
   const notifications = useIslandStore((s) => s.notifications);
 
@@ -189,6 +190,12 @@ export default function App() {
   const handleSendToOpen = useCallback(() => setSendToVisible(true), []);
   const handleSendToClose = useCallback(() => setSendToVisible(false), []);
 
+  // Global Discussion wizard entry — no sourceInstanceId means "fresh start"
+  const handleDiscussionOpen = useCallback(
+    () => openDiscussionWizard(),
+    [openDiscussionWizard]
+  );
+
   const handleAddAgentOpen = useCallback(() => setAddAgentOpen(true), []);
   const handleAddAgentClose = useCallback(() => setAddAgentOpen(false), []);
   const handleSearchOpen = useCallback(() => setSearchOpen(true), []);
@@ -209,6 +216,7 @@ export default function App() {
         onIslandClick={handleIslandClick}
         onTrayOpen={handleTrayOpen}
         onSendToOpen={handleSendToOpen}
+        onDiscussionOpen={handleDiscussionOpen}
         onAddAgent={handleAddAgentOpen}
         onSearch={handleSearchOpen}
         onSettings={handleSettingsOpen}
