@@ -3,9 +3,12 @@
 // 所有命令通过 tauri::State<AppState> 访问全局状态
 // 依赖 BE-2 (PtyManager) 和 BE-3 (AdapterRegistry) 的具体实现
 
+use std::sync::Arc;
+
 use tauri::State;
 
 use crate::AppState;
+use crate::core::event_emit::emit_conflux_event;
 use crate::core::{
     AdapterId, AgentInstanceInfo, AgentStateDetail, AgentStatus, AgentTree, ConfluxError,
     InstanceId,
@@ -26,19 +29,26 @@ use crate::core::{
 #[tauri::command]
 pub async fn create_agent_instance(
     state: State<'_, AppState>,
+    app: tauri::AppHandle,
     adapter_id: AdapterId,
     working_dir: Option<String>,
     args: Option<Vec<String>>,
 ) -> Result<AgentInstanceInfo, ConfluxError> {
-    // 1. 查找适配器配置
-    let adapter_config = {
+    // 1. 查找适配器配置 + 获取 adapter trait 对象
+    let (adapter_config, adapter_arc) = {
         let registry = state.adapter_registry.read();
-        registry
+        let config = registry
             .get_config(&adapter_id.0)
             .cloned()
             .ok_or_else(|| ConfluxError::AdapterNotFound {
                 adapter_id: adapter_id.0.clone(),
-            })?
+            })?;
+        let adapter = registry.get(&adapter_id.0).ok_or_else(|| {
+            ConfluxError::AdapterNotFound {
+                adapter_id: adapter_id.0.clone(),
+            }
+        })?;
+        (config, adapter)
     };
 
     // 2. 确定工作目录
@@ -54,22 +64,32 @@ pub async fn create_agent_instance(
         spawn_args.extend(extra_args);
     }
 
-    // 4. 通过适配器启动 PTY 进程，获取 AgentInstance
-    // TODO(BE-2/BE-3): 调用 adapter.spawn() 创建实例，注册到 pty_manager
-    // 预期调用流程:
-    //   let instance = adapter.spawn(&work_dir, &spawn_args).await?;
-    //   let instance_id = instance.id().clone();
-    //   state.pty_manager.register(instance).await?;
-    // TODO(集成): adapter.spawn() + pty_manager 桥接
-    // 完整流程: adapter.spawn(&work_dir, &spawn_args).await → pty_manager.register()
-    return Err(ConfluxError::OrchestrationError {
-        message: "Agent 实例创建尚未完成集成（等待 adapter ↔ PtyManager 桥接）".to_string(),
-    });
+    // 4. 构造事件派发器——PTY 读取线程内的 parser 会通过它把解析出的
+    //    ConfluxEvent 路由到 Tauri 前端。AppHandle clone 进闭包，让线程可以
+    //    在 command 函数返回后继续使用。
+    let app_handle = app.clone();
+    let dispatcher: crate::pty::manager::EventDispatcher =
+        Arc::new(move |event: &crate::core::ConfluxEvent| {
+            emit_conflux_event(&app_handle, event);
+        });
+
+    // 5. 通过 PtyManager 启动 PTY 进程（带事件流）
+    let instance_id_str = state.pty_manager.spawn(
+        &adapter_config.command,
+        &spawn_args,
+        &work_dir,
+        &adapter_id.0,
+        &adapter_config.name,
+        Some(adapter_arc),
+        Some(dispatcher),
+    )?;
+
+    let instance_id = InstanceId(instance_id_str);
 
     // 5. 记录 instance_id -> adapter_id 映射
     {
         let mut map = state.instance_adapter_map.write();
-        map.insert(_instance_id.0.clone(), adapter_id.0.clone());
+        map.insert(instance_id.0.clone(), adapter_id.0.clone());
     }
 
     // 6. 构建并返回实例信息
@@ -79,7 +99,7 @@ pub async fn create_agent_instance(
         .unwrap_or(0);
 
     Ok(AgentInstanceInfo {
-        instance_id: _instance_id,
+        instance_id,
         adapter_id,
         adapter_name: adapter_config.name,
         status: AgentStatus::Idle,

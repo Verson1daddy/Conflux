@@ -31,6 +31,10 @@ interface WorkspaceState {
 
   /** Replace all cards */
   setCards: (cards: CardLayout[]) => void;
+  /** Append a single card to the canvas */
+  addCard: (card: CardLayout) => void;
+  /** Remove a card by instance_id */
+  removeCard: (instanceId: string) => void;
   /** Update a single card's position */
   updateCardPosition: (instanceId: string, position: Position) => void;
   /** Update a single card's size */
@@ -71,6 +75,21 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   selectedCardId: null,
 
   setCards: (cards) => set({ cards }),
+
+  addCard: (card) =>
+    set((state) => {
+      const maxZ = state.cards.reduce((m, c) => Math.max(m, c.z_index), 0);
+      return {
+        cards: [...state.cards, { ...card, z_index: maxZ + 1 }],
+      };
+    }),
+
+  removeCard: (instanceId) =>
+    set((state) => ({
+      cards: state.cards.filter((c) => c.instance_id !== instanceId),
+      selectedCardId:
+        state.selectedCardId === instanceId ? null : state.selectedCardId,
+    })),
 
   updateCardPosition: (instanceId, position) =>
     set((state) => ({

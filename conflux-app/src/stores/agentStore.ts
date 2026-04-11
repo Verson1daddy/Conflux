@@ -20,17 +20,28 @@ interface AgentStoreState {
   trees: Map<string, AgentTree>;
   /** Currently expanded card instance_id, or null when no card is expanded */
   expandedCardId: string | null;
+  /** Instance id whose DiscussionPanel is open, or null when closed */
+  discussionOpenForInstanceId: string | null;
 
   // ===== Actions =====
 
   /** Replace all instances from a list (e.g. initial load) */
   setInstances: (instances: AgentInstanceInfo[]) => void;
+  /** Add a single instance (e.g. after createAgentInstance) */
+  addInstance: (instance: AgentInstanceInfo) => void;
   /** Update the status of a single instance */
   updateStatus: (instanceId: string, status: AgentStatus) => void;
   /** Update the agent tree of a single instance */
   updateTree: (instanceId: string, tree: AgentTree) => void;
   /** Set the expanded card (or collapse with null) */
   setExpandedCard: (id: string | null) => void;
+  /** Open the DiscussionPanel anchored on a specific agent instance */
+  openDiscussion: (instanceId: string) => void;
+  /** Close the DiscussionPanel */
+  closeDiscussion: () => void;
+  /** Set a single instance as the primary framework (or clear with null).
+   *  Unpins all other instances automatically. */
+  setPrimary: (instanceId: string | null) => void;
 }
 
 // ===== Store =====
@@ -40,6 +51,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
   statuses: new Map(),
   trees: new Map(),
   expandedCardId: null,
+  discussionOpenForInstanceId: null,
 
   setInstances: (instances) =>
     set(() => {
@@ -50,6 +62,15 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
         statusMap.set(inst.instance_id, inst.status);
       }
       return { instances: instanceMap, statuses: statusMap };
+    }),
+
+  addInstance: (instance) =>
+    set((state) => {
+      const nextInstances = new Map(state.instances);
+      nextInstances.set(instance.instance_id, instance);
+      const nextStatuses = new Map(state.statuses);
+      nextStatuses.set(instance.instance_id, instance.status);
+      return { instances: nextInstances, statuses: nextStatuses };
     }),
 
   updateStatus: (instanceId, status) =>
@@ -73,4 +94,20 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
     }),
 
   setExpandedCard: (id) => set({ expandedCardId: id }),
+
+  openDiscussion: (instanceId) => set({ discussionOpenForInstanceId: instanceId }),
+
+  closeDiscussion: () => set({ discussionOpenForInstanceId: null }),
+
+  setPrimary: (instanceId) =>
+    set((state) => {
+      const nextInstances = new Map<string, AgentInstanceInfo>();
+      state.instances.forEach((info, id) => {
+        nextInstances.set(id, {
+          ...info,
+          is_primary_framework: instanceId !== null && id === instanceId,
+        });
+      });
+      return { instances: nextInstances };
+    }),
 }));

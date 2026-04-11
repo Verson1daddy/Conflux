@@ -1,102 +1,88 @@
 // ===== Sidebar 组件 =====
-// 侧边栏态灵动岛
-// 宽 420px 暗色毛玻璃面板，从右侧滑入
-// 头部：Conflux logo + 收起按钮
-// 主体：AGENTS 区域 + NOTIFICATIONS 区域
-// 底部：权限请求操作区
+// 灵动岛侧边栏态 420×full height
+// 设计稿结构:
+//   isTopBar (h:52): layers图标 + "Conflux" (Playfair Display 18px bold) | spacer | panel-right-close
+//   isBody (flex-1, bg surface-dark-primary, p:16, gap:20):
+//     AGENTS 区域 (gap:4) — 每项 padding [10,12], radius-md
+//     NOTIFICATIONS 区域 (gap:8) — 图标圆圈 + 内容
 
-import { type FC, useEffect, useState, useCallback } from "react";
-import { StatusCapsule } from "./StatusCapsule";
-import { NotificationQueue } from "./NotificationQueue";
-import { PermissionDialog } from "./PermissionDialog";
+import { type FC, useState, useCallback, useMemo } from "react";
 import { useIslandStore } from "@/stores/islandStore";
-import { listAgentInstances, focusAgentCard } from "@/lib/tauri-bridge";
-import { onAgentStatusChanged } from "@/lib/event-listener";
-import type { AgentInstanceInfo, PermissionRequest } from "@/types";
+import { useAgentStore } from "@/stores/agentStore";
+import { focusAgentCard, respondToPermission, setPrimaryFramework } from "@/lib/tauri-bridge";
+import type { AgentStatus, PermissionDecision } from "@/types";
 
 interface SidebarProps {
-  /** 是否可见（控制滑入/滑出动画） */
   visible: boolean;
-  /** 收起回调（回到胶囊态） */
   onCollapse: () => void;
 }
 
-/**
- * Sidebar — 侧边栏态灵动岛
- *
- * - 宽 420px, 暗色毛玻璃面板
- * - 头部：Conflux logo + 收起按钮
- * - AGENTS 区域：Agent 列表（名称 + 状态点 + adapter 名）
- * - NOTIFICATIONS 区域：通知队列
- * - 底部：权限请求操作区（点击打开 PermissionDialog）
- * - 从右侧滑入，300ms ease transition
- */
+const STATUS_DOT_COLORS: Record<AgentStatus, string> = {
+  idle: "#6B7280",
+  thinking: "#FFB800",
+  coding: "#34C759",
+  waiting_permission: "#FFB800",
+  done: "#34C759",
+  error: "#FF3B30",
+};
+
+const STATUS_LABEL: Record<AgentStatus, string> = {
+  idle: "Idle",
+  thinking: "Thinking...",
+  coding: "Writing...",
+  waiting_permission: "Awaiting approval",
+  done: "Done",
+  error: "Error",
+};
+
 const Sidebar: FC<SidebarProps> = ({ visible, onCollapse }) => {
-  const pendingPermissions = useIslandStore((s) => s.pendingPermissions);
+  const notifications = useIslandStore((s) => s.notifications);
+  const removePermissionRequest = useIslandStore((s) => s.removePermissionRequest);
+  const clearNotification = useIslandStore((s) => s.clearNotification);
+  const instances = useAgentStore((s) => s.instances);
+  const setPrimary = useAgentStore((s) => s.setPrimary);
+  const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
 
-  // Agent 实例列表
-  const [agents, setAgents] = useState<AgentInstanceInfo[]>([]);
+  // 从 agentStore 读取 agents（保持和 canvas/TopBar 一致）
+  const agents = useMemo(() => Array.from(instances.values()), [instances]);
 
-  // 当前打开的权限弹窗
-  const [activePermission, setActivePermission] =
-    useState<PermissionRequest | null>(null);
-
-  // 获取 Agent 列表
-  const fetchAgents = useCallback(async () => {
-    try {
-      const list = await listAgentInstances();
-      setAgents(list);
-    } catch {
-      // 后端不可用时保持空列表
-    }
+  const handleAgentClick = useCallback(async (id: string) => {
+    try { await focusAgentCard(id); } catch { /* ignore */ }
   }, []);
 
-  // 初始化获取 Agent 列表
-  useEffect(() => {
-    fetchAgents();
-  }, [fetchAgents]);
+  const handleTogglePin = useCallback(
+    async (e: React.MouseEvent, instanceId: string, currentlyPinned: boolean) => {
+      e.stopPropagation();
+      const next = currentlyPinned ? null : instanceId;
+      // 即时本地反馈
+      setPrimary(next);
+      // 后端同步（demo 期可能无效，忽略失败）
+      try { await setPrimaryFramework(next ?? ""); } catch { /* ignore */ }
+    },
+    [setPrimary]
+  );
 
-  // 监听状态变化刷新 Agent 列表
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    onAgentStatusChanged(() => {
-      fetchAgents();
-    }).then((fn) => {
-      unlisten = fn;
-    });
-    return () => {
-      unlisten?.();
-    };
-  }, [fetchAgents]);
-
-  // 点击 Agent 聚焦到工作台卡片
-  const handleAgentClick = useCallback(
-    async (instanceId: string) => {
+  const handlePermissionDecision = useCallback(
+    async (permissionId: string, decision: PermissionDecision) => {
+      if (pendingIds.has(permissionId)) return;
+      setPendingIds((prev) => new Set(prev).add(permissionId));
       try {
-        await focusAgentCard(instanceId);
-      } catch {
-        // 忽略聚焦失败
-      }
+        await respondToPermission(permissionId, decision);
+      } catch { /* 即使失败也清理 UI */ }
+      removePermissionRequest(permissionId);
+      clearNotification(permissionId);
+      setPendingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(permissionId);
+        return next;
+      });
     },
-    []
+    [pendingIds, removePermissionRequest, clearNotification]
   );
-
-  // 打开权限审批弹窗
-  const handlePermissionClick = useCallback(
-    (request: PermissionRequest) => {
-      setActivePermission(request);
-    },
-    []
-  );
-
-  // 关闭权限审批弹窗
-  const handlePermissionClose = useCallback(() => {
-    setActivePermission(null);
-  }, []);
 
   return (
     <>
-      {/* 背景遮罩（点击收起） */}
+      {/* 背景遮罩 */}
       <div
         className={`
           fixed inset-0 z-30 bg-black/20 backdrop-blur-sm
@@ -111,163 +97,341 @@ const Sidebar: FC<SidebarProps> = ({ visible, onCollapse }) => {
       <div
         className={`
           fixed top-0 right-0 z-40 h-full w-[420px]
-          bg-surface-dark/90 backdrop-blur-xl
-          border-l border-white/5
-          shadow-elevated
+          flex flex-col overflow-hidden
           transition-transform duration-300 ease-in-out
           ${visible ? "translate-x-0" : "translate-x-full"}
-          flex flex-col overflow-hidden
         `}
+        style={{ background: "#050507" }}
         role="complementary"
         aria-label="Island sidebar"
       >
-        {/* ===== 头部 ===== */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
-          <div className="flex items-center gap-2.5">
-            {/* Conflux logo 占位 */}
-            <div className="w-7 h-7 rounded-lg bg-island-bg flex items-center justify-center shadow-island-glow">
-              <span className="text-xs font-display font-bold text-accent-glow">
-                C
-              </span>
-            </div>
-            <span className="text-sm font-display font-semibold text-white tracking-wide">
+        {/* ===== isTopBar h:52 ===== */}
+        <div
+          className="flex items-center shrink-0"
+          style={{
+            height: 52,
+            padding: "0 20px",
+            gap: 10,
+            background: "rgba(255,255,255,0.04)",
+            backdropFilter: "blur(24px)",
+            borderBottom: "1px solid rgba(255,255,255,0.082)",
+          }}
+        >
+          {/* Logo: layers icon + Conflux (Playfair Display) */}
+          <div className="flex items-center" style={{ gap: 6 }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#B8D4E3" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" />
+              <path d="m22 12-8.58 3.91a2 2 0 0 1-1.66 0L3.18 12" opacity="0.6" />
+              <path d="m22 17-8.58 3.91a2 2 0 0 1-1.66 0L3.18 17" opacity="0.3" />
+            </svg>
+            <span
+              style={{
+                fontFamily: "'Fraunces Variable', Georgia, serif",
+                fontSize: 18,
+                fontWeight: 700,
+                color: "#F2F2F2",
+              }}
+            >
               Conflux
             </span>
           </div>
 
-          {/* 收起按钮 */}
+          <div className="flex-1" />
+
+          {/* 关闭按钮 — panel-right-close */}
           <button
-            className="w-8 h-8 rounded-lg flex items-center justify-center
-              text-white/40 hover:text-white/80 hover:bg-white/5
-              transition-colors duration-200"
+            className="transition-colors"
+            style={{ color: "#6B7280" }}
             onClick={onCollapse}
-            aria-label="Collapse sidebar"
+            aria-label="Close sidebar"
           >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 16 16"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <path
-                d="M6 3L11 8L6 13"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect width="18" height="18" x="3" y="3" rx="2" />
+              <path d="M15 3v18" />
+              <path d="m10 15 3-3-3-3" />
             </svg>
           </button>
         </div>
 
-        {/* ===== 主体滚动区 ===== */}
-        <div className="flex-1 overflow-y-auto">
+        {/* ===== isBody ===== */}
+        <div
+          className="flex-1 overflow-y-auto flex flex-col"
+          style={{
+            background: "#050507",
+            padding: 16,
+            gap: 20,
+          }}
+        >
           {/* AGENTS 区域 */}
-          <div className="px-5 pt-4 pb-2">
-            <p className="text-[10px] font-mono text-white/30 uppercase tracking-widest mb-3">
+          <div className="flex flex-col" style={{ gap: 4 }}>
+            <span
+              style={{
+                fontFamily: "'Geist Sans', sans-serif",
+                fontSize: 10,
+                fontWeight: 600,
+                letterSpacing: 1.5,
+                color: "#6B7280",
+                textTransform: "uppercase" as const,
+                marginBottom: 8,
+              }}
+            >
               Agents
-            </p>
+            </span>
 
             {agents.length === 0 ? (
-              <p className="text-xs font-body text-white/20 py-3">
+              <p style={{ fontFamily: "'Geist Sans', sans-serif", fontSize: 11, color: "#6B7280", padding: "10px 12px" }}>
                 No active agents
               </p>
             ) : (
-              <div className="flex flex-col gap-1">
-                {agents.map((agent) => (
-                  <button
-                    key={agent.instance_id}
-                    className="flex items-center gap-3 px-3 py-2.5 rounded-lg
-                      hover:bg-white/5 transition-colors duration-200
-                      text-left w-full group"
-                    onClick={() => handleAgentClick(agent.instance_id)}
-                    aria-label={`Focus agent ${agent.adapter_name}, status: ${agent.status}`}
+              agents.map((agent) => (
+                <button
+                  key={agent.instance_id}
+                  className="sidebar-agent-row flex items-center w-full text-left transition-colors"
+                  style={{
+                    padding: "10px 12px",
+                    gap: 10,
+                    borderRadius: 8,
+                    background: agent.is_primary_framework ? "#1C1C1E" : "#0E0E10",
+                    border: agent.is_primary_framework ? "1px solid #B8D4E3" : "1px solid transparent",
+                  }}
+                  onClick={() => handleAgentClick(agent.instance_id)}
+                >
+                  {/* Status dot — 8px */}
+                  <span
+                    className="shrink-0 rounded-full"
+                    style={{
+                      width: 8,
+                      height: 8,
+                      background: STATUS_DOT_COLORS[agent.status],
+                    }}
+                  />
+
+                  {/* Agent info column */}
+                  <div className="flex-1 min-w-0 flex flex-col" style={{ gap: 2 }}>
+                    <span
+                      className="truncate"
+                      style={{
+                        fontFamily: "'Geist Sans', sans-serif",
+                        fontSize: 13,
+                        fontWeight: 600,
+                        color: "#F2F2F2",
+                      }}
+                    >
+                      {agent.adapter_name}
+                    </span>
+                    <span
+                      className="truncate"
+                      style={{
+                        fontFamily: "'Geist Sans', sans-serif",
+                        fontSize: 11,
+                        color: "#6B7280",
+                      }}
+                    >
+                      {STATUS_LABEL[agent.status]}
+                    </span>
+                  </div>
+
+                  {/* Time */}
+                  <span
+                    className="shrink-0"
+                    style={{
+                      fontFamily: "'JetBrains Mono Variable', monospace",
+                      fontSize: 11,
+                      color: "#6B7280",
+                    }}
                   >
-                    {/* Agent 名称 + adapter */}
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs font-body text-white/80 truncate group-hover:text-white transition-colors">
-                        {agent.adapter_name}
-                      </p>
-                      <p className="text-[10px] font-mono text-white/30 truncate">
-                        {agent.instance_id.slice(0, 8)}...
-                      </p>
-                    </div>
+                    {agent.status === "idle" ? "\u2014" : formatTime(agent.created_at)}
+                  </span>
 
-                    {/* 状态胶囊 */}
-                    <StatusCapsule status={agent.status} />
-
-                    {/* 主框架标记 */}
-                    {agent.is_primary_framework && (
-                      <span className="text-[9px] font-mono text-accent-glow bg-accent-glow/10 px-1.5 py-0.5 rounded">
-                        PRIMARY
-                      </span>
-                    )}
-                  </button>
-                ))}
-              </div>
+                  {/* Pin icon — hidden by default, only visible on row hover */}
+                  <span
+                    role="button"
+                    aria-label={agent.is_primary_framework ? "Unpin as primary" : "Pin as primary"}
+                    onClick={(e) => handleTogglePin(e, agent.instance_id, agent.is_primary_framework)}
+                    className={`shrink-0 flex items-center justify-center sidebar-pin ${agent.is_primary_framework ? "pinned" : ""}`}
+                    style={{
+                      width: 20,
+                      height: 20,
+                      color: agent.is_primary_framework ? "#B8D4E3" : "#6B7280",
+                      cursor: "pointer",
+                    }}
+                    title={agent.is_primary_framework ? "Pinned as primary (click to unpin)" : "Pin as primary"}
+                  >
+                    <svg
+                      width="13"
+                      height="13"
+                      viewBox="0 0 24 24"
+                      fill={agent.is_primary_framework ? "currentColor" : "none"}
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M12 17v5" />
+                      <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" />
+                    </svg>
+                  </span>
+                </button>
+              ))
             )}
           </div>
 
-          {/* 分隔线 */}
-          <div className="mx-5 border-t border-white/5" />
-
           {/* NOTIFICATIONS 区域 */}
-          <div className="px-5 pt-4 pb-2">
-            <p className="text-[10px] font-mono text-white/30 uppercase tracking-widest mb-3">
+          <div className="flex flex-col" style={{ gap: 8 }}>
+            <span
+              style={{
+                fontFamily: "'Geist Sans', sans-serif",
+                fontSize: 10,
+                fontWeight: 600,
+                letterSpacing: 1.5,
+                color: "#6B7280",
+                textTransform: "uppercase" as const,
+                marginBottom: 4,
+              }}
+            >
               Notifications
-            </p>
-            <NotificationQueue />
+            </span>
+
+            {notifications.length === 0 ? (
+              <p style={{ fontFamily: "'Geist Sans', sans-serif", fontSize: 11, color: "#6B7280", padding: "10px 12px" }}>
+                No notifications
+              </p>
+            ) : (
+              notifications.slice(0, 10).map((notif) => {
+                const isPermission = notif.level === "permission_required";
+                const isError = notif.level === "error";
+                const iconBg = isPermission
+                  ? "rgba(255,184,0,0.125)"
+                  : isError
+                    ? "rgba(255,59,48,0.125)"
+                    : "rgba(52,199,89,0.125)";
+                const iconColor = isPermission
+                  ? "#FFB800"
+                  : isError
+                    ? "#FF3B30"
+                    : "#34C759";
+
+                return (
+                  <div
+                    key={notif.id}
+                    className="flex"
+                    style={{
+                      padding: "10px 12px",
+                      gap: 10,
+                      borderRadius: 8,
+                      background: "#0E0E10",
+                    }}
+                  >
+                    {/* Icon circle */}
+                    <div
+                      className="shrink-0 flex items-center justify-center"
+                      style={{
+                        width: 28,
+                        height: 28,
+                        borderRadius: 9999,
+                        background: iconBg,
+                      }}
+                    >
+                      {isPermission ? (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2" strokeLinecap="round">
+                          <circle cx="12" cy="12" r="10" />
+                          <path d="M12 8v4M12 16h.01" />
+                        </svg>
+                      ) : isError ? (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2" strokeLinecap="round">
+                          <circle cx="12" cy="12" r="10" />
+                          <path d="m15 9-6 6M9 9l6 6" />
+                        </svg>
+                      ) : (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2" strokeLinecap="round">
+                          <circle cx="12" cy="12" r="10" />
+                          <path d="m9 12 2 2 4-4" />
+                        </svg>
+                      )}
+                    </div>
+
+                    {/* Content column */}
+                    <div className="flex-1 min-w-0 flex flex-col" style={{ gap: 4 }}>
+                      <span
+                        style={{
+                          fontFamily: "'Geist Sans', sans-serif",
+                          fontSize: 12,
+                          fontWeight: 600,
+                          color: "#F2F2F2",
+                        }}
+                      >
+                        {isPermission ? "Permission Request" : isError ? "Error" : "Task Complete"}
+                      </span>
+                      <span
+                        className="truncate"
+                        style={{
+                          fontFamily: "'Geist Sans', sans-serif",
+                          fontSize: 11,
+                          color: "#6B7280",
+                        }}
+                      >
+                        {notif.content}
+                      </span>
+
+                      {/* Allow/Deny 按钮 */}
+                      {isPermission && (
+                        <div className="flex items-center" style={{ gap: 8, marginTop: 4 }}>
+                          <button
+                            onClick={() => handlePermissionDecision(notif.id, "approve")}
+                            disabled={pendingIds.has(notif.id)}
+                            style={{
+                              fontFamily: "'Geist Sans', sans-serif",
+                              fontSize: 11,
+                              fontWeight: 600,
+                              color: "#FFFFFF",
+                              background: "#34C759",
+                              borderRadius: 9999,
+                              padding: "4px 12px",
+                              opacity: pendingIds.has(notif.id) ? 0.5 : 1,
+                              cursor: pendingIds.has(notif.id) ? "not-allowed" : "pointer",
+                            }}
+                          >
+                            Allow
+                          </button>
+                          <button
+                            onClick={() => handlePermissionDecision(notif.id, "deny")}
+                            disabled={pendingIds.has(notif.id)}
+                            style={{
+                              fontFamily: "'Geist Sans', sans-serif",
+                              fontSize: 11,
+                              color: "rgba(255,255,255,0.6)",
+                              background: "rgba(255,255,255,0.063)",
+                              borderRadius: 9999,
+                              padding: "4px 12px",
+                              opacity: pendingIds.has(notif.id) ? 0.5 : 1,
+                              cursor: pendingIds.has(notif.id) ? "not-allowed" : "pointer",
+                            }}
+                          >
+                            Deny
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
-
-        {/* ===== 底部：权限请求操作区 ===== */}
-        {pendingPermissions.length > 0 && (
-          <div className="px-5 py-3 border-t border-white/5 bg-surface-dark/80">
-            <p className="text-[10px] font-mono text-yellow-400 uppercase tracking-widest mb-2">
-              Pending Approvals ({pendingPermissions.length})
-            </p>
-            <div className="flex flex-col gap-1.5">
-              {pendingPermissions.map((perm) => (
-                <button
-                  key={perm.id}
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg
-                    bg-yellow-500/5 border border-yellow-500/15
-                    hover:bg-yellow-500/10 transition-colors duration-200
-                    text-left w-full"
-                  onClick={() => handlePermissionClick(perm)}
-                  aria-label={`Review permission: ${perm.action}`}
-                >
-                  <span className="text-yellow-400 text-sm animate-pulse">
-                    {"\uD83D\uDD12"}
-                  </span>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-body text-white/70 truncate">
-                      {perm.action}
-                    </p>
-                    <p className="text-[10px] font-mono text-white/30 truncate">
-                      {perm.instance_id}
-                    </p>
-                  </div>
-                  <span className="text-[10px] font-mono text-yellow-400/60">
-                    Review
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
-
-      {/* 权限审批弹窗 */}
-      {activePermission && (
-        <PermissionDialog
-          request={activePermission}
-          onClose={handlePermissionClose}
-        />
-      )}
     </>
   );
 };
+
+function formatTime(timestamp: number): string {
+  if (timestamp === 0) return "\u2014";
+  const now = Date.now();
+  const diff = now - timestamp;
+  const totalSec = Math.floor(diff / 1000);
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  if (min === 0) return `0:${String(sec).padStart(2, "0")}`;
+  return `${min}:${String(sec).padStart(2, "0")}`;
+}
 
 export { Sidebar };

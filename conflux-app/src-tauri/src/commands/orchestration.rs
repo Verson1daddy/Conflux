@@ -30,12 +30,12 @@ use crate::persistence::query as db_query;
 ///
 /// # 返回
 /// 新创建的 DiscussionSession
-#[tauri::command]
 /// IPC 输入长度上限——topic（HIGH-01 修复）
 const MAX_TOPIC_LENGTH: usize = 1_000;
 /// IPC 输入长度上限——消息内容（HIGH-01 修复）
 const MAX_CONTENT_LENGTH: usize = 50_000;
 
+#[tauri::command]
 pub async fn start_discussion(
     state: State<'_, AppState>,
     topic: String,

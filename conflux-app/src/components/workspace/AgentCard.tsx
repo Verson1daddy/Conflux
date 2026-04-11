@@ -1,93 +1,89 @@
 // ===== AgentCard Component =====
-// Glass-morphism card shell for a single Agent instance on the workspace canvas.
-// Supports drag-to-reposition in Free layout mode with 8px snap grid.
-// 5 discrete size slots: Mini, Small, Medium, Large, Wide.
+// Glass-morphism card for a single Agent instance on the workspace canvas.
+// Performance: drag/resize use DOM manipulation via refs; store commits only on pointerup.
+// Free resize via corner handle, no min size constraint for manual operations.
+// Content adapts to card dimensions.
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useRef, useLayoutEffect, useMemo, useState, useEffect } from "react";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { useAgentStore } from "@/stores/agentStore";
 import { SNAP_GRID_PX } from "@/types/layout";
+import { XtermTerminal } from "./XtermTerminal";
+import { ExpandedAgentCard } from "./ExpandedAgentCard";
 import type {
   CardLayout,
   AgentStatus,
-  CardSizeSlot,
   Position,
-  Size,
   LayoutMode,
 } from "@/types";
 
-// ===== Size slot dimensions =====
+// ===== Status colors =====
 
-const SIZE_SLOT_MAP: Record<CardSizeSlot, Size> = {
-  mini: { width: 200, height: 140 },
-  small: { width: 200, height: 288 },
-  medium: { width: 408, height: 288 },
-  large: { width: 408, height: 436 },
-  wide: { width: 616, height: 288 },
+const STATUS_DOT_COLORS: Record<AgentStatus, string> = {
+  idle: "#6B7280",
+  thinking: "#FFB800",
+  coding: "#34C759",
+  waiting_permission: "#FFB800",
+  done: "#34C759",
+  error: "#FF3B30",
 };
 
-/** Ordered list of size slots for cycling */
-const SIZE_SLOT_ORDER: CardSizeSlot[] = [
-  "mini",
-  "small",
-  "medium",
-  "large",
-  "wide",
-];
+// ===== Vendor badge mapping =====
 
-/**
- * Determine which slot best matches a given size.
- * Uses minimum Euclidean distance to the slot dimensions.
- */
-function detectSizeSlot(size: Size): CardSizeSlot {
-  let bestSlot: CardSizeSlot = "medium";
-  let bestDist = Infinity;
+const ADAPTER_VENDOR: Record<string, string> = {
+  "claude-code": "anthropic",
+  codex: "openai",
+  aider: "paul-gauthier",
+  opencode: "opencode",
+};
 
-  for (const slot of SIZE_SLOT_ORDER) {
-    const ref = SIZE_SLOT_MAP[slot];
-    const dist = Math.abs(ref.width - size.width) + Math.abs(ref.height - size.height);
-    if (dist < bestDist) {
-      bestDist = dist;
-      bestSlot = slot;
-    }
-  }
-  return bestSlot;
+// ===== Demo terminal content =====
+// Colors are encoded as 24-bit ANSI escape sequences so xterm.js renders them
+// with our Conflux palette exactly. Keep these in sync with CONFLUX_THEME.
+
+const ANSI = {
+  reset: "\x1b[0m",
+  muted: "\x1b[38;2;107;114;128m",    // #6B7280
+  accent: "\x1b[38;2;184;212;227m",   // #B8D4E3
+  secondary: "\x1b[38;2;184;179;176m", // #B8B3B0
+  success: "\x1b[38;2;52;199;89m",    // #34C759
+  warning: "\x1b[38;2;255;184;0m",    // #FFB800
+};
+
+function line(color: string, text: string): string {
+  return `${color}${text}${ANSI.reset}\r\n`;
 }
 
-/**
- * Get the next size slot in the cycling order.
- */
-function nextSizeSlot(current: CardSizeSlot): CardSizeSlot {
-  const idx = SIZE_SLOT_ORDER.indexOf(current);
-  return SIZE_SLOT_ORDER[(idx + 1) % SIZE_SLOT_ORDER.length];
-}
-
-// ===== Status indicator colors =====
-
-const STATUS_COLORS: Record<AgentStatus, string> = {
-  idle: "bg-gray-500",
-  thinking: "bg-accent",
-  coding: "bg-green-500",
-  waiting_permission: "bg-yellow-500",
-  done: "bg-green-500",
-  error: "bg-red-500",
+const DEMO_TERMINAL_ANSI: Record<string, string> = {
+  "claude-code":
+    line(ANSI.muted, "> claude --model opus task.md") +
+    line(ANSI.accent, "╭─ Task: Implement workspace canvas") +
+    line(ANSI.secondary, "│  Reading src\\components\\Canvas.tsx...") +
+    line(ANSI.accent, "╰─") +
+    line(ANSI.success, "  ✓ Created Canvas.tsx (142 lines)") +
+    line(ANSI.success, "  ✓ Added react-grid-layout dependency") +
+    line(ANSI.success, "  ✓ Updated LayoutManager.tsx") +
+    line(ANSI.accent, "⠋ Writing AgentCard component..."),
+  codex:
+    line(ANSI.muted, "> codex analyze src\\lib\\") +
+    line(ANSI.warning, "Analyzing 14 files...") +
+    line(ANSI.secondary, "  [████████░░] 78%") +
+    line(ANSI.secondary, "  Found 3 optimization targets"),
+  aider:
+    line(ANSI.muted, "Aider v0.82.0") +
+    line(ANSI.secondary, "Model: opus-4 with architect mode") +
+    line(ANSI.secondary, "Repo: D:\\Projects\\conflux-app") +
+    line(ANSI.muted, "Ready for input. > _"),
+  opencode:
+    line(ANSI.success, "> Reviewing PR #42...") +
+    line(ANSI.secondary, "  3 files, 0 issues"),
 };
 
-const STATUS_GLOW: Record<AgentStatus, string> = {
-  idle: "",
-  thinking: "shadow-[0_0_8px_rgba(184,212,227,0.6)]",
-  coding: "shadow-[0_0_8px_rgba(74,222,128,0.5)]",
-  waiting_permission: "shadow-[0_0_8px_rgba(250,204,21,0.5)]",
-  done: "",
-  error: "shadow-[0_0_8px_rgba(239,68,68,0.5)]",
-};
-
-const STATUS_LABELS: Record<AgentStatus, string> = {
-  idle: "Idle",
-  thinking: "Thinking",
-  coding: "Coding",
-  waiting_permission: "Awaiting",
-  done: "Done",
-  error: "Error",
+const DEMO_FOOTER: Record<string, { time: string; detail: string }> = {
+  "claude-code": { time: "3m 24s", detail: "4 files changed" },
+  codex: { time: "1m 47s", detail: "1 sub-agent" },
+  aider: { time: "", detail: "idle" },
+  opencode: { time: "0m 38s", detail: "" },
 };
 
 // ===== Snap helper =====
@@ -99,37 +95,38 @@ function snapToGrid(value: number): number {
 // ===== Props =====
 
 interface AgentCardProps {
-  /** Card layout data (position, size, z_index) */
   card: CardLayout;
-  /** Agent display name */
   agentName: string;
-  /** Adapter badge text (e.g., "Claude", "GPT") */
   adapterBadge: string;
-  /** Current agent status */
   status: AgentStatus;
-  /** Whether this card is currently selected */
   isSelected: boolean;
-  /** Current layout mode — dragging only enabled in "free" mode */
   layoutMode: LayoutMode;
-  /** Current canvas zoom level (for translating mouse deltas) */
   zoom: number;
-  /** Number of files associated with this agent (display in footer) */
   fileCount: number;
-  /** Last activity timestamp (display in footer) */
   lastActivity: number;
+  /** When true, the card flips in place to reveal the expanded agent view on
+   *  its back face. Used in fullscreen mode; non-fullscreen uses an overlay
+   *  panel instead (see App.tsx). */
+  isFlipped?: boolean;
+  /** When true, this card is NOT the focused one but another card IS expanded
+   *  in fullscreen flip mode — the card fades out of the way so attention
+   *  collapses onto the flipped card. */
+  isDimmed?: boolean;
 }
 
-/**
- * AgentCard renders a single agent's card on the workspace canvas.
- *
- * Features:
- * - Glass-morphism appearance (.glass class)
- * - Status indicator dot with glow
- * - Drag-to-reposition via grip handle (free mode only)
- * - 8px snap grid alignment
- * - Double-click grip to cycle size slot
- * - Pointer capture for reliable drag outside window bounds
- */
+// ===== Layout breakpoints =====
+
+const HEADER_H = 42;
+const FOOTER_H = 32;
+const MIN_TERM_H = 40;
+
+// Minimum card dimensions. The design requires the card's back face (the
+// expanded agent view) to always be legible — sidebar 200 + terminal area +
+// header/footer + padding add up to roughly this footprint. Enforced both
+// at manual-resize time and in the demo layout.
+const MIN_CARD_W = 580;
+const MIN_CARD_H = 380;
+
 function AgentCard({
   card,
   agentName,
@@ -138,33 +135,69 @@ function AgentCard({
   isSelected,
   layoutMode,
   zoom,
-  fileCount,
-  lastActivity,
+  isFlipped = false,
+  isDimmed = false,
 }: AgentCardProps) {
-  const {
-    updateCardPosition,
-    updateCardSize,
-    selectCard,
-    bringToFront,
-  } = useWorkspaceStore();
+  const updateCardPosition = useWorkspaceStore((s) => s.updateCardPosition);
+  const updateCardSize = useWorkspaceStore((s) => s.updateCardSize);
+  const selectCard = useWorkspaceStore((s) => s.selectCard);
+  const bringToFront = useWorkspaceStore((s) => s.bringToFront);
+  const setExpandedCard = useAgentStore((s) => s.setExpandedCard);
 
-  const dragRef = useRef<{
-    startMouseX: number;
-    startMouseY: number;
-    startCardX: number;
-    startCardY: number;
-  } | null>(null);
+  // Keep the back face mounted during flip-back so the transition animates
+  // out cleanly; unmount ~660ms after isFlipped becomes false to free the
+  // xterm instance.
+  const [showBack, setShowBack] = useState(isFlipped);
+  useEffect(() => {
+    if (isFlipped) {
+      setShowBack(true);
+    } else if (showBack) {
+      const t = setTimeout(() => setShowBack(false), 660);
+      return () => clearTimeout(t);
+    }
+  }, [isFlipped, showBack]);
 
-  const [isDragging, setIsDragging] = useState(false);
+  const cardRef = useRef<HTMLDivElement>(null);
 
-  const isMini = card.size.width <= 200 && card.size.height <= 160;
-  const currentSlot = detectSizeSlot(card.size);
+  // Live position/size refs — updated during drag/resize without triggering re-render
+  const livePos = useRef<Position>({ x: card.position.x, y: card.position.y });
+  const liveSize = useRef({ width: card.size.width, height: card.size.height });
+
+  // Sync refs when store props change (e.g., from auto-pack or external update)
+  useLayoutEffect(() => {
+    livePos.current = { x: card.position.x, y: card.position.y };
+    liveSize.current = { width: card.size.width, height: card.size.height };
+  }, [card.position.x, card.position.y, card.size.width, card.size.height]);
+
+  const vendorBadge = ADAPTER_VENDOR[adapterBadge] ?? adapterBadge;
+  const demoContent = useMemo(
+    () => DEMO_TERMINAL_ANSI[adapterBadge] ?? "",
+    [adapterBadge]
+  );
+  const footerInfo = DEMO_FOOTER[adapterBadge] ?? { time: "", detail: "" };
+
+  // Content adaptation based on card size
+  const h = card.size.height;
+  const w = card.size.width;
+  const showFooter = h >= HEADER_H + FOOTER_H + MIN_TERM_H;
+  const showTerminal = h >= HEADER_H + MIN_TERM_H;
+  const showBadge = w >= 240;
+
+  // ===== Shared DOM update helper =====
+
+  const applyTransform = useCallback(() => {
+    const el = cardRef.current;
+    if (!el) return;
+    el.style.left = `${livePos.current.x}px`;
+    el.style.top = `${livePos.current.y}px`;
+    el.style.width = `${liveSize.current.width}px`;
+    el.style.height = `${liveSize.current.height}px`;
+  }, []);
 
   // ===== Card click: select + bring to front =====
 
   const handleCardPointerDown = useCallback(
     (e: React.PointerEvent) => {
-      // Only respond to primary button
       if (e.button !== 0) return;
       selectCard(card.instance_id);
       bringToFront(card.instance_id);
@@ -172,190 +205,302 @@ function AgentCard({
     [card.instance_id, selectCard, bringToFront]
   );
 
-  // ===== Drag start (on grip handle) =====
+  // ===== Expand: button click or double-click anywhere on the card =====
+  // Double-click honors the macOS convention for "open in focused view".
+  // The explicit expand icon in the header is the discoverable path.
+
+  const handleExpand = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      setExpandedCard(card.instance_id);
+    },
+    [card.instance_id, setExpandedCard]
+  );
+
+  const handleCardDoubleClick = useCallback(
+    (e: React.MouseEvent) => {
+      // Ignore double-clicks originating from drag/resize/button controls
+      const target = e.target as HTMLElement;
+      if (target.closest("[data-no-expand]")) return;
+      e.stopPropagation();
+      // Toggle: if this card is already the expanded one, collapse it.
+      // Read via getState to avoid re-rendering every card on expandedCardId change.
+      const current = useAgentStore.getState().expandedCardId;
+      setExpandedCard(current === card.instance_id ? null : card.instance_id);
+    },
+    [card.instance_id, setExpandedCard]
+  );
+
+  // ===== DRAG (on grip handle) =====
 
   const handleGripPointerDown = useCallback(
     (e: React.PointerEvent) => {
-      if (layoutMode !== "free") return;
-      if (e.button !== 0) return;
-
+      if (layoutMode !== "free" || e.button !== 0) return;
       e.stopPropagation();
       e.preventDefault();
-
-      // Set pointer capture for reliable tracking outside the window
       (e.target as HTMLElement).setPointerCapture(e.pointerId);
 
-      dragRef.current = {
-        startMouseX: e.clientX,
-        startMouseY: e.clientY,
-        startCardX: card.position.x,
-        startCardY: card.position.y,
-      };
-      setIsDragging(true);
+      const startMouseX = e.clientX;
+      const startMouseY = e.clientY;
+      const startX = livePos.current.x;
+      const startY = livePos.current.y;
+
       selectCard(card.instance_id);
       bringToFront(card.instance_id);
+
+      const onMove = (me: PointerEvent) => {
+        const dx = (me.clientX - startMouseX) / zoom;
+        const dy = (me.clientY - startMouseY) / zoom;
+        livePos.current = {
+          x: snapToGrid(startX + dx),
+          y: snapToGrid(startY + dy),
+        };
+        applyTransform();
+      };
+
+      const onUp = (ue: PointerEvent) => {
+        (ue.target as HTMLElement).releasePointerCapture(ue.pointerId);
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        // Commit final position to store
+        updateCardPosition(card.instance_id, livePos.current);
+      };
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
     },
-    [layoutMode, card.position.x, card.position.y, card.instance_id, selectCard, bringToFront]
+    [layoutMode, zoom, card.instance_id, selectCard, bringToFront, updateCardPosition, applyTransform]
   );
 
-  // ===== Drag move =====
+  // ===== RESIZE (on corner handle) =====
 
-  const handleGripPointerMove = useCallback(
+  const handleResizePointerDown = useCallback(
     (e: React.PointerEvent) => {
-      if (!dragRef.current) return;
-
-      const dx = (e.clientX - dragRef.current.startMouseX) / zoom;
-      const dy = (e.clientY - dragRef.current.startMouseY) / zoom;
-
-      const newX = snapToGrid(dragRef.current.startCardX + dx);
-      const newY = snapToGrid(dragRef.current.startCardY + dy);
-
-      const newPos: Position = { x: newX, y: newY };
-      updateCardPosition(card.instance_id, newPos);
-    },
-    [zoom, card.instance_id, updateCardPosition]
-  );
-
-  // ===== Drag end =====
-
-  const handleGripPointerUp = useCallback(
-    (e: React.PointerEvent) => {
-      if (!dragRef.current) return;
-
-      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-      dragRef.current = null;
-      setIsDragging(false);
-    },
-    []
-  );
-
-  // ===== Double-click grip: cycle size slot =====
-
-  const handleGripDoubleClick = useCallback(
-    (e: React.MouseEvent) => {
+      if (e.button !== 0) return;
       e.stopPropagation();
-      const next = nextSizeSlot(currentSlot);
-      updateCardSize(card.instance_id, SIZE_SLOT_MAP[next]);
+      e.preventDefault();
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+
+      const startMouseX = e.clientX;
+      const startMouseY = e.clientY;
+      const startW = liveSize.current.width;
+      const startH = liveSize.current.height;
+
+      selectCard(card.instance_id);
+      bringToFront(card.instance_id);
+
+      const onMove = (me: PointerEvent) => {
+        const dw = (me.clientX - startMouseX) / zoom;
+        const dh = (me.clientY - startMouseY) / zoom;
+        liveSize.current = {
+          width: Math.max(MIN_CARD_W, snapToGrid(startW + dw)),
+          height: Math.max(MIN_CARD_H, snapToGrid(startH + dh)),
+        };
+        applyTransform();
+      };
+
+      const onUp = (ue: PointerEvent) => {
+        (ue.target as HTMLElement).releasePointerCapture(ue.pointerId);
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        updateCardSize(card.instance_id, liveSize.current);
+      };
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
     },
-    [currentSlot, card.instance_id, updateCardSize]
+    [zoom, card.instance_id, selectCard, bringToFront, updateCardSize, applyTransform]
   );
-
-  // ===== Format timestamp =====
-
-  const formattedTime = formatRelativeTime(lastActivity);
-
-  // ===== Render =====
 
   return (
     <div
-      className={[
-        "glass absolute rounded-lg overflow-hidden flex flex-col",
-        "transition-shadow duration-200",
-        isSelected
-          ? "ring-1 ring-accent/40 shadow-elevated"
-          : "shadow-card",
-        isDragging ? "cursor-grabbing" : "",
-      ]
-        .filter(Boolean)
-        .join(" ")}
+      ref={cardRef}
+      className="absolute"
       style={{
         left: card.position.x,
         top: card.position.y,
         width: card.size.width,
         height: card.size.height,
         zIndex: card.z_index,
+        perspective: "1600px",
+        // Focus fade: other cards dim out of the way while one card flips.
+        // Transition matches the flip duration so both animations resolve together.
+        opacity: isDimmed ? 0.12 : 1,
+        pointerEvents: isDimmed ? "none" : undefined,
+        transition: "opacity 0.62s cubic-bezier(0.22, 1, 0.36, 1)",
       }}
       onPointerDown={handleCardPointerDown}
+      onDoubleClick={handleCardDoubleClick}
     >
-      {/* ===== Header ===== */}
-      <div className="glass-header flex items-center gap-2 px-3 py-2 shrink-0">
-        {/* Status dot */}
+      {/* ===== 3D flip stage ===== */}
+      <div
+        className="absolute inset-0"
+        style={{
+          transformStyle: "preserve-3d",
+          WebkitTransformStyle: "preserve-3d",
+          transform: isFlipped ? "rotateY(180deg)" : "rotateY(0deg)",
+          transition: "transform 0.62s cubic-bezier(0.22, 1, 0.36, 1)",
+        }}
+      >
+      {/* ===== FRONT FACE ===== */}
+      <div
+        className="absolute inset-0 flex flex-col overflow-hidden"
+        style={{
+          backfaceVisibility: "hidden",
+          WebkitBackfaceVisibility: "hidden",
+          background: "rgba(255,255,255,0.04)",
+          backdropFilter: "blur(20px)",
+          WebkitBackdropFilter: "blur(20px)",
+          border: isSelected
+            ? "1px solid rgba(184,212,227,0.4)"
+            : "1px solid rgba(255,255,255,0.082)",
+          borderRadius: 12,
+          boxShadow: isSelected
+            ? "0 8px 32px rgba(0,0,0,0.19), 0 20px 60px rgba(0,0,0,0.7)"
+            : "0 8px 32px rgba(0,0,0,0.19)",
+        }}
+      >
+      {/* ===== Header (42px) ===== */}
+      <div
+        className="flex items-center shrink-0"
+        style={{
+          height: HEADER_H,
+          padding: "0 16px",
+          gap: 8,
+          background: "rgba(255,255,255,0.024)",
+        }}
+      >
         <span
-          className={[
-            "w-2.5 h-2.5 rounded-full shrink-0",
-            STATUS_COLORS[status],
-            STATUS_GLOW[status],
-          ]
-            .filter(Boolean)
-            .join(" ")}
-          title={STATUS_LABELS[status]}
+          className="shrink-0 rounded-full"
+          style={{ width: 8, height: 8, background: STATUS_DOT_COLORS[status] }}
         />
-
-        {/* Agent name */}
-        <span className="font-body text-sm text-white/90 truncate flex-1">
+        <span
+          className="truncate"
+          style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 14, fontWeight: 600, color: "#F2F2F2" }}
+        >
           {agentName}
         </span>
-
-        {/* Adapter badge */}
-        <span className="text-[10px] font-mono text-accent/60 bg-accent/10 px-1.5 py-0.5 rounded shrink-0">
-          {adapterBadge}
-        </span>
-
-        {/* Grip handle (drag target) */}
+        {showBadge && vendorBadge && (
+          <span
+            className="shrink-0"
+            style={{
+              fontFamily: "'Geist Sans',sans-serif", fontSize: 10, fontWeight: 500,
+              letterSpacing: 0.4, color: "#B8D4E3",
+              background: "rgba(184,212,227,0.15)", borderRadius: 9999, padding: "2px 8px",
+            }}
+          >
+            {vendorBadge}
+          </span>
+        )}
+        <div className="flex-1" />
         <button
-          className={[
-            "text-white/30 hover:text-white/60 text-sm leading-none shrink-0 select-none",
-            layoutMode === "free" ? "cursor-grab" : "cursor-default opacity-30",
-            isDragging ? "cursor-grabbing" : "",
-          ]
-            .filter(Boolean)
-            .join(" ")}
-          onPointerDown={handleGripPointerDown}
-          onPointerMove={handleGripPointerMove}
-          onPointerUp={handleGripPointerUp}
-          onDoubleClick={handleGripDoubleClick}
-          title={
-            layoutMode === "free"
-              ? "Drag to move, double-click to resize"
-              : "Dragging disabled in this layout mode"
-          }
+          data-no-expand
+          className="shrink-0 select-none flex items-center justify-center"
+          style={{
+            color: "#6B7280",
+            width: 18,
+            height: 18,
+            opacity: 0.7,
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={handleExpand}
+          title="Expand (double-click card)"
         >
-          &#x2807;&#x2807;
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+          </svg>
+        </button>
+        <button
+          data-no-expand
+          className="shrink-0 select-none flex items-center justify-center"
+          style={{
+            color: "#6B7280",
+            cursor: layoutMode === "free" ? "grab" : "default",
+            opacity: layoutMode === "free" ? 1 : 0.3,
+          }}
+          onPointerDown={handleGripPointerDown}
+          title={layoutMode === "free" ? "Drag to move" : "Dragging disabled"}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="9" cy="12" r="1" /><circle cx="9" cy="5" r="1" /><circle cx="9" cy="19" r="1" />
+            <circle cx="15" cy="12" r="1" /><circle cx="15" cy="5" r="1" /><circle cx="15" cy="19" r="1" />
+          </svg>
         </button>
       </div>
 
-      {/* ===== Body: terminal preview ===== */}
-      {!isMini && (
-        <div className="flex-1 px-3 py-2 overflow-hidden min-h-0">
-          <div className="font-mono text-xs text-white/40 leading-relaxed select-text">
-            Terminal content here
-          </div>
+      {/* ===== Terminal area (xterm.js, read-only in card view) ===== */}
+      {showTerminal && (
+        <div
+          className="flex-1 min-h-0 overflow-hidden"
+          style={{ padding: "10px 14px 6px 14px" }}
+        >
+          <XtermTerminal instanceId={card.instance_id} content={demoContent} />
         </div>
       )}
 
-      {/* ===== Footer ===== */}
-      {!isMini && (
-        <div className="glass-header flex items-center justify-between px-3 py-1.5 shrink-0">
-          <span className="font-mono text-[10px] text-white/30">
-            {formattedTime}
-          </span>
-          <span className="font-mono text-[10px] text-white/30">
-            {fileCount} files
-          </span>
+      {/* ===== Footer (32px) ===== */}
+      {showFooter && (
+        <div
+          className="flex items-center shrink-0"
+          style={{
+            height: FOOTER_H, padding: "0 16px", gap: 8,
+            background: "rgba(255,255,255,0.024)",
+            borderTop: "1px solid rgba(255,255,255,0.082)",
+          }}
+        >
+          {footerInfo.time && (
+            <span style={{ fontFamily: "'JetBrains Mono Variable',monospace", fontSize: 10, color: "#6B7280" }}>
+              {footerInfo.time}
+            </span>
+          )}
+          <div className="flex-1" />
+          {footerInfo.detail && (
+            <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 10, color: "#6B7280" }}>
+              {footerInfo.detail}
+            </span>
+          )}
         </div>
       )}
+
+      {/* ===== Resize handle (bottom-right corner) ===== */}
+      <div
+        data-no-expand
+        className="absolute"
+        style={{
+          right: 0, bottom: 0, width: 16, height: 16, cursor: "nwse-resize",
+        }}
+        onPointerDown={handleResizePointerDown}
+      >
+        <svg
+          width="10" height="10" viewBox="0 0 10 10"
+          style={{ position: "absolute", right: 3, bottom: 3, opacity: 0.25 }}
+        >
+          <path d="M9 1L1 9M9 5L5 9M9 9L9 9" stroke="#fff" strokeWidth="1.2" strokeLinecap="round" />
+        </svg>
+      </div>
+      </div>
+      {/* ===== BACK FACE (3D flipped view) =====
+          data-no-expand so clicks inside the expanded view (xterm text
+          selection, buttons, etc.) do NOT trigger the card-level double-
+          click toggle. Use the Close/Minimize buttons or ESC to exit. */}
+      {showBack && (
+        <div
+          data-no-expand
+          className="absolute inset-0 overflow-hidden"
+          style={{
+            backfaceVisibility: "hidden",
+            WebkitBackfaceVisibility: "hidden",
+            transform: "rotateY(180deg)",
+            borderRadius: 12,
+          }}
+        >
+          <ExpandedAgentCard instanceId={card.instance_id} embedded />
+        </div>
+      )}
+      </div>
     </div>
   );
 }
 
-// ===== Helpers =====
-
-/**
- * Formats a Unix timestamp (ms) as a relative time string.
- */
-function formatRelativeTime(timestamp: number): string {
-  if (timestamp === 0) return "---";
-
-  const now = Date.now();
-  const diffMs = now - timestamp;
-
-  if (diffMs < 0) return "just now";
-  if (diffMs < 60_000) return `${Math.floor(diffMs / 1000)}s ago`;
-  if (diffMs < 3_600_000) return `${Math.floor(diffMs / 60_000)}m ago`;
-  if (diffMs < 86_400_000) return `${Math.floor(diffMs / 3_600_000)}h ago`;
-  return `${Math.floor(diffMs / 86_400_000)}d ago`;
-}
-
 export { AgentCard };
 export type { AgentCardProps };
-export { SIZE_SLOT_MAP, SIZE_SLOT_ORDER, detectSizeSlot };

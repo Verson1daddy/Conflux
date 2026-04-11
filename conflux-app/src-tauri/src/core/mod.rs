@@ -8,6 +8,9 @@ pub mod types;
 /// 统一事件类型（ConfluxEvent enum 及事件优先级映射）
 pub mod event;
 
+/// 事件派发到 Tauri 前端（通道路由）
+pub mod event_emit;
+
 /// 统一错误类型（ConfluxError enum）
 pub mod error;
 

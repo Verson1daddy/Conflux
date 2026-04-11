@@ -13,17 +13,15 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "label": "island",
-        "title": "Conflux Island",
-        "width": 400,
-        "height": 48,
-        "decorations": false,
-        "transparent": true,
-        "alwaysOnTop": true,
-        "resizable": false,
-        "center": true,
-        "y": 8,
-        "skipTaskbar": true
+        "label": "main",
+        "title": "Conflux",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1024,
+        "minHeight": 640,
+        "decorations": true,
+        "resizable": true,
+        "center": true
       }
     ],
     "security": {

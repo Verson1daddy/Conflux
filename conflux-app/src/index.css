@@ -41,6 +41,197 @@ body {
   background: linear-gradient(180deg, #0D1117 0%, #111820 50%, #0A0F15 100%);
 }
 
+/* Sidebar pin icon — hidden by default, fades in when hovering the agent row */
+.sidebar-pin {
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  pointer-events: none;
+}
+.sidebar-agent-row:hover .sidebar-pin {
+  opacity: 0.4;
+  pointer-events: auto;
+}
+.sidebar-agent-row:hover .sidebar-pin.pinned {
+  opacity: 1;
+}
+.sidebar-pin:hover {
+  opacity: 0.9 !important;
+}
+.sidebar-pin.pinned:hover {
+  opacity: 1 !important;
+}
+
+/* Capsule amber glow pulse (notification state) */
+@keyframes capsule-pulse {
+  0%, 100% {
+    box-shadow: 0 0 18px rgba(255, 184, 0, 0.32), 0 1px 3px rgba(0, 0, 0, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 28px rgba(255, 184, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4);
+  }
+}
+.capsule-pulse {
+  animation: capsule-pulse 1.4s ease-in-out infinite;
+}
+
+/* Notification tray enter animation */
+@keyframes tray-enter {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+.tray-enter {
+  animation: tray-enter 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Notification card success flash (green) on reply sent — then slide right + fade */
+@keyframes notif-flash-success {
+  0% {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.082);
+    opacity: 1;
+    transform: translateX(0) scale(1);
+    max-height: 400px;
+    margin-bottom: 0;
+  }
+  25% {
+    background: rgba(52, 199, 89, 0.28);
+    border-color: rgba(52, 199, 89, 0.65);
+    transform: translateX(0) scale(1.01);
+  }
+  55% {
+    background: rgba(52, 199, 89, 0.2);
+    border-color: rgba(52, 199, 89, 0.4);
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+  100% {
+    background: rgba(52, 199, 89, 0);
+    border-color: rgba(52, 199, 89, 0);
+    opacity: 0;
+    transform: translateX(48px) scale(0.96);
+    max-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    margin-bottom: -8px;
+  }
+}
+.notif-flash-success {
+  animation: notif-flash-success 0.36s cubic-bezier(0.32, 0, 0.32, 1) forwards;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* Notification card dismiss animation — slide left + fade, no green tint */
+@keyframes notif-flash-dismiss {
+  0% {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+    max-height: 400px;
+    margin-bottom: 0;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(-48px) scale(0.96);
+    max-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    margin-bottom: -8px;
+    border-color: transparent;
+  }
+}
+.notif-flash-dismiss {
+  animation: notif-flash-dismiss 0.36s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* Send-to panel — drop-in from above */
+@keyframes sendto-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-16px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.sendto-enter {
+  animation: sendto-enter 0.26s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Expanded agent card — scrim fade + panel slide-in from right */
+@keyframes expanded-scrim-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.expanded-enter {
+  animation: expanded-scrim-fade 0.22s ease-out;
+}
+@keyframes expanded-panel-slide {
+  from {
+    opacity: 0;
+    transform: translateX(32px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+.expanded-panel-enter {
+  animation: expanded-panel-slide 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Discussion panel — slide in from right edge */
+@keyframes discussion-panel-enter {
+  from {
+    opacity: 0;
+    transform: translateX(480px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.discussion-panel-enter {
+  animation: discussion-panel-enter 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Tailwind arbitrary z-index for DiscussionPanel (sits above ExpandedAgentCard
+   z-40 but below modal stack z-50: SendTo / Settings / Search / AddAgent). */
+.z-45 {
+  z-index: 45;
+}
+
+/* xterm.js overrides — match Conflux glass terminal look */
+.xterm {
+  /* Allow mouse text selection in card preview mode */
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  padding: 0;
+}
+.xterm .xterm-viewport,
+.xterm .xterm-screen {
+  background-color: transparent !important;
+}
+.xterm .xterm-viewport::-webkit-scrollbar {
+  width: 4px;
+}
+.xterm .xterm-viewport::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 2px;
+}
+.xterm.focus .xterm-cursor-layer,
+.xterm:focus .xterm-cursor-layer {
+  opacity: 1;
+}
+
 /* Scrollbar styling for dark theme */
 ::-webkit-scrollbar {
   width: 6px;

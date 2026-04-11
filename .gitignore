@@ -17,8 +17,25 @@ dist/
 build/
 .next/
 
+# Rust / Cargo build artifacts
+target/
+**/target/
+
+# Tauri 2 generated schemas (per-build)
+conflux-app/src-tauri/gen/schemas/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Windows bash crash dumps
+*.stackdump
+
 # Pencil MCP temp
 *.pen.tmp
 
 # Shared design systems (junction link)
 design-systems/
+
+# auto-feed 两段式 pending 目录（后台 agent 抓取数据暂存，主会话处理后清空）
+.wiki-feed-pending/

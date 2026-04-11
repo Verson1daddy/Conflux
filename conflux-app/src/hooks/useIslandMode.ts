@@ -2,7 +2,7 @@
 // 负责：初始化模式、监听窗口 resize 自动切换、监听后端事件更新 store
 // 所有事件监听在 useEffect 中注册，组件卸载时自动清理
 
-import { useEffect, useCallback, useRef } from "react";
+import { useEffect, useCallback } from "react";
 import { useIslandStore } from "@/stores/islandStore";
 import {
   getIslandMode,
@@ -16,10 +16,7 @@ import {
 } from "@/lib/event-listener";
 import type { IslandMode, NotificationLevel } from "@/types";
 
-/** 悬浮球自动切换的窗口宽度阈值（px） */
-const FLOAT_BALL_BREAKPOINT = 1200;
-
-/** 生成唯一通知 ID */
+/** 生成唯一通知 ID（非权限类通知使用） */
 function generateNotificationId(): string {
   return `notif-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -41,11 +38,6 @@ export function useIslandMode() {
   const addNotification = useIslandStore((s) => s.addNotification);
   const addPermissionRequest = useIslandStore((s) => s.addPermissionRequest);
 
-  // 保留用户手动选择的模式（resize 恢复时使用）
-  const userPreferredModeRef = useRef<IslandMode>("top_island");
-  // 标记当前是否因为窗口过窄处于 float_ball 模式
-  const isAutoFloatRef = useRef(false);
-
   // ===== 初始化：获取后端当前模式 =====
   useEffect(() => {
     let cancelled = false;
@@ -54,7 +46,6 @@ export function useIslandMode() {
         const backendMode = await getIslandMode();
         if (!cancelled) {
           setMode(backendMode);
-          userPreferredModeRef.current = backendMode;
         }
       } catch {
         // 后端不可用时保持默认 top_island
@@ -67,36 +58,10 @@ export function useIslandMode() {
   }, [setMode]);
 
   // ===== 窗口 resize 监听 =====
-  useEffect(() => {
-    function handleResize() {
-      const width = window.innerWidth;
-      if (width < FLOAT_BALL_BREAKPOINT) {
-        if (!isAutoFloatRef.current) {
-          isAutoFloatRef.current = true;
-          setMode("float_ball");
-          switchIslandMode("float_ball").catch(() => {
-            // 后端切换失败时 store 已更新，不回退
-          });
-        }
-      } else {
-        if (isAutoFloatRef.current) {
-          isAutoFloatRef.current = false;
-          const restoreMode = userPreferredModeRef.current;
-          setMode(restoreMode);
-          switchIslandMode(restoreMode).catch(() => {
-            // 后端切换失败时 store 已更新，不回退
-          });
-        }
-      }
-    }
-
-    // 初次检测
-    handleResize();
-    window.addEventListener("resize", handleResize);
-    return () => {
-      window.removeEventListener("resize", handleResize);
-    };
-  }, [setMode]);
+  // 注意：自动切换到 float_ball 的逻辑仅适用于 workspace 窗口。
+  // island 窗口本身尺寸由后端 switch_island_mode 管理，
+  // 其 innerWidth 始终小于 breakpoint，不应触发自动切换。
+  // 此逻辑已禁用，模式切换完全由用户手动触发。
 
   // ===== 事件监听：PermissionRequested =====
   useEffect(() => {
@@ -104,9 +69,9 @@ export function useIslandMode() {
     onPermissionRequested((payload) => {
       // 添加到权限请求队列
       addPermissionRequest(payload.request);
-      // 同时生成一条 permission_required 通知
+      // 通知 id 复用 permission request id，便于 Sidebar 里的 Allow/Deny 按钮直接定位
       addNotification({
-        id: generateNotificationId(),
+        id: payload.request.id,
         level: "permission_required" as NotificationLevel,
         source_instance_id: payload.instance_id,
         source_adapter_name: "",
@@ -184,8 +149,6 @@ export function useIslandMode() {
   // ===== switchMode：用户手动切换模式 =====
   const switchMode = useCallback(
     async (newMode: IslandMode) => {
-      userPreferredModeRef.current = newMode;
-      isAutoFloatRef.current = false;
       setMode(newMode);
       try {
         await switchIslandMode(newMode);

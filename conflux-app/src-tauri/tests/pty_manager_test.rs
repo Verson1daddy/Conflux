@@ -58,6 +58,8 @@ fn test_spawn_returns_instance_id() {
         &test_working_dir(),
         "test-adapter",
         "Test Adapter",
+        None,
+        None,
     );
 
     assert!(result.is_ok(), "spawn 应该成功: {:?}", result.err());
@@ -85,6 +87,8 @@ fn test_spawn_creates_instance_in_list() {
             &test_working_dir(),
             "test-adapter",
             "Test Adapter",
+            None,
+            None,
         )
         .unwrap();
 
@@ -107,6 +111,8 @@ fn test_multiple_spawns() {
             &test_working_dir(),
             "adapter-1",
             "Adapter 1",
+            None,
+            None,
         )
         .unwrap();
     let id2 = manager
@@ -116,6 +122,8 @@ fn test_multiple_spawns() {
             &test_working_dir(),
             "adapter-2",
             "Adapter 2",
+            None,
+            None,
         )
         .unwrap();
 
@@ -141,6 +149,8 @@ fn test_kill_removes_instance() {
             &test_working_dir(),
             "test-adapter",
             "Test Adapter",
+            None,
+            None,
         )
         .unwrap();
 
@@ -179,7 +189,15 @@ fn test_inject_stdin_to_valid_instance() {
     // 启动一个持久的交互式进程（不是立即退出的 echo）
     let cmd = test_command();
     let instance_id = manager
-        .spawn(cmd, &[], &test_working_dir(), "test-adapter", "Test Adapter")
+        .spawn(
+            cmd,
+            &[],
+            &test_working_dir(),
+            "test-adapter",
+            "Test Adapter",
+            None,
+            None,
+        )
         .unwrap();
 
     // 短暂等待进程启动
@@ -222,6 +240,8 @@ fn test_get_instance_state() {
             &test_working_dir(),
             "my-adapter",
             "My Adapter",
+            None,
+            None,
         )
         .unwrap();
 
@@ -254,6 +274,8 @@ fn test_update_status() {
             &test_working_dir(),
             "test-adapter",
             "Test Adapter",
+            None,
+            None,
         )
         .unwrap();
 
@@ -298,6 +320,8 @@ fn test_get_buffer() {
             &test_working_dir(),
             "test-adapter",
             "Test Adapter",
+            None,
+            None,
         )
         .unwrap();
 
@@ -342,6 +366,8 @@ fn test_resize() {
             &test_working_dir(),
             "test-adapter",
             "Test Adapter",
+            None,
+            None,
         )
         .unwrap();
 
@@ -376,6 +402,8 @@ fn test_output_captured_in_buffer() {
             &test_working_dir(),
             "test-adapter",
             "Test Adapter",
+            None,
+            None,
         )
         .unwrap();
 
@@ -418,6 +446,8 @@ fn test_spawn_invalid_command() {
         &test_working_dir(),
         "test-adapter",
         "Test Adapter",
+        None,
+        None,
     );
 
     // 在某些系统上，spawn 可能不会立即失败（shell 会启动然后报 command not found）。

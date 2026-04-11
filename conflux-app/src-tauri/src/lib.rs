@@ -108,6 +108,9 @@ pub fn run() {
             }
 
             app.manage(app_state);
+
+            // DevTools: 按 F12 手动打开（自动打开增加 ~500ms 启动延迟）
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -127,7 +127,7 @@ function LayoutManager({ onAutoPack }: LayoutManagerProps) {
 
   return (
     <div
-      className="absolute top-4 right-4 z-50 flex flex-col items-end gap-2"
+      className="absolute top-4 right-4 z-20 flex flex-col items-end gap-2"
       ref={dropdownRef}
     >
       {/* ===== Mode toggle bar ===== */}

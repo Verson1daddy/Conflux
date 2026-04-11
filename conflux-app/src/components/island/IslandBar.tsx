@@ -5,7 +5,6 @@
 
 import { type FC, useCallback, useState } from "react";
 import { useIslandMode } from "@/hooks/useIslandMode";
-import { useIslandStore } from "@/stores/islandStore";
 import { TopIsland } from "./TopIsland";
 import { Sidebar } from "./Sidebar";
 import { FloatBall } from "./FloatBall";
@@ -28,30 +27,30 @@ import { FloatBall } from "./FloatBall";
 const IslandBar: FC = () => {
   const { mode, switchMode } = useIslandMode();
 
-  // 侧边栏可见性（用于 float_ball 模式下的 overlay 和 top_island 切换）
+  // 侧边栏可见性
   const [sidebarVisible, setSidebarVisible] = useState(false);
+  // 记录展开侧边栏前的模式，收起时恢复
+  const [previousMode, setPreviousMode] = useState<typeof mode>("top_island");
 
   // TopIsland 点击 → 展开侧边栏
   const handleTopIslandExpand = useCallback(() => {
+    setPreviousMode("top_island");
     switchMode("sidebar");
     setSidebarVisible(true);
   }, [switchMode]);
 
-  // FloatBall 点击 → overlay 打开侧边栏
+  // FloatBall 点击 → 切换到侧边栏模式（必须调用后端以调整窗口大小）
   const handleFloatBallExpand = useCallback(() => {
+    setPreviousMode("float_ball");
+    switchMode("sidebar");
     setSidebarVisible(true);
-  }, []);
+  }, [switchMode]);
 
-  // Sidebar 收起 → 回到之前的模式
+  // Sidebar 收起 → 恢复到之前的模式
   const handleSidebarCollapse = useCallback(() => {
     setSidebarVisible(false);
-    // 如果当前 store mode 是 sidebar，切换回 top_island
-    const currentMode = useIslandStore.getState().mode;
-    if (currentMode === "sidebar") {
-      switchMode("top_island");
-    }
-    // 如果是 float_ball 模式下打开的 overlay，不改变 mode
-  }, [switchMode]);
+    switchMode(previousMode);
+  }, [switchMode, previousMode]);
 
   return (
     <>

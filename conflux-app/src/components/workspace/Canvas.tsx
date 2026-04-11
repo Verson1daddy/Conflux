@@ -1,127 +1,136 @@
 // ===== Canvas Component =====
-// The main workspace canvas container. Provides:
-// - Dark gradient background (canvas-gradient)
-// - Mouse wheel zoom (0.25x - 3x)
-// - Pan via middle-click drag or Space+left-click drag
-// - Renders AgentCards at their layout positions
-// - Contains LayoutManager toolbar
+// The main workspace canvas container.
+// Performance: zoom/pan use ref + direct DOM transform; store commits only on idle.
 
-import { useCallback, useRef, useState, useEffect } from "react";
+import { useCallback, useRef, useEffect } from "react";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { useAgentStore } from "@/stores/agentStore";
 import { useWorkspaceLayout } from "@/hooks/useWorkspaceLayout";
 import { AgentCard } from "./AgentCard";
 import { LayoutManager } from "./LayoutManager";
 import type { AgentStatus, AgentInstanceInfo } from "@/types";
 
-// ===== Constants =====
-
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 3;
 const ZOOM_SENSITIVITY = 0.001;
 
-// ===== Props =====
-
 interface CanvasProps {
-  /** Map of instance_id -> AgentInstanceInfo for rendering card details */
   agents: Map<string, AgentInstanceInfo>;
-  /** Map of instance_id -> current AgentStatus */
   agentStatuses: Map<string, AgentStatus>;
+  /** When true, the expanded card is rendered in-place via AgentCard's 3D
+   *  flip rather than as an overlay. App.tsx decides based on window
+   *  fullscreen state. */
+  isFullscreen: boolean;
 }
 
-/**
- * Canvas is the root workspace container.
- *
- * Interactions:
- * - Scroll wheel: zoom in/out (centered on cursor)
- * - Middle mouse drag: pan the canvas
- * - Space + left mouse drag: pan the canvas
- * - Click on empty space: deselect cards
- *
- * Renders all AgentCards within a transformed (zoom + pan) coordinate space.
- * The LayoutManager toolbar floats above the canvas in screen-space.
- */
-function Canvas({ agents, agentStatuses }: CanvasProps) {
-  const { cards, layoutMode, zoom, pan, selectedCardId, setZoom, setPan, selectCard } =
-    useWorkspaceStore();
+function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
+  const expandedCardId = useAgentStore((s) => s.expandedCardId);
+  const cards = useWorkspaceStore((s) => s.cards);
+  const layoutMode = useWorkspaceStore((s) => s.layoutMode);
+  const selectedCardId = useWorkspaceStore((s) => s.selectedCardId);
+  const selectCard = useWorkspaceStore((s) => s.selectCard);
+  const storeZoom = useWorkspaceStore((s) => s.zoom);
+  const storePan = useWorkspaceStore((s) => s.pan);
+  const setZoom = useWorkspaceStore((s) => s.setZoom);
+  const setPan = useWorkspaceStore((s) => s.setPan);
 
   const { triggerAutoPack } = useWorkspaceLayout();
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const transformLayerRef = useRef<HTMLDivElement>(null);
+  const zoomIndicatorRef = useRef<HTMLSpanElement>(null);
 
-  // ===== Pan state =====
-  const panDragRef = useRef<{
-    startMouseX: number;
-    startMouseY: number;
-    startPanX: number;
-    startPanY: number;
-    pointerId: number;
-  } | null>(null);
+  // Live zoom/pan refs — mutated during interaction, no re-render
+  const liveZoom = useRef(storeZoom);
+  const livePan = useRef({ x: storePan.x, y: storePan.y });
+  const spaceHeldRef = useRef(false);
+  const commitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const [isPanning, setIsPanning] = useState(false);
-  const [spaceHeld, setSpaceHeld] = useState(false);
+  // Sync refs from store on external changes
+  useEffect(() => { liveZoom.current = storeZoom; }, [storeZoom]);
+  useEffect(() => { livePan.current = { x: storePan.x, y: storePan.y }; }, [storePan.x, storePan.y]);
+
+  // Direct DOM update for transform layer
+  const applyTransform = useCallback(() => {
+    const el = transformLayerRef.current;
+    if (el) {
+      el.style.transform = `translate(${livePan.current.x}px,${livePan.current.y}px) scale(${liveZoom.current})`;
+    }
+    const zi = zoomIndicatorRef.current;
+    if (zi) {
+      zi.textContent = `${Math.round(liveZoom.current * 100)}%`;
+    }
+  }, []);
+
+  // Debounced commit to store (for selectors that depend on zoom/pan)
+  const scheduleCommit = useCallback(() => {
+    if (commitTimer.current) clearTimeout(commitTimer.current);
+    commitTimer.current = setTimeout(() => {
+      setZoom(liveZoom.current);
+      setPan({ ...livePan.current });
+    }, 100);
+  }, [setZoom, setPan]);
 
   // ===== Space key tracking =====
   useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
+    const onKeyDown = (e: KeyboardEvent) => {
       if (e.code === "Space" && !e.repeat) {
-        // Prevent page scroll
         e.preventDefault();
-        setSpaceHeld(true);
+        spaceHeldRef.current = true;
+        containerRef.current?.classList.add("cursor-grab");
       }
-    }
-    function handleKeyUp(e: KeyboardEvent) {
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
       if (e.code === "Space") {
-        setSpaceHeld(false);
+        spaceHeldRef.current = false;
+        containerRef.current?.classList.remove("cursor-grab", "cursor-grabbing");
       }
-    }
-
-    window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("keyup", handleKeyUp);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
     return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
     };
   }, []);
 
-  // ===== Wheel zoom =====
-  const handleWheel = useCallback(
-    (e: React.WheelEvent) => {
+  // ===== Wheel zoom (native event for passive:false) =====
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const onWheel = (e: WheelEvent) => {
+      // Zoom only when Ctrl/⌘ is held (mac touchpad pinch emits ctrlKey=true).
+      // Otherwise let wheel bubble naturally so xterm / panels can scroll.
+      if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
-
-      const rect = containerRef.current?.getBoundingClientRect();
-      if (!rect) return;
-
-      // Cursor position relative to container
+      const rect = el.getBoundingClientRect();
       const cursorX = e.clientX - rect.left;
       const cursorY = e.clientY - rect.top;
-
-      // Current world position under cursor
-      const worldX = (cursorX - pan.x) / zoom;
-      const worldY = (cursorY - pan.y) / zoom;
-
-      // Compute new zoom
+      const worldX = (cursorX - livePan.current.x) / liveZoom.current;
+      const worldY = (cursorY - livePan.current.y) / liveZoom.current;
       const delta = -e.deltaY * ZOOM_SENSITIVITY;
-      const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom * (1 + delta)));
+      const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, liveZoom.current * (1 + delta)));
+      liveZoom.current = newZoom;
+      livePan.current = {
+        x: cursorX - worldX * newZoom,
+        y: cursorY - worldY * newZoom,
+      };
+      applyTransform();
+      scheduleCommit();
+    };
 
-      // Adjust pan so the world point under cursor stays fixed
-      const newPanX = cursorX - worldX * newZoom;
-      const newPanY = cursorY - worldY * newZoom;
-
-      setZoom(newZoom);
-      setPan({ x: newPanX, y: newPanY });
-    },
-    [zoom, pan, setZoom, setPan]
-  );
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [applyTransform, scheduleCommit]);
 
   // ===== Pan start =====
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
-      // Middle button (1) or Space+Left button (0)
-      const isMiddleButton = e.button === 1;
-      const isSpaceLeftButton = e.button === 0 && spaceHeld;
+      const isMiddle = e.button === 1;
+      const isSpaceLeft = e.button === 0 && spaceHeldRef.current;
 
-      if (!isMiddleButton && !isSpaceLeftButton) {
-        // Left click on empty canvas space: deselect card
+      if (!isMiddle && !isSpaceLeft) {
         if (e.button === 0 && e.target === containerRef.current) {
           selectCard(null);
         }
@@ -130,78 +139,51 @@ function Canvas({ agents, agentStatuses }: CanvasProps) {
 
       e.preventDefault();
       (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      containerRef.current?.classList.add("cursor-grabbing");
 
-      panDragRef.current = {
-        startMouseX: e.clientX,
-        startMouseY: e.clientY,
-        startPanX: pan.x,
-        startPanY: pan.y,
-        pointerId: e.pointerId,
+      const startMX = e.clientX;
+      const startMY = e.clientY;
+      const startPX = livePan.current.x;
+      const startPY = livePan.current.y;
+
+      const onMove = (me: PointerEvent) => {
+        livePan.current = {
+          x: startPX + (me.clientX - startMX),
+          y: startPY + (me.clientY - startMY),
+        };
+        applyTransform();
       };
-      setIsPanning(true);
+
+      const onUp = (ue: PointerEvent) => {
+        try { (ue.target as HTMLElement).releasePointerCapture(ue.pointerId); } catch { /* ok */ }
+        containerRef.current?.classList.remove("cursor-grabbing");
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        setPan({ ...livePan.current });
+      };
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
     },
-    [spaceHeld, pan, selectCard]
+    [selectCard, setPan, applyTransform]
   );
-
-  // ===== Pan move =====
-  const handlePointerMove = useCallback(
-    (e: React.PointerEvent) => {
-      if (!panDragRef.current) return;
-
-      const dx = e.clientX - panDragRef.current.startMouseX;
-      const dy = e.clientY - panDragRef.current.startMouseY;
-
-      setPan({
-        x: panDragRef.current.startPanX + dx,
-        y: panDragRef.current.startPanY + dy,
-      });
-    },
-    [setPan]
-  );
-
-  // ===== Pan end =====
-  const handlePointerUp = useCallback(
-    (e: React.PointerEvent) => {
-      if (!panDragRef.current) return;
-
-      try {
-        (e.target as HTMLElement).releasePointerCapture(panDragRef.current.pointerId);
-      } catch {
-        // Pointer capture may have already been released
-      }
-      panDragRef.current = null;
-      setIsPanning(false);
-    },
-    []
-  );
-
-  // ===== Cursor style =====
-  const cursorClass = isPanning
-    ? "cursor-grabbing"
-    : spaceHeld
-      ? "cursor-grab"
-      : "";
 
   return (
     <div
       ref={containerRef}
-      className={[
-        "canvas-gradient relative w-full h-full overflow-hidden",
-        cursorClass,
-      ]
-        .filter(Boolean)
-        .join(" ")}
-      onWheel={handleWheel}
+      className="relative w-full h-full overflow-hidden rounded-xl"
+      style={{
+        background: "#050507",
+        border: "1px solid rgba(255,255,255,0.082)",
+      }}
       onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
     >
-      {/* ===== Transformed canvas layer ===== */}
+      {/* Transformed canvas layer */}
       <div
+        ref={transformLayerRef}
         className="absolute top-0 left-0 origin-top-left"
         style={{
-          transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-          // Allow transform to extend beyond container
+          transform: `translate(${storePan.x}px,${storePan.y}px) scale(${storeZoom})`,
           width: 0,
           height: 0,
         }}
@@ -212,6 +194,12 @@ function Canvas({ agents, agentStatuses }: CanvasProps) {
           const agentName = agentInfo?.adapter_name ?? "Unknown Agent";
           const adapterBadge = agentInfo?.adapter_id ?? "---";
 
+          const isFlipped =
+            isFullscreen && expandedCardId === card.instance_id;
+          const isDimmed =
+            isFullscreen &&
+            expandedCardId !== null &&
+            expandedCardId !== card.instance_id;
           return (
             <AgentCard
               key={card.instance_id}
@@ -221,21 +209,28 @@ function Canvas({ agents, agentStatuses }: CanvasProps) {
               status={agentStatus}
               isSelected={selectedCardId === card.instance_id}
               layoutMode={layoutMode}
-              zoom={zoom}
+              zoom={liveZoom.current}
               fileCount={0}
               lastActivity={agentInfo?.created_at ?? 0}
+              isFlipped={isFlipped}
+              isDimmed={isDimmed}
             />
           );
         })}
       </div>
 
-      {/* ===== Layout manager toolbar (screen-space overlay) ===== */}
       <LayoutManager onAutoPack={triggerAutoPack} />
 
-      {/* ===== Zoom indicator ===== */}
-      <div className="absolute bottom-4 left-4 z-50">
-        <span className="glass rounded-md px-2 py-1 text-[10px] font-mono text-white/40">
-          {Math.round(zoom * 100)}%
+      {/* Zoom indicator */}
+      <div className="absolute bottom-4 left-4 z-20 flex items-center gap-2">
+        <span
+          ref={zoomIndicatorRef}
+          className="glass rounded-md px-2 py-1 text-[10px] font-mono text-white/40"
+        >
+          {Math.round(storeZoom * 100)}%
+        </span>
+        <span className="text-[10px] font-mono text-white/25 select-none">
+          Ctrl+Scroll to zoom
         </span>
       </div>
     </div>

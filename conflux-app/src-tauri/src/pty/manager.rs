@@ -24,13 +24,23 @@ use std::io::Write as IoWrite;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use parking_lot::RwLock;
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize, PtySystem, SlavePty};
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
+use crate::adapter::traits::AgentAdapter;
 use crate::core::{
-    AdapterId, AgentInstanceInfo, AgentStateDetail, AgentStatus, ConfluxError, InstanceId,
+    AdapterId, AgentInstanceInfo, AgentStateDetail, AgentStatus, ConfluxError, ConfluxEvent,
+    InstanceId,
 };
 use crate::pty::buffer::{OutputBuffer, DEFAULT_BUFFER_CAPACITY};
+use crate::pty::parser::PtyOutputParser;
+
+/// 事件分发器类型别名——由 PtyManager::spawn 的调用者（生产代码）传入，
+/// 用于把 PTY 读取线程解析出来的 ConfluxEvent 派发到 Tauri 前端。
+/// 测试场景传 `None` 跳过事件派发，只写 OutputBuffer。
+pub type EventDispatcher = Arc<dyn Fn(&ConfluxEvent) + Send + Sync>;
 
 /// 默认 PTY 终端尺寸：120 列 x 30 行
 const DEFAULT_PTY_COLS: u16 = 120;
@@ -55,8 +65,8 @@ pub struct PtyManager {
 struct PtyProcess {
     /// portable-pty 的 child 进程句柄
     child: Box<dyn portable_pty::Child + Send + Sync>,
-    /// stdin writer（用于 inject_stdin）
-    writer: Box<dyn IoWrite + Send>,
+    /// stdin writer（用于 inject_stdin）— Mutex 包裹以满足 Sync 要求
+    writer: parking_lot::Mutex<Box<dyn IoWrite + Send>>,
     /// 输出缓冲区（与读取线程共享）
     buffer: Arc<RwLock<OutputBuffer>>,
     /// 创建时间（Unix 时间戳 ms）
@@ -71,8 +81,8 @@ struct PtyProcess {
     status: AgentStatus,
     /// PTY 尺寸
     pty_size: PtySize,
-    /// master pty handle（用于 resize 操作）
-    master_pty: Box<dyn portable_pty::MasterPty + Send>,
+    /// master pty handle（用于 resize 操作）— Mutex 包裹以满足 Sync 要求
+    master_pty: parking_lot::Mutex<Box<dyn portable_pty::MasterPty + Send>>,
 }
 
 /// 获取当前时间戳（Unix 毫秒）
@@ -110,6 +120,15 @@ impl PtyManager {
     /// 3. `CommandBuilder` 构建命令（设置工作目录和参数）
     /// 4. `slave.spawn_command()` 在 slave 上执行
     /// 5. 启动后台线程读取 master 输出 -> OutputBuffer
+    ///
+    /// # 可选事件流
+    /// - `adapter`: 当传入 Some 时，读取线程会创建 PtyOutputParser 使用
+    ///   该 adapter 做行级解析，产生 ConfluxEvent（AgentStatusChanged /
+    ///   TaskCompleted / PermissionRequested / SubAgent 等）。
+    /// - `dispatch`: 当传入 Some 时，解析出的事件会通过此回调派发（生产代
+    ///   码里通常是 `emit_conflux_event` 的闭包）。同时每次读取都会 emit
+    ///   一条 PtyOutput 事件（base64 原始字节），供 XtermTerminal 订阅。
+    /// - 两个参数都为 None 时（测试场景），spawn 行为回退到仅写 OutputBuffer。
     pub fn spawn(
         &self,
         command: &str,
@@ -117,6 +136,8 @@ impl PtyManager {
         working_dir: &str,
         adapter_id: &str,
         adapter_name: &str,
+        adapter: Option<Arc<dyn AgentAdapter>>,
+        dispatch: Option<EventDispatcher>,
     ) -> Result<String, ConfluxError> {
         let instance_id = uuid::Uuid::new_v4().to_string();
         log::debug!(
@@ -170,10 +191,10 @@ impl PtyManager {
             }
         })?;
 
-        let writer = pair.master.try_clone_writer().map_err(|e| {
-            log::error!("PTY try_clone_writer 失败: {}", e);
+        let writer = pair.master.take_writer().map_err(|e| {
+            log::error!("PTY take_writer 失败: {}", e);
             ConfluxError::PtyError {
-                message: format!("try_clone_writer 失败: {}", e),
+                message: format!("take_writer 失败: {}", e),
             }
         })?;
 
@@ -181,13 +202,31 @@ impl PtyManager {
         let buffer = Arc::new(RwLock::new(OutputBuffer::new(DEFAULT_BUFFER_CAPACITY)));
         let buffer_clone = Arc::clone(&buffer);
         let thread_instance_id = instance_id.clone();
+        let thread_adapter_name = adapter_name.to_string();
 
         // 7. 启动后台线程持续读取 PTY 输出
+        //
+        // 生产路径：如果同时提供 adapter + dispatch，线程内初始化 PtyOutputParser，
+        // 把每批原始字节 feed 进去 → 取出 ConfluxEvent → 通过 dispatch 回调推给
+        // Tauri 前端；同时额外 emit 一条 PtyOutput 事件（base64 编码原始字节），
+        // XtermTerminal 的 subscribeToPty 模式会订阅它逐块 write。
+        // 测试路径：adapter/dispatch 任一为 None 时只写 OutputBuffer（旧行为）。
         std::thread::spawn(move || {
             log::debug!(
                 "PTY 输出读取线程启动: instance_id={}",
                 thread_instance_id
             );
+
+            // 构造可选 parser（adapter + dispatch 都 Some 时才启用）
+            let mut parser: Option<PtyOutputParser> = match &adapter {
+                Some(adapter_arc) if dispatch.is_some() => Some(PtyOutputParser::new(
+                    InstanceId(thread_instance_id.clone()),
+                    Arc::clone(adapter_arc),
+                    &thread_adapter_name,
+                )),
+                _ => None,
+            };
+
             let mut chunk = vec![0u8; READ_CHUNK_SIZE];
             loop {
                 match reader.read(&mut chunk) {
@@ -200,8 +239,31 @@ impl PtyManager {
                         break;
                     }
                     Ok(n) => {
-                        let mut buf = buffer_clone.write();
-                        buf.write(&chunk[..n]);
+                        {
+                            let mut buf = buffer_clone.write();
+                            buf.write(&chunk[..n]);
+                        }
+
+                        // 事件派发——仅当同时拥有 parser + dispatch 时
+                        if let (Some(parser_ref), Some(dispatch_ref)) =
+                            (parser.as_mut(), dispatch.as_ref())
+                        {
+                            // 1. 先派发原始 PTY 输出（XtermTerminal 的 subscribeToPty 使用）
+                            let encoded = BASE64.encode(&chunk[..n]);
+                            let now_ms = now_millis();
+                            let pty_output_event = ConfluxEvent::PtyOutput {
+                                instance_id: InstanceId(thread_instance_id.clone()),
+                                data: encoded,
+                                timestamp: now_ms,
+                            };
+                            dispatch_ref(&pty_output_event);
+
+                            // 2. 解析字节流为结构化事件
+                            let events = parser_ref.feed(&chunk[..n]);
+                            for event in &events {
+                                dispatch_ref(event);
+                            }
+                        }
                     }
                     Err(e) => {
                         // 读取错误（进程被终止或管道断开）
@@ -219,7 +281,7 @@ impl PtyManager {
         // 8. 构建 PtyProcess 并存入映射表
         let process = PtyProcess {
             child,
-            writer,
+            writer: parking_lot::Mutex::new(writer),
             buffer,
             created_at: now_millis(),
             adapter_id: adapter_id.to_string(),
@@ -227,7 +289,7 @@ impl PtyManager {
             working_dir: working_dir.to_string(),
             status: AgentStatus::Idle,
             pty_size: default_size,
-            master_pty: pair.master,
+            master_pty: parking_lot::Mutex::new(pair.master),
         };
 
         {
@@ -244,21 +306,21 @@ impl PtyManager {
     /// 将 input 字符串以 UTF-8 字节写入 PTY 进程的 stdin。
     /// 调用者负责在 input 末尾添加换行符（如果需要）。
     pub fn inject_stdin(&self, instance_id: &str, input: &str) -> Result<(), ConfluxError> {
-        let mut processes = self.processes.write();
-        let process = processes.get_mut(instance_id).ok_or_else(|| {
+        let processes = self.processes.read();
+        let process = processes.get(instance_id).ok_or_else(|| {
             ConfluxError::InstanceNotFound {
                 instance_id: instance_id.to_string(),
             }
         })?;
 
-        process
-            .writer
+        let mut writer = process.writer.lock();
+        writer
             .write_all(input.as_bytes())
             .map_err(|e| ConfluxError::PtyError {
                 message: format!("stdin 写入失败 (instance_id={}): {}", instance_id, e),
             })?;
 
-        process.writer.flush().map_err(|e| ConfluxError::PtyError {
+        writer.flush().map_err(|e| ConfluxError::PtyError {
             message: format!("stdin flush 失败 (instance_id={}): {}", instance_id, e),
         })?;
 
@@ -288,8 +350,8 @@ impl PtyManager {
             pixel_height: 0,
         };
 
-        process
-            .master_pty
+        let master = process.master_pty.lock();
+        master
             .resize(new_size)
             .map_err(|e| ConfluxError::PtyError {
                 message: format!(
@@ -297,6 +359,7 @@ impl PtyManager {
                     instance_id, cols, rows, e
                 ),
             })?;
+        drop(master);
 
         process.pty_size = new_size;
 

@@ -32,9 +32,9 @@ export default {
         },
       },
       fontFamily: {
-        display: ["'Playfair Display'", "Georgia", "serif"],
-        body: ["'Inter'", "'Helvetica Neue'", "sans-serif"],
-        mono: ["'JetBrains Mono'", "'SF Mono'", "Consolas", "monospace"],
+        display: ["'Fraunces Variable'", "Fraunces", "Georgia", "serif"],
+        body: ["'Geist Sans'", "'Helvetica Neue'", "sans-serif"],
+        mono: ["'JetBrains Mono Variable'", "'JetBrains Mono'", "'SF Mono'", "Consolas", "monospace"],
       },
       backdropBlur: {
         glass: "20px",
