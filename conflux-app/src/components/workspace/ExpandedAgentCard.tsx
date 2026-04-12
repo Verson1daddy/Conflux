@@ -5,10 +5,26 @@
 // expanded terminal so keystrokes echo locally (Phase B placeholder until
 // backend PTY is wired).
 
-import { type FC, useEffect, useMemo } from "react";
+import { type FC, useEffect, useMemo, useRef, useState } from "react";
 import { useAgentStore } from "@/stores/agentStore";
 import { XtermTerminal } from "./XtermTerminal";
 import type { AgentStatus } from "@/types";
+
+// ===== C2-A4 Shield (shared constants with AgentCard) =====
+
+type ShieldTier = "autonomous" | "smart" | "manual";
+
+const SHIELD_META: Record<ShieldTier, { icon: string; color: string; label: string; desc: string }> = {
+  autonomous: { icon: "shield-check", color: "#34C759", label: "Autonomous", desc: "All commands auto-approved" },
+  smart:      { icon: "shield-alert", color: "#FFD60A", label: "Smart",      desc: "Only destructive actions need confirm" },
+  manual:     { icon: "shield-off",   color: "#FF6B6B", label: "Manual",     desc: "Every tool call requires approval" },
+};
+const SHIELD_ORDER: ShieldTier[] = ["autonomous", "smart", "manual"];
+const SHIELD_PATHS: Record<string, string> = {
+  "shield-check": "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1zM9 12l2 2 4-4",
+  "shield-alert": "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1zM12 8v4M12 16h.01",
+  "shield-off":   "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z",
+};
 
 // ===== Palette (mirrors tailwind tokens so it matches design exactly) =====
 
@@ -171,6 +187,25 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
   const setExpanded = useAgentStore((s) => s.setExpandedCard);
   const openDiscussionWizard = useAgentStore((s) => s.openDiscussionWizard);
   const instance = useAgentStore((s) => s.instances.get(instanceId));
+
+  // C2-A4 Shield — shared with AgentCard via store
+  const shieldTier = (useAgentStore(
+    (s) => s.permissionTiers.get(instanceId)
+  ) ?? "smart") as ShieldTier;
+  const setShieldTierStore = useAgentStore((s) => s.setPermissionTier);
+  const [shieldOpen, setShieldOpen] = useState(false);
+  const shieldRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!shieldOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (shieldRef.current && !shieldRef.current.contains(e.target as Node)) {
+        setShieldOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", handleClick);
+    return () => document.removeEventListener("pointerdown", handleClick);
+  }, [shieldOpen]);
   const status = useAgentStore(
     (s) => s.statuses.get(instanceId) ?? "idle"
   ) as AgentStatus;
@@ -242,6 +277,76 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
             v1.0.32
           </span>
           <div className="flex-1" />
+          {/* C2-A4 Shield permission tier */}
+          <div ref={shieldRef} className="shrink-0">
+            <button
+              className="flex items-center justify-center"
+              style={{
+                width: 24, height: 24, borderRadius: 6,
+                background: "rgba(255,255,255,0.05)",
+                color: SHIELD_META[shieldTier].color,
+              }}
+              onClick={() => setShieldOpen((v) => !v)}
+              title={`Permissions: ${SHIELD_META[shieldTier].label}`}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d={SHIELD_PATHS[SHIELD_META[shieldTier].icon]} />
+              </svg>
+            </button>
+            {shieldOpen && (() => {
+              // Use fixed positioning because ExpandedAgentCard containers
+              // have overflow:hidden — absolute popover gets clipped.
+              const rect = shieldRef.current?.getBoundingClientRect();
+              const top = (rect?.bottom ?? 0) + 6;
+              const right = window.innerWidth - (rect?.right ?? 0);
+              return (
+              <div
+                style={{
+                  position: "fixed", top, right, zIndex: 9999,
+                  width: 250, padding: 5, borderRadius: 12,
+                  background: "#1C1E22",
+                  border: "1px solid rgba(255,255,255,0.07)",
+                  boxShadow: "0 6px 24px rgba(0,0,0,0.6)",
+                  display: "flex", flexDirection: "column", gap: 2,
+                }}
+              >
+                {SHIELD_ORDER.map((tier) => {
+                  const meta = SHIELD_META[tier];
+                  const isSel = shieldTier === tier;
+                  return (
+                    <button
+                      key={tier}
+                      onClick={() => { setShieldTierStore(instanceId, tier); setShieldOpen(false); }}
+                      className="flex items-center w-full text-left"
+                      style={{
+                        padding: "9px 10px", gap: 10, borderRadius: 8,
+                        background: isSel ? `${meta.color}12` : "transparent",
+                        border: "none", cursor: "pointer",
+                      }}
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={meta.color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d={SHIELD_PATHS[meta.icon]} />
+                      </svg>
+                      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 1 }}>
+                        <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 12, fontWeight: 600, color: "#F2F2F2" }}>
+                          {meta.label}
+                        </span>
+                        <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 10, color: "#6B7280" }}>
+                          {meta.desc}
+                        </span>
+                      </div>
+                      {isSel && (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={meta.color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="m9 12 2 2 4-4" />
+                        </svg>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+              );
+            })()}
+          </div>
           {/* Running pill */}
           <div
             className="flex items-center shrink-0"

@@ -8,6 +8,26 @@ import { useAgentStore } from "@/stores/agentStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import type { AdapterInfo, AdapterId, AgentInstanceInfo, CardLayout } from "@/types";
 
+// ===== C2-A4b Card color presets =====
+
+const CARD_COLOR_PRESETS = [
+  { id: "ice-blue",  color: "#B8D4E3", name: "Ice Blue" },
+  { id: "amber",     color: "#FFB800", name: "Amber" },
+  { id: "mint",      color: "#5FD47F", name: "Mint" },
+  { id: "rose",      color: "#FF6B6B", name: "Rose" },
+  { id: "lavender",  color: "#C8B5E3", name: "Lavender" },
+  { id: "peach",     color: "#E3C0A8", name: "Peach" },
+  { id: "gold",      color: "#D4C88A", name: "Gold" },
+  { id: "sky",       color: "#7FC8FF", name: "Sky" },
+];
+
+const DEFAULT_ADAPTER_COLORS: Record<string, string> = {
+  "claude-code": "#B8D4E3",
+  codex:         "#FFB800",
+  aider:         "#8EA4B8",
+  opencode:      "#C9B894",
+};
+
 // ===== Smart placement for new cards =====
 //
 // Walks a coarse grid looking for the first spot where a new card of the
@@ -190,15 +210,24 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
   const [adapters, setAdapters] = useState<AdapterInfo[]>([]);
   const [selectedId, setSelectedId] = useState<AdapterId | null>(null);
   const [workingDir, setWorkingDir] = useState<string>("");
+  const [cardColor, setCardColor] = useState<string>(CARD_COLOR_PRESETS[0].color);
+  const setCardColorStore = useAgentStore((s) => s.setCardColor);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Restore last-used working dir from localStorage on mount / open
+  // Restore last-used working dir + auto-assign adapter default color
   useEffect(() => {
     if (!visible) return;
     setWorkingDir(guessDefaultWorkingDir());
   }, [visible]);
+
+  // When adapter selection changes, auto-set color to adapter default
+  useEffect(() => {
+    if (selectedId) {
+      setCardColor(DEFAULT_ADAPTER_COLORS[selectedId] ?? CARD_COLOR_PRESETS[0].color);
+    }
+  }, [selectedId]);
 
   // Load adapters when modal opens
   useEffect(() => {
@@ -252,6 +281,8 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
         undefined,
       );
       addInstance(instance);
+      // Save user-picked card color
+      setCardColorStore(instance.instance_id, cardColor);
       // Size must be >= MIN_CARD_W/H (580x380) enforced by AgentCard.
       // Using a slightly larger default (620x420) so the card has breathing
       // room for the header/footer chrome and a few terminal rows.
@@ -511,6 +542,39 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
             >
               Agent binary will start with this as its cwd. Leave blank to use Conflux's own working directory.
             </span>
+          </div>
+
+          {/* C2-A4b Card color picker */}
+          <div className="flex flex-col" style={{ gap: 8, marginTop: 2 }}>
+            <span
+              style={{
+                fontFamily: "'Geist Sans', sans-serif",
+                fontSize: 10, fontWeight: 600, letterSpacing: 1.5,
+                color: "#6B7280", textTransform: "uppercase" as const,
+              }}
+            >
+              Card Color
+            </span>
+            <div className="flex flex-wrap" style={{ gap: 8 }}>
+              {CARD_COLOR_PRESETS.map((preset) => {
+                const isSel = cardColor === preset.color;
+                return (
+                  <button
+                    key={preset.id}
+                    onClick={() => setCardColor(preset.color)}
+                    title={preset.name}
+                    style={{
+                      width: 26, height: 26, borderRadius: 9999,
+                      background: preset.color,
+                      border: isSel ? "2px solid #F2F2F2" : "2px solid transparent",
+                      boxShadow: isSel ? `0 0 0 2px ${preset.color}40` : "none",
+                      cursor: "pointer", padding: 0,
+                      transition: "box-shadow 0.12s, border-color 0.12s",
+                    }}
+                  />
+                );
+              })}
+            </div>
           </div>
 
           {error && (

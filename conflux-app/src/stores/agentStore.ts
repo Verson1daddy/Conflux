@@ -91,11 +91,16 @@ interface AgentStoreState {
   statuses: Map<string, AgentStatus>;
   /** Agent tree for each instance, keyed by instance_id */
   trees: Map<string, AgentTree>;
-  /** C2-T1 Exit Overlay · record of PTY exit payloads keyed by instance_id.
-   *  Lives in the store (not in XtermTerminal local state) so that card
-   *  unmount/remount cycles — resize below terminal-minimum, 3D flip,
-   *  collapse from expanded — don't hide the overlay. */
+  /** C2-T1 Exit Overlay · record of PTY exit payloads keyed by instance_id. */
   exitStates: Map<string, ProcessExitedPayload>;
+  /** C2-A4 Shield · per-instance permission tier (local state → backend in C2-C1) */
+  permissionTiers: Map<string, string>;
+  /** C2-A4b · per-instance custom card color (user picks at create or later) */
+  cardColors: Map<string, string>;
+  /** C2-A3 Frameworks · user's favorite adapter IDs (persisted to localStorage) */
+  favoriteAdapters: Set<string>;
+  /** C2-A3 Frameworks · user's primary adapter ID (persisted to localStorage) */
+  primaryAdapter: string | null;
   /** Currently expanded card instance_id, or null when no card is expanded */
   expandedCardId: string | null;
   /** Discussion wizard state (multi-step + runtime chatroom) */
@@ -109,11 +114,15 @@ interface AgentStoreState {
    *  The caller is responsible for any backend destroy_agent_instance call
    *  — this action only touches frontend state. */
   removeInstance: (instanceId: string) => void;
-  /** C2-T1 Exit Overlay · record that a PTY process has exited. Kept in the
-   *  global store (not XtermTerminal local state) so that toggling a card
-   *  through resize / flip / expand-collapse doesn't accidentally hide the
-   *  overlay — the fact that a process is dead must survive remounts. */
   setExitState: (instanceId: string, payload: ProcessExitedPayload | null) => void;
+  /** C2-A4 Shield · set per-instance permission tier */
+  setPermissionTier: (instanceId: string, tier: string) => void;
+  /** C2-A4b · set per-instance card color */
+  setCardColor: (instanceId: string, color: string) => void;
+  /** C2-A3 Frameworks · set favorite adapters + persist to localStorage */
+  setFavoriteAdapters: (ids: Set<string>) => void;
+  /** C2-A3 Frameworks · set primary adapter + persist to localStorage */
+  setPrimaryAdapter: (id: string | null) => void;
   updateStatus: (instanceId: string, status: AgentStatus) => void;
   updateTree: (instanceId: string, tree: AgentTree) => void;
   setExpandedCard: (id: string | null) => void;
@@ -211,11 +220,27 @@ function colorOfAdapter(adapterId: string): string {
 
 // ===== Store =====
 
+// C2-A3: Hydrate framework preferences from localStorage on store init
+function loadFavorites(): Set<string> {
+  try {
+    const raw = localStorage.getItem("conflux.favorites");
+    if (raw) return new Set(JSON.parse(raw));
+  } catch { /* corrupt — ignore */ }
+  return new Set();
+}
+function loadPrimaryAdapter(): string | null {
+  return localStorage.getItem("conflux.primaryAdapter") || null;
+}
+
 export const useAgentStore = create<AgentStoreState>((set) => ({
   instances: new Map(),
   statuses: new Map(),
   trees: new Map(),
   exitStates: new Map(),
+  permissionTiers: new Map(),
+  cardColors: new Map(),
+  favoriteAdapters: loadFavorites(),
+  primaryAdapter: loadPrimaryAdapter(),
   expandedCardId: null,
   discussion: { ...EMPTY_WIZARD, participantIds: new Set() },
 
@@ -272,6 +297,34 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
       }
       return { exitStates: next };
     }),
+
+  setPermissionTier: (instanceId, tier) =>
+    set((state) => {
+      const next = new Map(state.permissionTiers);
+      next.set(instanceId, tier);
+      return { permissionTiers: next };
+    }),
+
+  setCardColor: (instanceId, color) =>
+    set((state) => {
+      const next = new Map(state.cardColors);
+      next.set(instanceId, color);
+      return { cardColors: next };
+    }),
+
+  setFavoriteAdapters: (ids) => {
+    localStorage.setItem("conflux.favorites", JSON.stringify([...ids]));
+    set({ favoriteAdapters: ids });
+  },
+
+  setPrimaryAdapter: (id) => {
+    if (id) {
+      localStorage.setItem("conflux.primaryAdapter", id);
+    } else {
+      localStorage.removeItem("conflux.primaryAdapter");
+    }
+    set({ primaryAdapter: id });
+  },
 
   updateStatus: (instanceId, status) =>
     set((state) => {

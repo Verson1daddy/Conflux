@@ -11,6 +11,25 @@ import { destroyAgentInstance } from "@/lib/tauri-bridge";
 import { SNAP_GRID_PX } from "@/types/layout";
 import { XtermTerminal } from "./XtermTerminal";
 import { ExpandedAgentCard } from "./ExpandedAgentCard";
+
+// ===== C2-A4 Shield permission tier =====
+
+type ShieldTier = "autonomous" | "smart" | "manual";
+
+const SHIELD_META: Record<ShieldTier, { icon: string; color: string; label: string; desc: string }> = {
+  autonomous: { icon: "shield-check", color: "#34C759", label: "Autonomous", desc: "All commands auto-approved" },
+  smart:      { icon: "shield-alert", color: "#FFD60A", label: "Smart",      desc: "Only destructive actions need confirm" },
+  manual:     { icon: "shield-off",   color: "#FF6B6B", label: "Manual",     desc: "Every tool call requires approval" },
+};
+
+const SHIELD_ORDER: ShieldTier[] = ["autonomous", "smart", "manual"];
+
+// Shield SVG paths (lucide subset)
+const SHIELD_PATHS: Record<string, string> = {
+  "shield-check": "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1zM9 12l2 2 4-4",
+  "shield-alert": "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1zM12 8v4M12 16h.01",
+  "shield-off":   "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z",
+};
 import type {
   CardLayout,
   AgentStatus,
@@ -146,6 +165,45 @@ function AgentCard({
   const removeCard = useWorkspaceStore((s) => s.removeCard);
   const setExpandedCard = useAgentStore((s) => s.setExpandedCard);
   const removeInstance = useAgentStore((s) => s.removeInstance);
+
+  // C2-A4 Shield permission tier — read from store so card + expanded stay in sync
+  const shieldTier = (useAgentStore(
+    (s) => s.permissionTiers.get(card.instance_id)
+  ) ?? "smart") as ShieldTier;
+  const setShieldTierStore = useAgentStore((s) => s.setPermissionTier);
+  const [shieldOpen, setShieldOpen] = useState(false);
+  const shieldRef = useRef<HTMLDivElement>(null);
+
+  // C2-A4b Card color — read from store, fallback to adapter default
+  const cardColor = useAgentStore(
+    (s) => s.cardColors.get(card.instance_id)
+  ) ?? STATUS_DOT_COLORS[status] ?? "#6B7280";
+  const setCardColorStore = useAgentStore((s) => s.setCardColor);
+  const [colorPickerOpen, setColorPickerOpen] = useState(false);
+  const colorPickerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!colorPickerOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (colorPickerRef.current && !colorPickerRef.current.contains(e.target as Node)) {
+        setColorPickerOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", handleClick);
+    return () => document.removeEventListener("pointerdown", handleClick);
+  }, [colorPickerOpen]);
+
+  // Close popover on outside click
+  useEffect(() => {
+    if (!shieldOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (shieldRef.current && !shieldRef.current.contains(e.target as Node)) {
+        setShieldOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", handleClick);
+    return () => document.removeEventListener("pointerdown", handleClick);
+  }, [shieldOpen]);
 
   // Keep the back face mounted during flip-back so the transition animates
   // out cleanly; unmount ~660ms after isFlipped becomes false to free the
@@ -424,10 +482,48 @@ function AgentCard({
           background: "rgba(255,255,255,0.024)",
         }}
       >
-        <span
-          className="shrink-0 rounded-full"
-          style={{ width: 8, height: 8, background: STATUS_DOT_COLORS[status] }}
-        />
+        {/* C2-A4b Clickable color dot — shows custom card color, click to change */}
+        <div ref={colorPickerRef} className="relative shrink-0" data-no-expand>
+          <button
+            className="rounded-full"
+            style={{
+              width: 10, height: 10,
+              background: cardColor,
+              border: "1px solid rgba(255,255,255,0.2)",
+              cursor: "pointer", padding: 0,
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); setColorPickerOpen((v) => !v); }}
+            title="Change card color"
+          />
+          {colorPickerOpen && (
+            <div
+              style={{
+                position: "absolute", top: 18, left: -4, zIndex: 100,
+                padding: 8, borderRadius: 10,
+                background: "#1C1E22",
+                border: "1px solid rgba(255,255,255,0.07)",
+                boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
+                display: "flex", flexWrap: "wrap", gap: 6, width: 130,
+              }}
+            >
+              {[
+                "#B8D4E3", "#FFB800", "#5FD47F", "#FF6B6B",
+                "#C8B5E3", "#E3C0A8", "#D4C88A", "#7FC8FF",
+              ].map((c) => (
+                <button
+                  key={c}
+                  onClick={(e) => { e.stopPropagation(); setCardColorStore(card.instance_id, c); setColorPickerOpen(false); }}
+                  style={{
+                    width: 22, height: 22, borderRadius: 9999,
+                    background: c, padding: 0, cursor: "pointer",
+                    border: cardColor === c ? "2px solid #F2F2F2" : "2px solid transparent",
+                  }}
+                />
+              ))}
+            </div>
+          )}
+        </div>
         <span
           className="truncate"
           style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 14, fontWeight: 600, color: "#F2F2F2" }}
@@ -447,6 +543,70 @@ function AgentCard({
           </span>
         )}
         <div className="flex-1" />
+        {/* C2-A4 Shield permission tier button + popover */}
+        <div ref={shieldRef} className="relative shrink-0" data-no-expand>
+          <button
+            className="flex items-center justify-center"
+            style={{
+              width: 18, height: 18,
+              color: SHIELD_META[shieldTier].color,
+              opacity: 0.8,
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); setShieldOpen((v) => !v); }}
+            title={`Permissions: ${SHIELD_META[shieldTier].label}`}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d={SHIELD_PATHS[SHIELD_META[shieldTier].icon]} />
+            </svg>
+          </button>
+          {shieldOpen && (
+            <div
+              style={{
+                position: "absolute", top: 24, right: 0, zIndex: 100,
+                width: 250, padding: 5, borderRadius: 12,
+                background: "#1C1E22",
+                border: "1px solid rgba(255,255,255,0.07)",
+                boxShadow: "0 6px 24px rgba(0,0,0,0.6)",
+                display: "flex", flexDirection: "column", gap: 2,
+              }}
+            >
+              {SHIELD_ORDER.map((tier) => {
+                const meta = SHIELD_META[tier];
+                const isSel = shieldTier === tier;
+                return (
+                  <button
+                    key={tier}
+                    onClick={(e) => { e.stopPropagation(); setShieldTierStore(card.instance_id, tier); setShieldOpen(false); }}
+                    className="flex items-center w-full text-left"
+                    style={{
+                      padding: "9px 10px", gap: 10, borderRadius: 8,
+                      background: isSel ? `${meta.color}12` : "transparent",
+                      border: "none", cursor: "pointer",
+                    }}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={meta.color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d={SHIELD_PATHS[meta.icon]} />
+                    </svg>
+                    <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 1 }}>
+                      <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 12, fontWeight: 600, color: "#F2F2F2" }}>
+                        {meta.label}
+                      </span>
+                      <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 10, color: "#6B7280" }}>
+                        {meta.desc}
+                      </span>
+                    </div>
+                    {isSel && (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={meta.color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="m9 12 2 2 4-4" />
+                      </svg>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
         <button
           data-no-expand
           className="shrink-0 select-none flex items-center justify-center"

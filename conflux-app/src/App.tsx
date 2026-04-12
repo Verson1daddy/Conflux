@@ -9,6 +9,7 @@ import { SettingsPanel } from "./components/workspace/SettingsPanel";
 import { ExpandedAgentCard } from "./components/workspace/ExpandedAgentCard";
 import { DiscussionPanel } from "./components/workspace/DiscussionPanel";
 import { SendToPanel } from "./components/workspace/SendToPanel";
+import { OnboardingWizard } from "./components/workspace/OnboardingWizard";
 import { Sidebar } from "./components/island/Sidebar";
 import { NotificationTray } from "./components/island/NotificationTray";
 import { useAgentInstances } from "./hooks/useAgentInstances";
@@ -127,6 +128,12 @@ export default function App() {
   const addNotification = useIslandStore((s) => s.addNotification);
   const notifications = useIslandStore((s) => s.notifications);
 
+  // C2-A3 Onboarding wizard guard — show once per fresh install
+  const [onboarded, setOnboarded] = useState(
+    () => localStorage.getItem("conflux.onboarded.v1") === "1"
+  );
+  const handleOnboardingComplete = useCallback(() => setOnboarded(true), []);
+
   const [sidebarVisible, setSidebarVisible] = useState(false);
   const [trayVisible, setTrayVisible] = useState(false);
   const [sendToVisible, setSendToVisible] = useState(false);
@@ -143,17 +150,20 @@ export default function App() {
   }, [instances.size, setInstances, setCards]);
 
   // F11 — toggle OS fullscreen via Tauri window API.
-  // Used together with useIsFullscreen so the card flip mode can be tested.
+  // Ctrl+K — open search palette (standard command-palette shortcut).
   useEffect(() => {
     const onKey = async (e: KeyboardEvent) => {
-      if (e.key !== "F11") return;
-      e.preventDefault();
-      try {
-        const win = getCurrentWindow();
-        const isFull = await win.isFullscreen();
-        await win.setFullscreen(!isFull);
-      } catch {
-        // Window API unavailable (e.g. non-Tauri dev) — ignore.
+      if (e.key === "F11") {
+        e.preventDefault();
+        try {
+          const win = getCurrentWindow();
+          const isFull = await win.isFullscreen();
+          await win.setFullscreen(!isFull);
+        } catch { /* non-Tauri dev */ }
+      }
+      if (e.key === "k" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        setSearchOpen((v) => !v);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -238,9 +248,18 @@ export default function App() {
       <NotificationTray visible={trayVisible} onClose={handleTrayClose} />
       <SendToPanel visible={sendToVisible} onClose={handleSendToClose} />
       <AddAgentModal visible={addAgentOpen} onClose={handleAddAgentClose} />
-      <SearchPalette visible={searchOpen} onClose={handleSearchClose} />
+      <SearchPalette
+        visible={searchOpen}
+        onClose={handleSearchClose}
+        onAddAgent={handleAddAgentOpen}
+        onSettings={handleSettingsOpen}
+        onDiscussion={handleDiscussionOpen}
+      />
       <SettingsPanel visible={settingsOpen} onClose={handleSettingsClose} />
       <DiscussionPanel />
+      {!onboarded && (
+        <OnboardingWizard onComplete={handleOnboardingComplete} />
+      )}
     </div>
   );
 }
