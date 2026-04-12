@@ -10,6 +10,7 @@ import { ExpandedAgentCard } from "./components/workspace/ExpandedAgentCard";
 import { DiscussionPanel } from "./components/workspace/DiscussionPanel";
 import { SendToPanel } from "./components/workspace/SendToPanel";
 import { OnboardingWizard } from "./components/workspace/OnboardingWizard";
+import { FloatBall } from "./components/island/FloatBall";
 import { Sidebar } from "./components/island/Sidebar";
 import { NotificationTray } from "./components/island/NotificationTray";
 import { useAgentInstances } from "./hooks/useAgentInstances";
@@ -18,6 +19,7 @@ import { useIsFullscreen } from "./hooks/useIsFullscreen";
 import { useWorkspaceStore } from "./stores/workspaceStore";
 import { useAgentStore } from "./stores/agentStore";
 import { useIslandStore } from "./stores/islandStore";
+import type { IslandMode } from "./types";
 import type { AgentInstanceInfo, AgentStatus, NotificationItem } from "./types";
 
 // Demo 数据——模拟设计稿中的 4 张 Agent 卡片
@@ -120,6 +122,7 @@ export default function App() {
   const { instances, statuses } = useAgentInstances();
   useIslandMode();
   const isFullscreen = useIsFullscreen();
+  const islandMode = useIslandStore((s) => s.mode) as IslandMode;
 
   const setCards = useWorkspaceStore((s) => s.setCards);
   const setInstances = useAgentStore((s) => s.setInstances);
@@ -257,6 +260,10 @@ export default function App() {
       />
       <SettingsPanel visible={settingsOpen} onClose={handleSettingsClose} />
       <DiscussionPanel />
+      {/* C2-A5 FloatBall — visible when island mode is "float_ball" */}
+      {islandMode === "float_ball" && (
+        <FloatBall onExpand={() => setSidebarVisible(true)} />
+      )}
       {!onboarded && (
         <OnboardingWizard onComplete={handleOnboardingComplete} />
       )}

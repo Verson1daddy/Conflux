@@ -38,12 +38,16 @@ interface IslandState {
 
 export const useIslandStore = create<IslandState>((set) => ({
   // 初始状态
-  mode: "top_island",
+  // C2-A5: hydrate island mode from localStorage
+  mode: (localStorage.getItem("conflux.islandMode") as IslandMode) || "top_island",
   notifications: [],
   pendingPermissions: [],
   unreadCount: 0,
 
-  setMode: (mode) => set({ mode }),
+  setMode: (mode) => {
+    localStorage.setItem("conflux.islandMode", mode);
+    set({ mode });
+  },
 
   addNotification: (notification) =>
     set((state) => {

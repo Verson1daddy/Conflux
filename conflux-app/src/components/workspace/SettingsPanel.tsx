@@ -5,6 +5,8 @@
 
 import { type FC, useEffect, useState } from "react";
 import { useAgentStore } from "@/stores/agentStore";
+import { useIslandStore } from "@/stores/islandStore";
+import type { IslandMode } from "@/types";
 
 interface SettingsPanelProps {
   visible: boolean;
@@ -210,6 +212,10 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
   const primaryAdapter = useAgentStore((s) => s.primaryAdapter);
   const setFavoriteAdaptersAction = useAgentStore((s) => s.setFavoriteAdapters);
   const setPrimaryAdapterAction = useAgentStore((s) => s.setPrimaryAdapter);
+
+  // Island mode (Appearance tab)
+  const islandMode = useIslandStore((s) => s.mode);
+  const setIslandMode = useIslandStore((s) => s.setMode);
 
   // Adapters — read live instances from store to show "active" count
   const instances = useAgentStore((s) => s.instances);
@@ -621,6 +627,43 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                           />
                           <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 9, color: sel ? "#F2F2F2" : "#6B7280" }}>
                             {preset.name}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* C2-A5 Island mode selector */}
+                <div className="flex flex-col" style={{ gap: 8 }}>
+                  <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 10, fontWeight: 600, letterSpacing: 1.5, color: "#6B7280", textTransform: "uppercase" as const }}>
+                    Island Mode
+                  </span>
+                  <div className="flex" style={{ gap: 8 }}>
+                    {([
+                      { mode: "top_island" as IslandMode, label: "Capsule", desc: "Top bar capsule" },
+                      { mode: "float_ball" as IslandMode, label: "Float Ball", desc: "Draggable overlay" },
+                      { mode: "sidebar" as IslandMode, label: "Sidebar", desc: "Right panel" },
+                    ]).map(({ mode, label, desc }) => {
+                      const sel = islandMode === mode;
+                      return (
+                        <button
+                          key={mode}
+                          onClick={() => setIslandMode(mode)}
+                          className="flex flex-col flex-1 items-center justify-center"
+                          style={{
+                            height: 56, gap: 3, borderRadius: 8,
+                            background: sel ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.03)",
+                            border: sel ? "1px solid #B8D4E3" : "1px solid rgba(255,255,255,0.082)",
+                            cursor: "pointer",
+                          }}
+                          title={desc}
+                        >
+                          <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 12, fontWeight: sel ? 600 : 400, color: sel ? "#F2F2F2" : "#B8B3B0" }}>
+                            {label}
+                          </span>
+                          <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 9, color: "#6B7280" }}>
+                            {desc}
                           </span>
                         </button>
                       );
