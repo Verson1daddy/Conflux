@@ -291,14 +291,14 @@ const SearchPalette: FC<SearchPaletteProps> = ({
       style={{ paddingTop: "14vh" }}
     >
       <div
-        className="absolute inset-0"
+        className="absolute inset-0 modal-scrim-enter"
         style={{ background: "rgba(0,0,0,0.53)", backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)" }}
         onClick={onClose}
         aria-hidden="true"
       />
 
       <div
-        className="relative flex flex-col overflow-hidden"
+        className="relative flex flex-col overflow-hidden modal-panel-enter"
         style={{
           width: 560,
           maxHeight: "60vh",

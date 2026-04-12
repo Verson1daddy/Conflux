@@ -5,7 +5,8 @@
 // expanded terminal so keystrokes echo locally (Phase B placeholder until
 // backend PTY is wired).
 
-import { type FC, useEffect, useMemo, useRef, useState } from "react";
+import { type FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useAgentStore } from "@/stores/agentStore";
 import { XtermTerminal } from "./XtermTerminal";
 import type { AgentStatus } from "@/types";
@@ -195,11 +196,17 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
   const setShieldTierStore = useAgentStore((s) => s.setPermissionTier);
   const [shieldOpen, setShieldOpen] = useState(false);
   const shieldRef = useRef<HTMLDivElement>(null);
+  const shieldPopoverRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!shieldOpen) return;
     const handleClick = (e: MouseEvent) => {
-      if (shieldRef.current && !shieldRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      // Check both the trigger button area AND the portal popover
+      if (
+        shieldRef.current && !shieldRef.current.contains(target) &&
+        shieldPopoverRef.current && !shieldPopoverRef.current.contains(target)
+      ) {
         setShieldOpen(false);
       }
     };
@@ -221,19 +228,37 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
 
   const statusMeta = STATUS_META[status] ?? STATUS_META.idle;
 
+  // ===== Closing animation state =====
+  const [isClosing, setIsClosing] = useState(false);
+
+  const handleClose = useCallback(() => {
+    if (embedded) {
+      // Embedded mode (3D flip back face) — no overlay animation, close directly
+      setExpanded(null);
+      return;
+    }
+    setIsClosing(true);
+  }, [embedded, setExpanded]);
+
+  // After exit animation completes, actually unmount
+  const handleAnimationEnd = useCallback(() => {
+    if (isClosing) {
+      setIsClosing(false);
+      setExpanded(null);
+    }
+  }, [isClosing, setExpanded]);
+
   // ===== ESC to close =====
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
-        setExpanded(null);
+        handleClose();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [setExpanded]);
-
-  const handleClose = () => setExpanded(null);
+  }, [handleClose]);
 
   if (!instance) return null;
 
@@ -294,20 +319,25 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
               </svg>
             </button>
             {shieldOpen && (() => {
-              // Use fixed positioning because ExpandedAgentCard containers
-              // have overflow:hidden — absolute popover gets clipped.
+              // Portal to document.body — bypasses overflow:hidden AND the
+              // 3D transform containing block (rotateY on AgentCard's flip
+              // stage makes `position:fixed` relative to the card, not the
+              // viewport). Portal escapes the entire DOM subtree.
               const rect = shieldRef.current?.getBoundingClientRect();
               const top = (rect?.bottom ?? 0) + 6;
               const right = window.innerWidth - (rect?.right ?? 0);
-              return (
+              return createPortal(
               <div
+                ref={shieldPopoverRef}
+                className="popover-enter"
                 style={{
-                  position: "fixed", top, right, zIndex: 9999,
+                  position: "fixed", top, right, zIndex: 99999,
                   width: 250, padding: 5, borderRadius: 12,
                   background: "#1C1E22",
                   border: "1px solid rgba(255,255,255,0.07)",
                   boxShadow: "0 6px 24px rgba(0,0,0,0.6)",
                   display: "flex", flexDirection: "column", gap: 2,
+                  transformOrigin: "top right",
                 }}
               >
                 {SHIELD_ORDER.map((tier) => {
@@ -343,7 +373,8 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
                     </button>
                   );
                 })}
-              </div>
+              </div>,
+              document.body,
               );
             })()}
           </div>
@@ -615,16 +646,17 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
   // ===== Overlay mode: full-screen scrim + centered floating panel. =====
   return (
     <div
-      className="absolute inset-0 z-40 flex items-stretch justify-stretch expanded-enter"
+      className={`absolute inset-0 z-40 flex items-stretch justify-stretch ${isClosing ? "expanded-exit" : "expanded-enter"}`}
       style={{
         background: "rgba(5,5,7,0.55)",
         backdropFilter: "blur(8px)",
         WebkitBackdropFilter: "blur(8px)",
       }}
       onClick={handleClose}
+      onAnimationEnd={handleAnimationEnd}
     >
       <div
-        className="m-auto flex flex-col overflow-hidden expanded-panel-enter"
+        className={`m-auto flex flex-col overflow-hidden ${isClosing ? "expanded-panel-exit" : "expanded-panel-enter"}`}
         style={{
           width: "min(800px, 92%)",
           height: "min(600px, 88%)",

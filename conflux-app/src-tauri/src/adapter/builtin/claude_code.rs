@@ -145,6 +145,45 @@ impl AgentAdapter for ClaudeCodeAdapter {
         todo!("BE-2: PtyManager::spawn() — 等待 PTY 管理器完成后对接")
     }
 
+    async fn detect_auth(&self) -> Result<(), String> {
+        // 尝试运行 `claude --version`。如果 binary 不存在或输出包含 auth 错误关键字，
+        // 返回 Err 告知用户需要登录。
+        let mut cmd = std::process::Command::new("claude");
+        cmd.arg("--version")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        match cmd.spawn() {
+            Ok(child) => match child.wait_with_output() {
+                Ok(output) => {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let combined = format!("{}{}", stdout, stderr);
+                    if combined.contains("not logged in")
+                        || combined.contains("auth")
+                        || !output.status.success()
+                    {
+                        Err("Claude Code CLI is installed but may need login. Run: claude login".to_string())
+                    } else {
+                        Ok(())
+                    }
+                }
+                Err(e) => Err(format!("Failed to check Claude Code CLI: {}", e)),
+            },
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    Err("Claude Code CLI not found. Install it first: npm install -g @anthropic-ai/claude-code".to_string())
+                } else {
+                    Err(format!("Failed to run claude: {}", e))
+                }
+            }
+        }
+    }
+
     fn parse_output(&self, raw_line: &str) -> Option<ConfluxEvent> {
         // 使用占位 instance_id——实际运行时由 PTY 输出处理层设置
         let placeholder_id = InstanceId("unknown".to_string());

@@ -34,6 +34,8 @@ function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
   const setZoom = useWorkspaceStore((s) => s.setZoom);
   const setPan = useWorkspaceStore((s) => s.setPan);
 
+  const fitAll = useWorkspaceStore((s) => s.fitAll);
+  const autoArrange = useWorkspaceStore((s) => s.autoArrange);
   const { triggerAutoPack } = useWorkspaceLayout();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -168,6 +170,18 @@ function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
     [selectCard, setPan, applyTransform]
   );
 
+  const handleFitAll = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    fitAll(rect.width, rect.height);
+    // Also sync live refs so subsequent scroll zoom continues from the new state
+    const state = useWorkspaceStore.getState();
+    liveZoom.current = state.zoom;
+    livePan.current = { x: state.pan.x, y: state.pan.y };
+    applyTransform();
+  }, [fitAll, applyTransform]);
+
   return (
     <div
       ref={containerRef}
@@ -221,7 +235,7 @@ function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
 
       <LayoutManager onAutoPack={triggerAutoPack} />
 
-      {/* Zoom indicator */}
+      {/* Zoom indicator + Fit All */}
       <div className="absolute bottom-4 left-4 z-20 flex items-center gap-2">
         <span
           ref={zoomIndicatorRef}
@@ -229,6 +243,26 @@ function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
         >
           {Math.round(storeZoom * 100)}%
         </span>
+        <button
+          className="glass rounded-md px-2 py-1 text-[10px] font-mono text-white/40 hover:text-white/70 transition-colors"
+          style={{ cursor: "pointer", border: "none" }}
+          onClick={handleFitAll}
+          title="Fit all cards in view"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+          </svg>
+        </button>
+        <button
+          className="glass rounded-md px-2 py-1 text-[10px] font-mono text-white/40 hover:text-white/70 transition-colors"
+          style={{ cursor: "pointer", border: "none" }}
+          onClick={autoArrange}
+          title="Auto-arrange cards"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
+          </svg>
+        </button>
         <span className="text-[10px] font-mono text-white/25 select-none">
           Ctrl+Scroll to zoom
         </span>

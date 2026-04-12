@@ -5,10 +5,12 @@
 // Content adapts to card dimensions.
 
 import { useCallback, useRef, useLayoutEffect, useMemo, useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useAgentStore } from "@/stores/agentStore";
 import { destroyAgentInstance } from "@/lib/tauri-bridge";
 import { SNAP_GRID_PX } from "@/types/layout";
+import type { CardLayout, AgentStatus, Position, LayoutMode } from "@/types";
 import { XtermTerminal } from "./XtermTerminal";
 import { ExpandedAgentCard } from "./ExpandedAgentCard";
 
@@ -30,12 +32,6 @@ const SHIELD_PATHS: Record<string, string> = {
   "shield-alert": "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1zM12 8v4M12 16h.01",
   "shield-off":   "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z",
 };
-import type {
-  CardLayout,
-  AgentStatus,
-  Position,
-  LayoutMode,
-} from "@/types";
 
 // ===== Status colors =====
 
@@ -147,6 +143,95 @@ const MIN_TERM_H = 40;
 const MIN_CARD_W = 580;
 const MIN_CARD_H = 380;
 
+// ===== Apple-style magnetic snap with hysteresis =====
+//
+// Two snap categories per axis:
+//   ALIGNMENT — edges/centers line up (left↔left, right↔right, center↔center).
+//              Works at any canvas distance for visual consistency.
+//   ADJACENCY — place card next to another with consistent 16px gap.
+//              Only when cards are nearby on the perpendicular axis.
+//
+// Hysteresis: snap-on 6px, snap-off 12px — eliminates edge jitter.
+
+const SNAP_ON = 6;
+const SNAP_OFF = 12;
+const SNAP_GAP = 16;
+
+let _wasSnappedX = false;
+let _wasSnappedY = false;
+
+function magnetSnap(
+  rawX: number, rawY: number, w: number, h: number,
+  cards: CardLayout[], selfId: string,
+): { x: number; y: number; snappedX: boolean; snappedY: boolean } {
+  let bestDX = Infinity, bestDY = Infinity;
+  let snapX = rawX, snapY = rawY;
+
+  for (const c of cards) {
+    if (c.instance_id === selfId) continue;
+    const ol = c.position.x, ow = c.size.width, or_ = ol + ow;
+    const ot = c.position.y, oh = c.size.height, ob = ot + oh;
+
+    // Proximity on perpendicular axis — for adjacency snaps
+    const yNear = Math.min(rawY + h, ob) - Math.max(rawY, ot) > -SNAP_GAP;
+    const xNear = Math.min(rawX + w, or_) - Math.max(rawX, ol) > -SNAP_GAP;
+
+    // ---- X-axis ----
+    // Alignment: edges/centers match
+    const xA: [number, number][] = [
+      [Math.abs(rawX - ol), ol],                                    // left ↔ left
+      [Math.abs(rawX + w - or_), or_ - w],                         // right ↔ right
+      [Math.abs(rawX + w / 2 - (ol + ow / 2)), ol + ow / 2 - w / 2], // center ↔ center
+    ];
+    // Adjacency: consistent gap (only if vertically nearby)
+    if (yNear) {
+      xA.push(
+        [Math.abs(rawX - (or_ + SNAP_GAP)), or_ + SNAP_GAP],      // place right of other
+        [Math.abs(rawX + w - (ol - SNAP_GAP)), ol - SNAP_GAP - w], // place left of other
+      );
+    }
+    for (const [d, s] of xA) {
+      if (d < bestDX) { bestDX = d; snapX = s; }
+    }
+
+    // ---- Y-axis ----
+    const yA: [number, number][] = [
+      [Math.abs(rawY - ot), ot],
+      [Math.abs(rawY + h - ob), ob - h],
+      [Math.abs(rawY + h / 2 - (ot + oh / 2)), ot + oh / 2 - h / 2],
+    ];
+    if (xNear) {
+      yA.push(
+        [Math.abs(rawY - (ob + SNAP_GAP)), ob + SNAP_GAP],
+        [Math.abs(rawY + h - (ot - SNAP_GAP)), ot - SNAP_GAP - h],
+      );
+    }
+    for (const [d, s] of yA) {
+      if (d < bestDY) { bestDY = d; snapY = s; }
+    }
+  }
+
+  const threshX = _wasSnappedX ? SNAP_OFF : SNAP_ON;
+  const threshY = _wasSnappedY ? SNAP_OFF : SNAP_ON;
+  const doSnapX = bestDX <= threshX;
+  const doSnapY = bestDY <= threshY;
+  _wasSnappedX = doSnapX;
+  _wasSnappedY = doSnapY;
+
+  return {
+    x: doSnapX ? snapX : rawX,
+    y: doSnapY ? snapY : rawY,
+    snappedX: doSnapX,
+    snappedY: doSnapY,
+  };
+}
+
+function resetSnapState() {
+  _wasSnappedX = false;
+  _wasSnappedY = false;
+}
+
+
 function AgentCard({
   card,
   agentName,
@@ -160,6 +245,7 @@ function AgentCard({
 }: AgentCardProps) {
   const updateCardPosition = useWorkspaceStore((s) => s.updateCardPosition);
   const updateCardSize = useWorkspaceStore((s) => s.updateCardSize);
+  const resolveOverlaps = useWorkspaceStore((s) => s.resolveOverlaps);
   const selectCard = useWorkspaceStore((s) => s.selectCard);
   const bringToFront = useWorkspaceStore((s) => s.bringToFront);
   const removeCard = useWorkspaceStore((s) => s.removeCard);
@@ -173,6 +259,7 @@ function AgentCard({
   const setShieldTierStore = useAgentStore((s) => s.setPermissionTier);
   const [shieldOpen, setShieldOpen] = useState(false);
   const shieldRef = useRef<HTMLDivElement>(null);
+  const shieldPopoverRef = useRef<HTMLDivElement>(null);
 
   // C2-A4b Card color — read from store, fallback to adapter default
   const cardColor = useAgentStore(
@@ -197,7 +284,12 @@ function AgentCard({
   useEffect(() => {
     if (!shieldOpen) return;
     const handleClick = (e: MouseEvent) => {
-      if (shieldRef.current && !shieldRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      // Check both the trigger button area AND the portal popover
+      if (
+        shieldRef.current && !shieldRef.current.contains(target) &&
+        shieldPopoverRef.current && !shieldPopoverRef.current.contains(target)
+      ) {
         setShieldOpen(false);
       }
     };
@@ -243,12 +335,6 @@ function AgentCard({
   const livePos = useRef<Position>({ x: card.position.x, y: card.position.y });
   const liveSize = useRef({ width: card.size.width, height: card.size.height });
 
-  // Sync refs when store props change (e.g., from auto-pack or external update)
-  useLayoutEffect(() => {
-    livePos.current = { x: card.position.x, y: card.position.y };
-    liveSize.current = { width: card.size.width, height: card.size.height };
-  }, [card.position.x, card.position.y, card.size.width, card.size.height]);
-
   const vendorBadge = ADAPTER_VENDOR[adapterBadge] ?? adapterBadge;
   // Real instances subscribe to the live PTY event stream; demo instances
   // (instance_id prefixed with `demo-`) keep replaying the static ANSI reel.
@@ -276,6 +362,14 @@ function AgentCard({
     el.style.width = `${liveSize.current.width}px`;
     el.style.height = `${liveSize.current.height}px`;
   }, []);
+
+  // Sync refs when store props change (e.g., from overlap push or auto-pack).
+  // applyTransform writes to DOM; CSS transition on .card-appear handles smooth animation.
+  useLayoutEffect(() => {
+    livePos.current = { x: card.position.x, y: card.position.y };
+    liveSize.current = { width: card.size.width, height: card.size.height };
+    applyTransform();
+  }, [card.position.x, card.position.y, card.size.width, card.size.height, applyTransform]);
 
   // ===== Card click: select + bring to front =====
 
@@ -360,12 +454,22 @@ function AgentCard({
       selectCard(card.instance_id);
       bringToFront(card.instance_id);
 
+      // Mark as dragging — disables CSS position transition
+      if (cardRef.current) cardRef.current.setAttribute("data-dragging", "true");
+      resetSnapState();
+
       const onMove = (me: PointerEvent) => {
         const dx = (me.clientX - startMouseX) / zoom;
         const dy = (me.clientY - startMouseY) / zoom;
+        const rawX = startX + dx;
+        const rawY = startY + dy;
+
+        // Magnetic snap to nearby card edges/centers (priority over grid)
+        const allCards = useWorkspaceStore.getState().cards;
+        const mag = magnetSnap(rawX, rawY, liveSize.current.width, liveSize.current.height, allCards, card.instance_id);
         livePos.current = {
-          x: snapToGrid(startX + dx),
-          y: snapToGrid(startY + dy),
+          x: mag.snappedX ? mag.x : snapToGrid(rawX),
+          y: mag.snappedY ? mag.y : snapToGrid(rawY),
         };
         applyTransform();
       };
@@ -374,14 +478,16 @@ function AgentCard({
         (ue.target as HTMLElement).releasePointerCapture(ue.pointerId);
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
-        // Commit final position to store
+        if (cardRef.current) cardRef.current.removeAttribute("data-dragging");
+        // Commit final position to store + resolve any overlaps
         updateCardPosition(card.instance_id, livePos.current);
+        resolveOverlaps(card.instance_id);
       };
 
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
     },
-    [layoutMode, zoom, card.instance_id, selectCard, bringToFront, updateCardPosition, applyTransform]
+    [layoutMode, zoom, card.instance_id, selectCard, bringToFront, updateCardPosition, resolveOverlaps, applyTransform]
   );
 
   // ===== RESIZE (on corner handle) =====
@@ -427,7 +533,7 @@ function AgentCard({
   return (
     <div
       ref={cardRef}
-      className="absolute"
+      className="absolute card-appear"
       style={{
         left: card.position.x,
         top: card.position.y,
@@ -560,15 +666,24 @@ function AgentCard({
               <path d={SHIELD_PATHS[SHIELD_META[shieldTier].icon]} />
             </svg>
           </button>
-          {shieldOpen && (
+          {shieldOpen && (() => {
+            // Portal to document.body — bypasses overflow:hidden on the
+            // card container and the 3D flip transform containing block.
+            const rect = shieldRef.current?.getBoundingClientRect();
+            const top = (rect?.bottom ?? 0) + 6;
+            const right = window.innerWidth - (rect?.right ?? 0);
+            return createPortal(
             <div
+              ref={shieldPopoverRef}
+              className="popover-enter"
               style={{
-                position: "absolute", top: 24, right: 0, zIndex: 100,
+                position: "fixed", top, right, zIndex: 99999,
                 width: 250, padding: 5, borderRadius: 12,
                 background: "#1C1E22",
                 border: "1px solid rgba(255,255,255,0.07)",
                 boxShadow: "0 6px 24px rgba(0,0,0,0.6)",
                 display: "flex", flexDirection: "column", gap: 2,
+                transformOrigin: "top right",
               }}
             >
               {SHIELD_ORDER.map((tier) => {
@@ -604,8 +719,10 @@ function AgentCard({
                   </button>
                 );
               })}
-            </div>
-          )}
+            </div>,
+            document.body,
+            );
+          })()}
         </div>
         <button
           data-no-expand

@@ -137,6 +137,7 @@ pub fn run() {
             commands::adapter::register_adapter,
             commands::adapter::get_adapter_config,
             commands::adapter::unregister_adapter,
+            commands::adapter::detect_adapter_auth,
             // BE-4: 编排操作
             commands::orchestration::start_discussion,
             commands::orchestration::send_discussion_message,

@@ -33,6 +33,13 @@ pub trait AgentAdapter: Send + Sync {
     /// 返回 None 表示该行无特殊含义（普通输出）
     /// 返回 Some(event) 表示检测到了有意义的事件（状态变更、权限请求等）
     fn parse_output(&self, raw_line: &str) -> Option<ConfluxEvent>;
+
+    /// 检测当前系统上该 adapter 是否已登录/配置好 credentials。
+    /// 返回 Ok(()) 表示 ready，Err(message) 表示需要登录或配置。
+    /// 默认实现返回 Ok(())（适用于自定义 TOML adapter 或无需 auth 的场景）。
+    async fn detect_auth(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// AgentInstance — 单个运行中的 Agent 实例

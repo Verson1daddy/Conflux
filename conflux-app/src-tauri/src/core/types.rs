@@ -518,6 +518,21 @@ pub struct AdapterInfo {
     pub is_builtin: bool,
 }
 
+/// 适配器认证状态（detect_auth 结果）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdapterAuthStatus {
+    /// 适配器 ID
+    pub adapter_id: String,
+    /// 是否已就绪（已登录/已配置 API key）
+    pub ready: bool,
+    /// 状态消息（"Ready" 或具体错误说明）
+    pub message: String,
+    /// 登录/配置命令（如 "claude login"）
+    pub login_command: Option<String>,
+    /// 文档链接
+    pub docs_url: Option<String>,
+}
+
 /// Agent 实例列表展示信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInstanceInfo {

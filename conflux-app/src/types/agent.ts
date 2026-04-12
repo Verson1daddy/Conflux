@@ -167,6 +167,18 @@ export interface AdapterInfo {
 }
 
 /**
+ * 适配器认证状态（detect_auth 结果）
+ * 对应 Rust AdapterAuthStatus
+ */
+export interface AdapterAuthStatus {
+  adapter_id: string;
+  ready: boolean;
+  message: string;
+  login_command: string | null;
+  docs_url: string | null;
+}
+
+/**
  * Agent 实例列表展示信息
  * 对应 Rust AgentInstanceInfo
  */

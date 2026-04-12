@@ -3,10 +3,10 @@
 // Matches design/conflux.pen frame "AddAgent 弹窗" (FLo0j).
 
 import { type FC, useCallback, useEffect, useState } from "react";
-import { createAgentInstance, listAdapters } from "@/lib/tauri-bridge";
+import { createAgentInstance, listAdapters, detectAdapterAuth } from "@/lib/tauri-bridge";
 import { useAgentStore } from "@/stores/agentStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
-import type { AdapterInfo, AdapterId, AgentInstanceInfo, CardLayout } from "@/types";
+import type { AdapterInfo, AdapterAuthStatus, AdapterId, AgentInstanceInfo, CardLayout } from "@/types";
 
 // ===== C2-A4b Card color presets =====
 
@@ -215,6 +215,8 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [authStatuses, setAuthStatuses] = useState<Map<string, AdapterAuthStatus>>(new Map());
+  const [authGuide, setAuthGuide] = useState<AdapterAuthStatus | null>(null);
 
   // Restore last-used working dir + auto-assign adapter default color
   useEffect(() => {
@@ -229,16 +231,31 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
     }
   }, [selectedId]);
 
-  // Load adapters when modal opens
+  // Load adapters + detect auth when modal opens
   useEffect(() => {
     if (!visible) return;
     setLoading(true);
     setError(null);
+    setAuthGuide(null);
     listAdapters()
       .then((list) => {
         setAdapters(list);
         if (list.length > 0 && selectedId === null) {
           setSelectedId(list[0].id);
+        }
+        // Fire auth detection for each adapter (non-blocking)
+        for (const adapter of list) {
+          detectAdapterAuth(adapter.id)
+            .then((status) => {
+              setAuthStatuses((prev) => {
+                const next = new Map(prev);
+                next.set(adapter.id, status);
+                return next;
+              });
+            })
+            .catch(() => {
+              // Detection failed — treat as unknown (no badge)
+            });
         }
       })
       .catch(() => {
@@ -254,7 +271,8 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
         setError("Backend unavailable — showing built-in adapter list (preview only).");
       })
       .finally(() => setLoading(false));
-  }, [visible, selectedId]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
 
   // Escape key to close
   useEffect(() => {
@@ -303,13 +321,33 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
       onClose();
       setSelectedId(null);
     } catch (err) {
-      // Backend returns ConfluxError as a serialized enum object, e.g.
-      //   { "PtyError": { "message": "program not found: claude" } }
-      // not a standard Error instance. Unwrap the variant so the user sees
-      // the actual stderr instead of a useless "Check backend" fallback.
-      setError(formatBackendError(err));
-      // Also log the raw object to DevTools for deeper inspection.
+      const errorMsg = formatBackendError(err);
       console.error("[AddAgent] create_agent_instance failed:", err);
+
+      // Check if this is an auth/login related error — if so, show the
+      // guidance modal instead of a plain error toast.
+      const authKeywords = ["auth", "login", "api key", "credential", "not authorized", "401", "not found", "not logged in"];
+      const lowerMsg = errorMsg.toLowerCase();
+      const isAuthError = authKeywords.some((kw) => lowerMsg.includes(kw));
+
+      if (isAuthError && selectedId) {
+        // Try to use cached auth status, or construct a fallback
+        const cached = authStatuses.get(selectedId);
+        if (cached && !cached.ready) {
+          setAuthGuide(cached);
+        } else {
+          // Construct a minimal guide from the error message
+          setAuthGuide({
+            adapter_id: selectedId,
+            ready: false,
+            message: errorMsg,
+            login_command: null,
+            docs_url: null,
+          });
+        }
+      } else {
+        setError(errorMsg);
+      }
     } finally {
       setCreating(false);
     }
@@ -326,7 +364,7 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
     >
       {/* Backdrop */}
       <div
-        className="absolute inset-0"
+        className="absolute inset-0 modal-scrim-enter"
         style={{ background: "rgba(0,0,0,0.53)", backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)" }}
         onClick={onClose}
         aria-hidden="true"
@@ -334,7 +372,7 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
 
       {/* Modal card */}
       <div
-        className="relative flex flex-col overflow-hidden"
+        className="relative flex flex-col overflow-hidden modal-panel-enter"
         style={{
           width: 440,
           maxHeight: "90vh",
@@ -422,6 +460,7 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
                 const isSelected = selectedId === adapter.id;
                 const meta = metaFor(adapter.id);
                 const IconComp = meta.icon;
+                const authStatus = authStatuses.get(adapter.id);
                 return (
                   <button
                     key={adapter.id}
@@ -450,17 +489,38 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
 
                     {/* Name + caption */}
                     <div className="flex-1 min-w-0 flex flex-col" style={{ gap: 3 }}>
-                      <span
-                        className="truncate"
-                        style={{
-                          fontFamily: "'Geist Sans',sans-serif",
-                          fontSize: 14,
-                          fontWeight: 600,
-                          color: "#F2F2F2",
-                        }}
-                      >
-                        {adapter.name}
-                      </span>
+                      <div className="flex items-center" style={{ gap: 8 }}>
+                        <span
+                          className="truncate"
+                          style={{
+                            fontFamily: "'Geist Sans',sans-serif",
+                            fontSize: 14,
+                            fontWeight: 600,
+                            color: "#F2F2F2",
+                          }}
+                        >
+                          {adapter.name}
+                        </span>
+                        {/* Auth badge */}
+                        {authStatus && (
+                          <span
+                            style={{
+                              fontFamily: "'Geist Sans',sans-serif",
+                              fontSize: 9,
+                              fontWeight: 600,
+                              padding: "2px 7px",
+                              borderRadius: 9999,
+                              letterSpacing: 0.3,
+                              background: authStatus.ready ? "rgba(52,199,89,0.15)" : "rgba(255,184,0,0.15)",
+                              color: authStatus.ready ? "#34C759" : "#FFB800",
+                              border: `1px solid ${authStatus.ready ? "rgba(52,199,89,0.3)" : "rgba(255,184,0,0.3)"}`,
+                              whiteSpace: "nowrap" as const,
+                            }}
+                          >
+                            {authStatus.ready ? "Ready" : "Setup needed"}
+                          </span>
+                        )}
+                      </div>
                       <span
                         className="truncate"
                         style={{
@@ -635,6 +695,161 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
             <span>{creating ? "Creating..." : "Create Agent"}</span>
           </button>
         </div>
+
+        {/* Auth guidance overlay */}
+        {authGuide && (
+          <div
+            className="absolute inset-0 flex items-center justify-center"
+            style={{
+              background: "rgba(0,0,0,0.7)",
+              backdropFilter: "blur(4px)",
+              borderRadius: 12,
+              zIndex: 10,
+            }}
+          >
+            <div
+              className="flex flex-col"
+              style={{
+                width: 360,
+                padding: "28px 24px",
+                gap: 16,
+                background: "rgba(20,20,28,0.95)",
+                border: "1px solid rgba(255,184,0,0.25)",
+                borderRadius: 12,
+                boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+              }}
+            >
+              {/* Title */}
+              <div className="flex items-center" style={{ gap: 10 }}>
+                <div
+                  style={{
+                    width: 32, height: 32, borderRadius: 8,
+                    background: "rgba(255,184,0,0.12)",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                  }}
+                >
+                  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#FFB800" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" x2="12" y1="8" y2="12" />
+                    <line x1="12" x2="12.01" y1="16" y2="16" />
+                  </svg>
+                </div>
+                <span
+                  style={{
+                    fontFamily: "'Fraunces Variable', Georgia, serif",
+                    fontSize: 18,
+                    fontWeight: 600,
+                    color: "#F2F2F2",
+                  }}
+                >
+                  Setup Required
+                </span>
+              </div>
+
+              {/* Message */}
+              <p
+                style={{
+                  fontFamily: "'Geist Sans', sans-serif",
+                  fontSize: 12,
+                  color: "#B8B3B0",
+                  lineHeight: 1.6,
+                  margin: 0,
+                }}
+              >
+                {authGuide.message}
+              </p>
+
+              {/* Login command */}
+              {authGuide.login_command && (
+                <div
+                  className="flex items-center"
+                  style={{
+                    padding: "10px 14px",
+                    gap: 10,
+                    borderRadius: 8,
+                    background: "rgba(255,255,255,0.04)",
+                    border: "1px solid rgba(255,255,255,0.08)",
+                  }}
+                >
+                  <code
+                    style={{
+                      flex: 1,
+                      fontFamily: "'JetBrains Mono Variable', monospace",
+                      fontSize: 12,
+                      color: "#B8D4E3",
+                      wordBreak: "break-all",
+                    }}
+                  >
+                    {authGuide.login_command}
+                  </code>
+                  <button
+                    onClick={() => {
+                      if (authGuide.login_command) {
+                        navigator.clipboard.writeText(authGuide.login_command);
+                      }
+                    }}
+                    className="shrink-0"
+                    style={{
+                      padding: "5px 10px",
+                      borderRadius: 6,
+                      background: "rgba(184,212,227,0.12)",
+                      border: "1px solid rgba(184,212,227,0.2)",
+                      fontFamily: "'Geist Sans', sans-serif",
+                      fontSize: 10,
+                      fontWeight: 600,
+                      color: "#B8D4E3",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Copy
+                  </button>
+                </div>
+              )}
+
+              {/* Actions */}
+              <div className="flex items-center" style={{ gap: 10, justifyContent: "flex-end", marginTop: 4 }}>
+                {authGuide.docs_url && (
+                  <button
+                    onClick={() => {
+                      if (authGuide.docs_url) {
+                        window.open(authGuide.docs_url, "_blank");
+                      }
+                    }}
+                    style={{
+                      padding: "8px 16px",
+                      borderRadius: 9999,
+                      background: "rgba(255,255,255,0.04)",
+                      border: "1px solid rgba(255,255,255,0.082)",
+                      fontFamily: "'Geist Sans', sans-serif",
+                      fontSize: 12,
+                      fontWeight: 500,
+                      color: "#B8B3B0",
+                      cursor: "pointer",
+                    }}
+                  >
+                    View Docs
+                  </button>
+                )}
+                <button
+                  onClick={() => setAuthGuide(null)}
+                  style={{
+                    padding: "8px 16px",
+                    borderRadius: 9999,
+                    background: "rgba(255,184,0,0.15)",
+                    border: "1px solid rgba(255,184,0,0.3)",
+                    fontFamily: "'Geist Sans', sans-serif",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: "#FFB800",
+                    cursor: "pointer",
+                  }}
+                >
+                  Got it
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

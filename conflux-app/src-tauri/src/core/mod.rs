@@ -72,6 +72,7 @@ pub use types::AdapterCapabilities;
 pub use types::AdapterConfig;
 pub use types::StatusPatterns;
 pub use types::AdapterInfo;
+pub use types::AdapterAuthStatus;
 
 // 安全补丁类型（附录 B）
 pub use types::InjectionSource;

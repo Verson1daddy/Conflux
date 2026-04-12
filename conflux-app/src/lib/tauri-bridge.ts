@@ -21,6 +21,7 @@ import type {
   AgentStateDetail,
   AgentTree,
   AdapterInfo,
+  AdapterAuthStatus,
   AdapterConfig,
   DiscussionSession,
   DiscussionMessage,
@@ -229,6 +230,18 @@ export async function unregisterAdapter(
   adapterId: AdapterId
 ): Promise<void> {
   return invoke<void>("unregister_adapter", {
+    adapterId,
+  });
+}
+
+/**
+ * 检测指定适配器的认证/登录状态
+ * 对应 Rust: detect_adapter_auth(adapter_id) -> AdapterAuthStatus
+ */
+export async function detectAdapterAuth(
+  adapterId: AdapterId
+): Promise<AdapterAuthStatus> {
+  return invoke<AdapterAuthStatus>("detect_adapter_auth", {
     adapterId,
   });
 }

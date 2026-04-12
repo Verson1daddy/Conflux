@@ -19,6 +19,7 @@ export type {
   AdapterConfig,
   StatusPatterns,
   AdapterInfo,
+  AdapterAuthStatus,
   AgentInstanceInfo,
   // 会话记录
   SessionSummary,

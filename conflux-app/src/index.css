@@ -5,6 +5,73 @@
 /* Conflux global styles */
 :root {
   --snap-grid: 8px;
+  /* Unified animation tokens — Apple × magazine editorial feel */
+  --ease-apple: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out-smooth: cubic-bezier(0.4, 0, 0.2, 1);
+  --duration-fast: 0.18s;
+  --duration-normal: 0.28s;
+  --duration-exit: 0.22s;
+}
+
+/* ===== Modal system: scrim + panel enter/exit ===== */
+@keyframes modal-scrim-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes modal-scrim-fade-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+@keyframes modal-panel-enter {
+  from { opacity: 0; transform: scale(0.96) translateY(8px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+@keyframes modal-panel-exit {
+  from { opacity: 1; transform: scale(1) translateY(0); }
+  to   { opacity: 0; transform: scale(0.96) translateY(8px); }
+}
+.modal-scrim-enter {
+  animation: modal-scrim-fade-in var(--duration-normal) var(--ease-apple);
+}
+.modal-scrim-exit {
+  animation: modal-scrim-fade-out var(--duration-exit) var(--ease-out-smooth) forwards;
+}
+.modal-panel-enter {
+  animation: modal-panel-enter var(--duration-normal) var(--ease-apple);
+}
+.modal-panel-exit {
+  animation: modal-panel-exit var(--duration-exit) var(--ease-out-smooth) forwards;
+}
+
+/* ===== Agent card appear + smooth position transitions ===== */
+@keyframes card-appear {
+  from { opacity: 0; transform: scale(0.92); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.card-appear {
+  animation: card-appear var(--duration-normal) var(--ease-apple);
+  /* Smooth position transitions when pushed by overlap resolution */
+  transition: left 0.28s var(--ease-apple), top 0.28s var(--ease-apple);
+}
+/* During active drag: disable position transition so it feels instant */
+.card-appear[data-dragging="true"] {
+  transition: none;
+}
+
+/* ===== Popover enter/exit ===== */
+@keyframes popover-enter {
+  from { opacity: 0; transform: scale(0.92) translateY(-4px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+@keyframes popover-exit {
+  from { opacity: 1; transform: scale(1) translateY(0); }
+  to   { opacity: 0; transform: scale(0.92) translateY(-4px); }
+}
+.popover-enter {
+  animation: popover-enter var(--duration-fast) var(--ease-apple);
+}
+.popover-exit {
+  animation: popover-exit 0.15s var(--ease-out-smooth) forwards;
 }
 
 /* Disable text selection globally (desktop app) */
@@ -27,13 +94,11 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+.glass {
+  transition: background 0.2s var(--ease-apple), border-color 0.2s var(--ease-apple);
+}
 .glass:hover {
   background: rgba(255, 255, 255, 0.07);
-}
-
-/* Glass header region */
-.glass-header {
-  background: rgba(255, 255, 255, 0.024);
 }
 
 /* Canvas gradient background */
@@ -44,7 +109,7 @@ body {
 /* Sidebar pin icon — hidden by default, fades in when hovering the agent row */
 .sidebar-pin {
   opacity: 0;
-  transition: opacity 0.18s ease;
+  transition: opacity 0.2s var(--ease-apple);
   pointer-events: none;
 }
 .sidebar-agent-row:hover .sidebar-pin {
@@ -171,8 +236,23 @@ body {
   from { opacity: 0; }
   to   { opacity: 1; }
 }
+/* Expanded scrim exit keyframes */
+@keyframes expanded-scrim-fade-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+@keyframes expanded-panel-exit {
+  from { opacity: 1; transform: translateX(0) scale(1); }
+  to   { opacity: 0; transform: translateX(32px) scale(0.985); }
+}
 .expanded-enter {
-  animation: expanded-scrim-fade 0.22s ease-out;
+  animation: expanded-scrim-fade var(--duration-exit) var(--ease-apple);
+}
+.expanded-exit {
+  animation: expanded-scrim-fade-out var(--duration-exit) var(--ease-out-smooth) forwards;
+}
+.expanded-panel-exit {
+  animation: expanded-panel-exit var(--duration-exit) var(--ease-out-smooth) forwards;
 }
 @keyframes expanded-panel-slide {
   from {
@@ -185,7 +265,7 @@ body {
   }
 }
 .expanded-panel-enter {
-  animation: expanded-panel-slide 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+  animation: expanded-panel-slide 0.32s var(--ease-apple);
 }
 
 /* Discussion panel — slide in from right edge */
