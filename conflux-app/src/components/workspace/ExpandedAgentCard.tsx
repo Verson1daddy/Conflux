@@ -175,9 +175,13 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
     (s) => s.statuses.get(instanceId) ?? "idle"
   ) as AgentStatus;
 
+  // Real instances subscribe to the live PTY stream; demo instances keep
+  // playing the static ANSI reel. Real and demo cards can coexist on the
+  // canvas, and the expanded view here should mirror the underlying card.
+  const isDemo = instanceId.startsWith("demo-");
   const demoContent = useMemo(
-    () => DEMO_EXPANDED[instance?.adapter_id ?? ""] ?? "",
-    [instance?.adapter_id]
+    () => (isDemo ? (DEMO_EXPANDED[instance?.adapter_id ?? ""] ?? "") : ""),
+    [instance?.adapter_id, isDemo]
   );
 
   const statusMeta = STATUS_META[status] ?? STATUS_META.idle;
@@ -427,9 +431,10 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
             }}
           >
             <XtermTerminal
-              instanceId={`expanded-${instanceId}`}
-              content={demoContent}
+              instanceId={instanceId}
+              content={isDemo ? demoContent : undefined}
               interactive
+              subscribeToPty={!isDemo}
             />
           </div>
         </div>

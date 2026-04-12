@@ -3,6 +3,14 @@
 // 使用 @tauri-apps/api/core 的 invoke() 调用后端命令
 // 每个函数对应一个 #[tauri::command] Rust 函数
 // 返回值类型与 Rust 返回类型一一对应
+//
+// IMPORTANT — Tauri v2 参数命名约定：
+//   Rust 侧的参数名是 snake_case（例：`adapter_id: AdapterId`），
+//   前端调 invoke 时必须用 **camelCase**（例：`adapterId`）。
+//   Tauri 自动把 camelCase 反向 map 到 snake_case。
+//   如果前端直接传 snake_case，Tauri 报 "missing required key adapterId"，
+//   因为它在参数对象里找不到 camelCase 的预期 key。
+//   所有带参数的 invoke 在这个文件里都用 camelCase。
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
@@ -39,8 +47,8 @@ export async function createAgentInstance(
   args?: string[]
 ): Promise<AgentInstanceInfo> {
   return invoke<AgentInstanceInfo>("create_agent_instance", {
-    adapter_id: adapterId,
-    working_dir: workingDir ?? null,
+    adapterId,
+    workingDir: workingDir ?? null,
     args: args ?? null,
   });
 }
@@ -53,7 +61,7 @@ export async function destroyAgentInstance(
   instanceId: InstanceId
 ): Promise<void> {
   return invoke<void>("destroy_agent_instance", {
-    instance_id: instanceId,
+    instanceId,
   });
 }
 
@@ -73,7 +81,7 @@ export async function getAgentState(
   instanceId: InstanceId
 ): Promise<AgentStateDetail> {
   return invoke<AgentStateDetail>("get_agent_state", {
-    instance_id: instanceId,
+    instanceId,
   });
 }
 
@@ -83,7 +91,64 @@ export async function getAgentState(
  */
 export async function getAgentTree(instanceId: InstanceId): Promise<AgentTree> {
   return invoke<AgentTree>("get_agent_tree", {
-    instance_id: instanceId,
+    instanceId,
+  });
+}
+
+/**
+ * 拉取 PTY 实例的 OutputBuffer 历史（base64 编码）
+ *
+ * 让刚 mount 的 xterm 能重放已经被后端捕获的历史输出，避免预览卡片和
+ * 展开态的内容不同步（expanded 态挂得比卡片晚，若不拉历史就永远看不到
+ * mount 前到达的 PTY chunks）。
+ * 对应 Rust: get_pty_history(instance_id) -> String (base64)
+ */
+export async function getPtyHistory(
+  instanceId: InstanceId
+): Promise<string> {
+  return invoke<string>("get_pty_history", {
+    instanceId,
+  });
+}
+
+/**
+ * C2-T1 备用 exit 检测 · 轮询 fallback
+ *
+ * Windows ConPTY 在 child exit 后 reader 有时不返回 EOF，导致
+ * ProcessExited 事件永远不 emit。前端用 ~2s 间隔调此命令检查。
+ * 对应 Rust: is_process_exited(instance_id) -> bool
+ */
+export async function isProcessExited(
+  instanceId: InstanceId
+): Promise<boolean> {
+  return invoke<boolean>("is_process_exited", {
+    instanceId,
+  });
+}
+
+/**
+ * C2-T1 Exit Overlay · Respawn 模式枚举（对应 Rust RespawnMode）
+ *
+ * - `restart`: 用原 adapter_id 重启同一种 agent（例如 claude 退出后再启一个 claude）
+ * - `shell`:   切换到 powershell（Windows）/ bash（未来平台），保留同一 instance_id
+ */
+export type RespawnMode = "restart" | "shell";
+
+/**
+ * C2-T1 Exit Overlay · 重启 Agent 或切换到 Shell（复用 instance_id）
+ *
+ * 用于 ExitOverlay 的 Restart / Open Shell 两个按钮。成功后卡片在前端
+ * 原地复活，不需要 add/remove card。
+ *
+ * 对应 Rust: respawn_agent_instance(instance_id, mode) -> AgentInstanceInfo
+ */
+export async function respawnAgentInstance(
+  instanceId: InstanceId,
+  mode: RespawnMode
+): Promise<AgentInstanceInfo> {
+  return invoke<AgentInstanceInfo>("respawn_agent_instance", {
+    instanceId,
+    mode,
   });
 }
 
@@ -101,7 +166,7 @@ export async function injectStdin(
   source: InjectionSource
 ): Promise<void> {
   return invoke<void>("inject_stdin", {
-    instance_id: instanceId,
+    instanceId,
     input,
     source,
   });
@@ -117,7 +182,7 @@ export async function resizePty(
   rows: number
 ): Promise<void> {
   return invoke<void>("resize_pty", {
-    instance_id: instanceId,
+    instanceId,
     cols,
     rows,
   });
@@ -140,7 +205,7 @@ export async function listAdapters(): Promise<AdapterInfo[]> {
  */
 export async function registerAdapter(configPath: string): Promise<AdapterId> {
   return invoke<AdapterId>("register_adapter", {
-    config_path: configPath,
+    configPath,
   });
 }
 
@@ -152,7 +217,7 @@ export async function getAdapterConfig(
   adapterId: AdapterId
 ): Promise<AdapterConfig> {
   return invoke<AdapterConfig>("get_adapter_config", {
-    adapter_id: adapterId,
+    adapterId,
   });
 }
 
@@ -164,7 +229,7 @@ export async function unregisterAdapter(
   adapterId: AdapterId
 ): Promise<void> {
   return invoke<void>("unregister_adapter", {
-    adapter_id: adapterId,
+    adapterId,
   });
 }
 
@@ -182,8 +247,8 @@ export async function startDiscussion(
 ): Promise<DiscussionSession> {
   return invoke<DiscussionSession>("start_discussion", {
     topic,
-    participant_ids: participantIds,
-    max_rounds: maxRounds ?? null,
+    participantIds,
+    maxRounds: maxRounds ?? null,
   });
 }
 
@@ -196,7 +261,7 @@ export async function sendDiscussionMessage(
   content: string
 ): Promise<DiscussionMessage> {
   return invoke<DiscussionMessage>("send_discussion_message", {
-    discussion_id: discussionId,
+    discussionId,
     content,
   });
 }
@@ -209,7 +274,7 @@ export async function endDiscussion(
   discussionId: DiscussionId
 ): Promise<DiscussionSummary> {
   return invoke<DiscussionSummary>("end_discussion", {
-    discussion_id: discussionId,
+    discussionId,
   });
 }
 
@@ -221,7 +286,7 @@ export async function setPrimaryFramework(
   instanceId: InstanceId
 ): Promise<void> {
   return invoke<void>("set_primary_framework", {
-    instance_id: instanceId,
+    instanceId,
   });
 }
 
@@ -261,9 +326,9 @@ export async function querySessionEvents(
   limit?: number
 ): Promise<SessionEvent[]> {
   return invoke<SessionEvent[]>("query_session_events", {
-    instance_id: instanceId,
-    from_ts: fromTs ?? null,
-    to_ts: toTs ?? null,
+    instanceId,
+    fromTs: fromTs ?? null,
+    toTs: toTs ?? null,
     limit: limit ?? null,
   });
 }
@@ -290,7 +355,7 @@ export async function getDiscussionMessages(
   discussionId: DiscussionId
 ): Promise<DiscussionMessage[]> {
   return invoke<DiscussionMessage[]>("get_discussion_messages", {
-    discussion_id: discussionId,
+    discussionId,
   });
 }
 
@@ -344,7 +409,7 @@ export async function openWorkspaceWindow(): Promise<void> {
  */
 export async function focusAgentCard(instanceId: InstanceId): Promise<void> {
   return invoke<void>("focus_agent_card", {
-    instance_id: instanceId,
+    instanceId,
   });
 }
 
@@ -378,7 +443,7 @@ export async function respondToPermission(
   decision: PermissionDecision
 ): Promise<void> {
   return invoke<void>("respond_to_permission", {
-    permission_id: permissionId,
+    permissionId,
     decision,
   });
 }

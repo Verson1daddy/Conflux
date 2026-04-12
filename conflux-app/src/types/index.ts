@@ -52,6 +52,7 @@ export type {
   CoordinationCommandPayload,
   PtyOutputPayload,
   StdinInjectedPayload,
+  ProcessExitedPayload,
 } from "./events";
 
 // 讨论相关类型

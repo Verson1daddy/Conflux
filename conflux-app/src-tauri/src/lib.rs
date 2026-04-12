@@ -120,6 +120,9 @@ pub fn run() {
             commands::agent::list_agent_instances,
             commands::agent::get_agent_state,
             commands::agent::get_agent_tree,
+            commands::agent::get_pty_history,
+            commands::agent::is_process_exited,
+            commands::agent::respawn_agent_instance,
             // BE-1: 窗口管理
             commands::window::open_workspace_window,
             commands::window::focus_agent_card,

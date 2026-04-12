@@ -7,6 +7,7 @@
 import { useCallback, useRef, useLayoutEffect, useMemo, useState, useEffect } from "react";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useAgentStore } from "@/stores/agentStore";
+import { destroyAgentInstance } from "@/lib/tauri-bridge";
 import { SNAP_GRID_PX } from "@/types/layout";
 import { XtermTerminal } from "./XtermTerminal";
 import { ExpandedAgentCard } from "./ExpandedAgentCard";
@@ -142,7 +143,9 @@ function AgentCard({
   const updateCardSize = useWorkspaceStore((s) => s.updateCardSize);
   const selectCard = useWorkspaceStore((s) => s.selectCard);
   const bringToFront = useWorkspaceStore((s) => s.bringToFront);
+  const removeCard = useWorkspaceStore((s) => s.removeCard);
   const setExpandedCard = useAgentStore((s) => s.setExpandedCard);
+  const removeInstance = useAgentStore((s) => s.removeInstance);
 
   // Keep the back face mounted during flip-back so the transition animates
   // out cleanly; unmount ~660ms after isFlipped becomes false to free the
@@ -157,6 +160,25 @@ function AgentCard({
     }
   }, [isFlipped, showBack]);
 
+  // Track whether the overlay ExpandedAgentCard is/was open for this card.
+  // When expanded closes, increment termRefreshKey so the card-preview's
+  // XtermTerminal remounts — it re-fetches PTY history at the card's
+  // (smaller) grid size, re-sends initial resize, and renders correctly.
+  // Without this the card preview keeps showing content formatted for the
+  // expanded terminal's (larger) column count → visual corruption.
+  const isExpandedOverlay = useAgentStore(
+    (s) => !isFlipped && s.expandedCardId === card.instance_id
+  );
+  const [termRefreshKey, setTermRefreshKey] = useState(0);
+  const wasExpandedRef = useRef(isExpandedOverlay);
+  useEffect(() => {
+    if (wasExpandedRef.current && !isExpandedOverlay) {
+      // Expanded just closed → force xterm remount
+      setTermRefreshKey((k) => k + 1);
+    }
+    wasExpandedRef.current = isExpandedOverlay;
+  }, [isExpandedOverlay]);
+
   const cardRef = useRef<HTMLDivElement>(null);
 
   // Live position/size refs — updated during drag/resize without triggering re-render
@@ -170,9 +192,12 @@ function AgentCard({
   }, [card.position.x, card.position.y, card.size.width, card.size.height]);
 
   const vendorBadge = ADAPTER_VENDOR[adapterBadge] ?? adapterBadge;
+  // Real instances subscribe to the live PTY event stream; demo instances
+  // (instance_id prefixed with `demo-`) keep replaying the static ANSI reel.
+  const isDemo = card.instance_id.startsWith("demo-");
   const demoContent = useMemo(
-    () => DEMO_TERMINAL_ANSI[adapterBadge] ?? "",
-    [adapterBadge]
+    () => (isDemo ? (DEMO_TERMINAL_ANSI[adapterBadge] ?? "") : ""),
+    [adapterBadge, isDemo]
   );
   const footerInfo = DEMO_FOOTER[adapterBadge] ?? { time: "", detail: "" };
 
@@ -229,6 +254,35 @@ function AgentCard({
       setExpandedCard(current === card.instance_id ? null : card.instance_id);
     },
     [card.instance_id, setExpandedCard]
+  );
+
+  // Close a card: destroy the backend PTY process (real instances only),
+  // then drop it from the frontend stores so the card disappears from the
+  // canvas. Demo cards (instance_id prefixed with `demo-`) skip the backend
+  // call because there's no real process behind them.
+  const handleClose = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      const instanceId = card.instance_id;
+      const isDemo = instanceId.startsWith("demo-");
+      const finish = () => {
+        removeCard(instanceId);
+        removeInstance(instanceId);
+      };
+      if (isDemo) {
+        finish();
+        return;
+      }
+      destroyAgentInstance(instanceId)
+        .then(finish)
+        .catch((err) => {
+          // Backend rejected the destroy call — log and still remove the
+          // card from the UI so the user isn't stuck with a dead tile.
+          console.error("[AgentCard] destroyAgentInstance failed:", err);
+          finish();
+        });
+    },
+    [card.instance_id, removeCard, removeInstance]
   );
 
   // ===== DRAG (on grip handle) =====
@@ -412,6 +466,32 @@ function AgentCard({
         </button>
         <button
           data-no-expand
+          className="shrink-0 select-none flex items-center justify-center transition-colors"
+          style={{
+            color: "#6B7280",
+            width: 18,
+            height: 18,
+            opacity: 0.7,
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={handleClose}
+          onMouseEnter={(e) => {
+            (e.currentTarget as HTMLButtonElement).style.color = "#FF6B6B";
+            (e.currentTarget as HTMLButtonElement).style.opacity = "1";
+          }}
+          onMouseLeave={(e) => {
+            (e.currentTarget as HTMLButtonElement).style.color = "#6B7280";
+            (e.currentTarget as HTMLButtonElement).style.opacity = "0.7";
+          }}
+          title="Close agent (destroy PTY process)"
+          aria-label="Close agent"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M18 6 6 18M6 6l12 12" />
+          </svg>
+        </button>
+        <button
+          data-no-expand
           className="shrink-0 select-none flex items-center justify-center"
           style={{
             color: "#6B7280",
@@ -434,7 +514,12 @@ function AgentCard({
           className="flex-1 min-h-0 overflow-hidden"
           style={{ padding: "10px 14px 6px 14px" }}
         >
-          <XtermTerminal instanceId={card.instance_id} content={demoContent} />
+          <XtermTerminal
+            key={`${card.instance_id}-${termRefreshKey}`}
+            instanceId={card.instance_id}
+            content={isDemo ? demoContent : undefined}
+            subscribeToPty={!isDemo}
+          />
         </div>
       )}
 

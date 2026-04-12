@@ -131,6 +131,28 @@ export interface StdinInjectedPayload {
   timestamp: number;
 }
 
+/**
+ * PTY 子进程退出事件 payload — 对应 Rust ConfluxEvent::ProcessExited
+ *
+ * 由 PtyManager 的读取线程在检测到 EOF 时发送。
+ * XtermTerminal 订阅此事件以弹出 ExitOverlay，让用户选择 Restart /
+ * Open Shell / Close Card。
+ *
+ * 字段详情见 Rust 侧 `src-tauri/src/core/event.rs::ConfluxEvent::ProcessExited`。
+ */
+export interface ProcessExitedPayload {
+  /** 退出的实例 ID */
+  instance_id: InstanceId;
+  /** 所属 adapter ID（Restart 时复用；shell 模式下后端会在 respawn 后写入 "__shell__"） */
+  adapter_id: string;
+  /** 退出码；null = 无法获取（读取线程粗粒度版先置 null，后续精细化） */
+  exit_code: number | null;
+  /** 信号描述："pipe_broken" | null — null = 正常退出 */
+  signal: string | null;
+  /** 时间戳（Unix 时间戳 ms） */
+  timestamp: number;
+}
+
 // ===== ConfluxEvent 联合类型 =====
 
 /**
@@ -149,7 +171,8 @@ export type ConfluxEvent =
   | { type: "DiscussionMessage"; payload: DiscussionMessagePayload }
   | { type: "CoordinationCommand"; payload: CoordinationCommandPayload }
   | { type: "PtyOutput"; payload: PtyOutputPayload }
-  | { type: "StdinInjected"; payload: StdinInjectedPayload };
+  | { type: "StdinInjected"; payload: StdinInjectedPayload }
+  | { type: "ProcessExited"; payload: ProcessExitedPayload };
 
 /**
  * ConfluxEvent 的 type 字段可能的值

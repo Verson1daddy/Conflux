@@ -197,6 +197,7 @@ fn extract_timestamp(event: &ConfluxEvent) -> i64 {
         ConfluxEvent::CoordinationCommand { timestamp, .. } => *timestamp,
         ConfluxEvent::PtyOutput { timestamp, .. } => *timestamp,
         ConfluxEvent::StdinInjected { timestamp, .. } => *timestamp,
+        ConfluxEvent::ProcessExited { timestamp, .. } => *timestamp,
     }
 }
 

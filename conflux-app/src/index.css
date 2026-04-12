@@ -203,22 +203,35 @@ body {
   animation: discussion-panel-enter 0.32s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+/* C2-T1 Exit Overlay — fade + lift in when the PTY process exits.
+   0.22s is the same snappy curve used by expanded-scrim so the two feel
+   consistent when the user mass-closes multiple cards. */
+@keyframes exit-overlay-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
 /* Tailwind arbitrary z-index for DiscussionPanel (sits above ExpandedAgentCard
    z-40 but below modal stack z-50: SendTo / Settings / Search / AddAgent). */
 .z-45 {
   z-index: 45;
 }
 
-/* xterm.js overrides — match Conflux glass terminal look */
+/* xterm.js overrides — terminal area uses an opaque #0A0F15 surface. The
+   WebGL renderer refuses transparent backgrounds, and DOM fallback also
+   renders crisper glyphs against a solid color. The card's header/footer
+   still carry the Conflux glass aesthetic around the terminal. */
 .xterm {
   /* Allow mouse text selection in card preview mode */
   user-select: text !important;
   -webkit-user-select: text !important;
   padding: 0;
-}
-.xterm .xterm-viewport,
-.xterm .xterm-screen {
-  background-color: transparent !important;
 }
 .xterm .xterm-viewport::-webkit-scrollbar {
   width: 4px;

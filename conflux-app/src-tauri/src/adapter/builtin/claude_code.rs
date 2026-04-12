@@ -68,7 +68,13 @@ impl ClaudeCodeAdapter {
         let config = AdapterConfig {
             name: "Claude Code".to_string(),
             command: "claude".to_string(),
-            default_args: vec!["--no-banner".to_string()],
+            // Current Claude Code CLI no longer recognizes `--no-banner`
+            // (removed upstream). Launching the binary with that flag fails
+            // with `error: unknown option '--no-banner'` and exits instantly.
+            // Leave default_args empty so the banner + onboarding wizard
+            // shows up unchanged in the Conflux card terminal, which matches
+            // the "user runs the real CLI" contract.
+            default_args: vec![],
             status_patterns,
             permission_pattern: Some(r"Allow|Deny|Do you want to".to_string()),
             sub_agent_spawn_pattern: Some(r"Spawning agent|Agent\(".to_string()),

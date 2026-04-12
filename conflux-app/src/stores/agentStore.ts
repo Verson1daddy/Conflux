@@ -7,6 +7,7 @@ import type {
   AgentInstanceInfo,
   AgentStatus,
   AgentTree,
+  ProcessExitedPayload,
 } from "@/types";
 
 // ===== Discussion wizard types =====
@@ -90,6 +91,11 @@ interface AgentStoreState {
   statuses: Map<string, AgentStatus>;
   /** Agent tree for each instance, keyed by instance_id */
   trees: Map<string, AgentTree>;
+  /** C2-T1 Exit Overlay · record of PTY exit payloads keyed by instance_id.
+   *  Lives in the store (not in XtermTerminal local state) so that card
+   *  unmount/remount cycles — resize below terminal-minimum, 3D flip,
+   *  collapse from expanded — don't hide the overlay. */
+  exitStates: Map<string, ProcessExitedPayload>;
   /** Currently expanded card instance_id, or null when no card is expanded */
   expandedCardId: string | null;
   /** Discussion wizard state (multi-step + runtime chatroom) */
@@ -99,6 +105,15 @@ interface AgentStoreState {
 
   setInstances: (instances: AgentInstanceInfo[]) => void;
   addInstance: (instance: AgentInstanceInfo) => void;
+  /** Drop an instance from the store along with its status/tree entries.
+   *  The caller is responsible for any backend destroy_agent_instance call
+   *  — this action only touches frontend state. */
+  removeInstance: (instanceId: string) => void;
+  /** C2-T1 Exit Overlay · record that a PTY process has exited. Kept in the
+   *  global store (not XtermTerminal local state) so that toggling a card
+   *  through resize / flip / expand-collapse doesn't accidentally hide the
+   *  overlay — the fact that a process is dead must survive remounts. */
+  setExitState: (instanceId: string, payload: ProcessExitedPayload | null) => void;
   updateStatus: (instanceId: string, status: AgentStatus) => void;
   updateTree: (instanceId: string, tree: AgentTree) => void;
   setExpandedCard: (id: string | null) => void;
@@ -200,6 +215,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
   instances: new Map(),
   statuses: new Map(),
   trees: new Map(),
+  exitStates: new Map(),
   expandedCardId: null,
   discussion: { ...EMPTY_WIZARD, participantIds: new Set() },
 
@@ -221,6 +237,40 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
       const nextStatuses = new Map(state.statuses);
       nextStatuses.set(instance.instance_id, instance.status);
       return { instances: nextInstances, statuses: nextStatuses };
+    }),
+
+  removeInstance: (instanceId) =>
+    set((state) => {
+      const nextInstances = new Map(state.instances);
+      nextInstances.delete(instanceId);
+      const nextStatuses = new Map(state.statuses);
+      nextStatuses.delete(instanceId);
+      const nextTrees = new Map(state.trees);
+      nextTrees.delete(instanceId);
+      const nextExitStates = new Map(state.exitStates);
+      nextExitStates.delete(instanceId);
+      // If the user was looking at this instance in expanded mode, collapse
+      // the view before it disappears so the panel doesn't render a ghost.
+      const nextExpanded =
+        state.expandedCardId === instanceId ? null : state.expandedCardId;
+      return {
+        instances: nextInstances,
+        statuses: nextStatuses,
+        trees: nextTrees,
+        exitStates: nextExitStates,
+        expandedCardId: nextExpanded,
+      };
+    }),
+
+  setExitState: (instanceId, payload) =>
+    set((state) => {
+      const next = new Map(state.exitStates);
+      if (payload === null) {
+        next.delete(instanceId);
+      } else {
+        next.set(instanceId, payload);
+      }
+      return { exitStates: next };
     }),
 
   updateStatus: (instanceId, status) =>

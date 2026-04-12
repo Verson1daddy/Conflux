@@ -272,3 +272,204 @@ pub async fn get_agent_tree(
         children: Vec::new(),
     })
 }
+
+/// C2-T1 Exit Overlay · respawn 模式——restart 原 agent 或切换到 shell
+///
+/// 用于 ExitOverlay 的三个按钮中的两个：
+/// - `"restart"`: 用原 adapter_id 重启 claude（复用同一个 instance_id）
+/// - `"shell"`:   把同一个 instance_id 切换成 powershell.exe，用户可以跑
+///                 任意 shell 命令（git / ls / 再次跑 claude 等）
+///
+/// Close Card 走前端现有的 destroy_agent_instance + removeCard 路径，
+/// 不经过此命令。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RespawnMode {
+    /// 用原 adapter_id 重启同一种 agent
+    Restart,
+    /// 切换到 powershell（Windows）/ bash（未来平台），保留同一 instance_id
+    Shell,
+}
+
+/// Respawn 后的 "shell" 适配器假名——instance_adapter_map 里用它
+/// 标记该实例当前挂的是 shell 而不是真 adapter。
+const SHELL_ADAPTER_PSEUDO_ID: &str = "__shell__";
+
+/// C2-T1 Exit Overlay · 重启 Agent 或切换到 Shell（复用 instance_id）
+///
+/// # 参数
+/// - `instance_id`: 要 respawn 的实例 ID（保留给 UI 的 card）
+/// - `mode`: 重启模式（restart / shell）
+///
+/// # 返回
+/// 新的 AgentInstanceInfo（instance_id 和传入一致）
+///
+/// # Errors
+/// - `AdapterNotFound`: restart 模式下找不到原 adapter（不应发生，除非 unregister 过）
+/// - `PtyError`: spawn 新 PTY 失败
+#[tauri::command]
+pub async fn respawn_agent_instance(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    instance_id: InstanceId,
+    mode: RespawnMode,
+) -> Result<AgentInstanceInfo, ConfluxError> {
+    // 1. 从原 instance_adapter_map 查旧 adapter_id —— restart 模式需要它来
+    //    查 adapter_config + adapter trait 对象。shell 模式用不上但还是记录。
+    let original_adapter_id = {
+        let map = state.instance_adapter_map.read();
+        map.get(&instance_id.0).cloned()
+    };
+
+    // 1b. 先读取旧实例的 working_dir —— 必须在 pty_manager.respawn 之前读，
+    //     因为 respawn 内部会先 kill 旧实例，之后 get_instance_state 就查
+    //     不到原 cwd 了。C2-T1 review 发现的 bug（先拿再删）。
+    let preserved_work_dir = state
+        .pty_manager
+        .get_instance_state(&instance_id.0)
+        .ok()
+        .map(|detail| detail.working_dir);
+
+    // 2. 根据模式确定 command / args / adapter_id / adapter_name / adapter_trait
+    let (command, args, new_adapter_id, new_adapter_name, adapter_arc_opt) = match mode {
+        RespawnMode::Restart => {
+            let orig = original_adapter_id.clone().ok_or_else(|| {
+                ConfluxError::InstanceNotFound {
+                    instance_id: instance_id.0.clone(),
+                }
+            })?;
+            let (config, adapter_arc) = {
+                let registry = state.adapter_registry.read();
+                let config = registry.get_config(&orig).cloned().ok_or_else(|| {
+                    ConfluxError::AdapterNotFound {
+                        adapter_id: orig.clone(),
+                    }
+                })?;
+                let adapter = registry.get(&orig).ok_or_else(|| {
+                    ConfluxError::AdapterNotFound {
+                        adapter_id: orig.clone(),
+                    }
+                })?;
+                (config, adapter)
+            };
+            (
+                config.command.clone(),
+                config.default_args.clone(),
+                orig,
+                config.name.clone(),
+                Some(adapter_arc),
+            )
+        }
+        RespawnMode::Shell => {
+            // Windows: 默认 powershell.exe。未来 macOS/Linux 可以切 bash。
+            // 不传任何 parser（adapter trait = None）——shell 里没有状态检测
+            // pattern 的概念，parser 会被跳过。
+            let shell_cmd = if cfg!(windows) {
+                "powershell.exe".to_string()
+            } else {
+                "bash".to_string()
+            };
+            (
+                shell_cmd,
+                Vec::<String>::new(),
+                SHELL_ADAPTER_PSEUDO_ID.to_string(),
+                "Shell".to_string(),
+                None,
+            )
+        }
+    };
+
+    // 3. 工作目录：延续原实例的 cwd（respawn 是"就地复活"语义）。
+    //    如果 1b 没拿到（旧实例已经被前端 kill 或 ProcessExited 后 reap），
+    //    fallback 到 Conflux 进程自己的 cwd。
+    let work_dir = preserved_work_dir.unwrap_or_else(|| {
+        std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".to_string())
+    });
+
+    // 4. 构造 dispatcher——和 create_agent_instance 一致
+    let app_handle = app.clone();
+    let dispatcher: crate::pty::manager::EventDispatcher =
+        Arc::new(move |event: &crate::core::ConfluxEvent| {
+            emit_conflux_event(&app_handle, event);
+        });
+
+    // 5. 通过 PtyManager::respawn spawn 新 child（复用 instance_id）
+    state.pty_manager.respawn(
+        &instance_id.0,
+        &command,
+        &args,
+        &work_dir,
+        &new_adapter_id,
+        &new_adapter_name,
+        adapter_arc_opt,
+        Some(dispatcher),
+    )?;
+
+    // 6. 更新 instance_adapter_map —— shell 模式会写入 "__shell__"
+    {
+        let mut map = state.instance_adapter_map.write();
+        map.insert(instance_id.0.clone(), new_adapter_id.clone());
+    }
+
+    // 7. 返回新的 AgentInstanceInfo
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    Ok(AgentInstanceInfo {
+        instance_id,
+        adapter_id: AdapterId(new_adapter_id),
+        adapter_name: new_adapter_name,
+        status: AgentStatus::Idle,
+        working_dir: work_dir,
+        is_primary_framework: false,
+        created_at: now_ms,
+    })
+}
+
+/// C2-T1 exit 检测 · 前端轮询
+///
+/// 双重检测：先查 reader_done flag，再调 child.try_wait()。
+/// 即使 ConPTY reader 永远不 break，try_wait 也能可靠检测进程退出。
+#[tauri::command]
+pub async fn is_process_exited(
+    state: State<'_, AppState>,
+    instance_id: InstanceId,
+) -> Result<bool, ConfluxError> {
+    state.pty_manager.is_process_exited(&instance_id.0)
+}
+
+/// 获取指定实例 PTY OutputBuffer 的历史内容（base64 编码）
+///
+/// # 用途
+/// 解决"卡片预览 vs 展开态不同步"的问题：PtyManager 会把每一批 PTY
+/// 输出实时 emit `conflux://pty-output` 事件，但 xterm 只能接收 mount
+/// 之后到达的事件。ExpandedAgentCard 在用户双击卡片时才 mount，此时
+/// PTY 可能已经吐出了大量内容，expanded 的 xterm 完全看不到历史。
+///
+/// 前端 XtermTerminal 在 mount 时先调用这个命令把 OutputBuffer 里的
+/// 全部历史拉回来写进 terminal，然后再订阅实时事件流，就能保证预览
+/// 和详情两边看到的内容一致。
+///
+/// # Returns
+/// base64 编码的原始 PTY 字节流（用 base64 是为了让 IPC 能安全传输
+/// 任意 ANSI escape code + 二进制字节，不被 JSON 序列化破坏）。
+///
+/// # Errors
+/// - `InstanceNotFound`: 指定的 instance_id 不存在
+#[tauri::command]
+pub async fn get_pty_history(
+    state: State<'_, AppState>,
+    instance_id: InstanceId,
+) -> Result<String, ConfluxError> {
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use base64::Engine;
+
+    let buffer_arc = state.pty_manager.get_buffer(&instance_id.0)?;
+    let buffer = buffer_arc.read();
+    let bytes = buffer.read_all();
+    Ok(BASE64.encode(&bytes))
+}

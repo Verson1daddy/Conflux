@@ -43,7 +43,8 @@ fn test_adapter_config() {
     let config = adapter.config();
     assert_eq!(config.name, "Claude Code");
     assert_eq!(config.command, "claude");
-    assert!(config.default_args.contains(&"--no-banner".to_string()));
+    // `--no-banner` was removed upstream; built-in default_args is now empty.
+    assert!(config.default_args.is_empty());
 }
 
 // ===== 思考状态检测测试 =====

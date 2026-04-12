@@ -127,6 +127,32 @@ pub enum ConfluxEvent {
         /// 时间戳（Unix 时间戳 ms）
         timestamp: i64,
     },
+
+    /// PTY 子进程退出 — C2-T1 Exit Overlay
+    ///
+    /// 当 PtyManager 的读取线程检测到 EOF 并确认 child 已 reap 后发送。
+    /// 前端 XtermTerminal 订阅此事件以决定是否弹 ExitOverlay，让用户选择
+    /// Restart / Open Shell / Close Card。
+    ///
+    /// # 字段
+    /// - `instance_id`: 退出的实例 ID（保留这个 ID 给 respawn 复用）
+    /// - `adapter_id`: 原 adapter（给 Restart 按钮用，不需要前端再查）
+    /// - `exit_code`: 进程退出码；`None` 表示被信号终止或无法获取
+    /// - `signal`: 终止信号描述；`None` 表示正常退出。Windows 上 Ctrl+C
+    ///   会以 exit_code=-1073741510 (STATUS_CONTROL_C_EXIT) 返回，后端
+    ///   会规范化为 `signal: Some("SIGINT")`。
+    ProcessExited {
+        /// 退出的实例 ID
+        instance_id: InstanceId,
+        /// 所属 adapter ID（Restart 时复用）
+        adapter_id: String,
+        /// 退出码（None = 无法获取）
+        exit_code: Option<i32>,
+        /// 信号描述（"SIGINT" / "killed" / None = 正常退出）
+        signal: Option<String>,
+        /// 时间戳（Unix 时间戳 ms）
+        timestamp: i64,
+    },
 }
 
 impl ConfluxEvent {
@@ -155,6 +181,8 @@ impl ConfluxEvent {
 
             // 低优先级：PTY 原始输出
             ConfluxEvent::PtyOutput { .. } => EventPriority::Low,
+            // 高优先级：进程退出事件——用户需要立刻看到 Exit Overlay
+            ConfluxEvent::ProcessExited { .. } => EventPriority::High,
         }
     }
 
@@ -171,6 +199,7 @@ impl ConfluxEvent {
             ConfluxEvent::CoordinationCommand { .. } => "CoordinationCommand",
             ConfluxEvent::PtyOutput { .. } => "PtyOutput",
             ConfluxEvent::StdinInjected { .. } => "StdinInjected",
+            ConfluxEvent::ProcessExited { .. } => "ProcessExited",
         }
     }
 
@@ -190,6 +219,7 @@ impl ConfluxEvent {
             } => Some(target_instance_id),
             ConfluxEvent::PtyOutput { instance_id, .. } => Some(instance_id),
             ConfluxEvent::StdinInjected { instance_id, .. } => Some(instance_id),
+            ConfluxEvent::ProcessExited { instance_id, .. } => Some(instance_id),
         }
     }
 }

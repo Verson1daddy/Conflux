@@ -22,6 +22,7 @@ pub mod channels {
     pub const COORDINATION_COMMAND: &str = "conflux://coordination-command";
     pub const PTY_OUTPUT: &str = "conflux://pty-output";
     pub const STDIN_INJECTED: &str = "conflux://stdin-injected";
+    pub const PROCESS_EXITED: &str = "conflux://process-exited";
 }
 
 /// 将 ConfluxEvent 派发到统一通道 + 对应的分类型通道
@@ -164,6 +165,22 @@ pub fn emit_conflux_event(app: &AppHandle, event: &ConfluxEvent) {
                 "source": source,
                 "content_preview": content_preview,
                 "content_length": content_length,
+                "timestamp": timestamp,
+            }),
+        ),
+        ConfluxEvent::ProcessExited {
+            instance_id,
+            adapter_id,
+            exit_code,
+            signal,
+            timestamp,
+        } => (
+            channels::PROCESS_EXITED,
+            serde_json::json!({
+                "instance_id": instance_id,
+                "adapter_id": adapter_id,
+                "exit_code": exit_code,
+                "signal": signal,
                 "timestamp": timestamp,
             }),
         ),

@@ -18,9 +18,11 @@ import type {
 } from "@/types";
 
 // ===== Default card dimensions for new agents =====
-
-const DEFAULT_CARD_WIDTH = 408;
-const DEFAULT_CARD_HEIGHT = 288;
+// Must stay >= MIN_CARD_W/H (580x380) enforced by AgentCard. Using 620x420
+// gives a little breathing room for the header + footer chrome + a few rows
+// of terminal content.
+const DEFAULT_CARD_WIDTH = 620;
+const DEFAULT_CARD_HEIGHT = 420;
 const CARD_SPAWN_OFFSET = 40;
 
 /**
@@ -96,7 +98,13 @@ export function useWorkspaceLayout() {
           return createDefaultCardLayout(instance, index);
         });
 
-        setCards(mergedCards);
+        // Only overwrite cards when the backend actually reported instances.
+        // Otherwise leave the store untouched so the demo seed written by
+        // App.tsx survives initialization under real `tauri:dev`. New real
+        // instances arriving later flow through onAgentStatusChanged below.
+        if (mergedCards.length > 0) {
+          setCards(mergedCards);
+        }
 
         if (savedLayout) {
           setLayoutMode(savedLayout.layout_mode);

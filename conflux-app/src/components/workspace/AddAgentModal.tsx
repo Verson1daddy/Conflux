@@ -6,7 +6,57 @@ import { type FC, useCallback, useEffect, useState } from "react";
 import { createAgentInstance, listAdapters } from "@/lib/tauri-bridge";
 import { useAgentStore } from "@/stores/agentStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
-import type { AdapterInfo, AdapterId, AgentInstanceInfo } from "@/types";
+import type { AdapterInfo, AdapterId, AgentInstanceInfo, CardLayout } from "@/types";
+
+// ===== Smart placement for new cards =====
+//
+// Walks a coarse grid looking for the first spot where a new card of the
+// given size wouldn't overlap any existing card (with a small gap). Falls
+// back to a cascading diagonal if every grid slot is taken (which only
+// happens past ~100 cards — acceptable for the cascade fallback). This is
+// intentionally simple (no bin-packing) because the backend auto-pack
+// command handles the ideal layout; we only need to guarantee new cards
+// don't land on top of existing ones.
+const PLACEMENT_GAP = 24;
+const PLACEMENT_STEP = 40;
+const PLACEMENT_MAX_X = 3200;
+const PLACEMENT_MAX_Y = 2400;
+
+function rectsOverlap(
+  ax: number, ay: number, aw: number, ah: number,
+  bx: number, by: number, bw: number, bh: number,
+  gap: number
+): boolean {
+  return !(
+    ax + aw + gap <= bx ||
+    bx + bw + gap <= ax ||
+    ay + ah + gap <= by ||
+    by + bh + gap <= ay
+  );
+}
+
+function findFreeSpot(
+  cards: CardLayout[],
+  width: number,
+  height: number
+): { x: number; y: number } {
+  // Start from (24, 24) so new cards align with the demo seed's top-left.
+  for (let y = 24; y < PLACEMENT_MAX_Y; y += PLACEMENT_STEP) {
+    for (let x = 24; x < PLACEMENT_MAX_X; x += PLACEMENT_STEP) {
+      const collides = cards.some((c) =>
+        rectsOverlap(
+          x, y, width, height,
+          c.position.x, c.position.y, c.size.width, c.size.height,
+          PLACEMENT_GAP
+        )
+      );
+      if (!collides) return { x, y };
+    }
+  }
+  // Fallback — every grid slot is taken. Cascade past the last card.
+  const n = cards.length;
+  return { x: 24 + n * 30, y: 24 + n * 30 };
+}
 
 interface AddAgentModalProps {
   visible: boolean;
@@ -92,6 +142,37 @@ function metaFor(adapterId: string): VendorMeta {
   };
 }
 
+// Unwrap a ConfluxError that arrives from Tauri as a serialized enum object.
+// Shape: { PtyError: { message: "..." } }, { AdapterNotFound: { adapter_id } }, ...
+// Returns a human-readable string that prefixes the variant name so the user
+// can tell a PTY failure apart from a config or permission failure.
+function formatBackendError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  if (err && typeof err === "object") {
+    const entries = Object.entries(err as Record<string, unknown>);
+    if (entries.length === 1) {
+      const [variant, payload] = entries[0];
+      if (payload && typeof payload === "object") {
+        const p = payload as Record<string, unknown>;
+        const msg =
+          (typeof p.message === "string" && p.message) ||
+          (typeof p.instance_id === "string" && `instance_id=${p.instance_id}`) ||
+          (typeof p.adapter_id === "string" && `adapter_id=${p.adapter_id}`) ||
+          JSON.stringify(payload);
+        return `${variant}: ${msg}`;
+      }
+      return `${variant}`;
+    }
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return String(err);
+    }
+  }
+  return String(err);
+}
+
 // Best-effort default working dir.
 // Windows: HOMEDRIVE + HOMEPATH → e.g. "C:\Users\zwm"
 // Fallback: empty string (backend fallback to process cwd)
@@ -171,18 +252,33 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
         undefined,
       );
       addInstance(instance);
+      // Size must be >= MIN_CARD_W/H (580x380) enforced by AgentCard.
+      // Using a slightly larger default (620x420) so the card has breathing
+      // room for the header/footer chrome and a few terminal rows.
+      const width = 620;
+      const height = 420;
+      // Place the card on the first empty grid slot so it doesn't land on
+      // top of existing demo cards / previous real instances.
+      const existingCards = useWorkspaceStore.getState().cards;
+      const position = findFreeSpot(existingCards, width, height);
       addCard({
         instance_id: instance.instance_id,
-        position: { x: 40 + Math.random() * 80, y: 40 + Math.random() * 80 },
-        size: { width: 420, height: 280 },
-        z_index: 1,
+        position,
+        size: { width, height },
+        z_index: existingCards.length + 1,
       });
       // Remember for next time (only on success)
       if (dirArg) localStorage.setItem("conflux.lastWorkingDir", dirArg);
       onClose();
       setSelectedId(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create agent. Check backend.");
+      // Backend returns ConfluxError as a serialized enum object, e.g.
+      //   { "PtyError": { "message": "program not found: claude" } }
+      // not a standard Error instance. Unwrap the variant so the user sees
+      // the actual stderr instead of a useless "Check backend" fallback.
+      setError(formatBackendError(err));
+      // Also log the raw object to DevTools for deeper inspection.
+      console.error("[AddAgent] create_agent_instance failed:", err);
     } finally {
       setCreating(false);
     }

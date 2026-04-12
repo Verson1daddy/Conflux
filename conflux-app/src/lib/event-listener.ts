@@ -16,6 +16,7 @@ import type {
   CoordinationCommandPayload,
   PtyOutputPayload,
   StdinInjectedPayload,
+  ProcessExitedPayload,
 } from "../types";
 
 // ===== Tauri 事件名常量 =====
@@ -37,6 +38,7 @@ const EVENT_CHANNELS = {
   CoordinationCommand: "conflux://coordination-command",
   PtyOutput: "conflux://pty-output",
   StdinInjected: "conflux://stdin-injected",
+  ProcessExited: "conflux://process-exited",
 } as const;
 
 // ===== 统一事件监听 =====
@@ -264,6 +266,29 @@ export async function onAgentStatusChangedForInstance(
 ): Promise<UnlistenFn> {
   return listen<AgentStatusChangedPayload>(
     EVENT_CHANNELS.AgentStatusChanged,
+    (tauriEvent) => {
+      if (tauriEvent.payload.instance_id === instanceId) {
+        callback(tauriEvent.payload);
+      }
+    }
+  );
+}
+
+/**
+ * C2-T1 Exit Overlay · 监听指定实例的 PTY 进程退出事件
+ *
+ * XtermTerminal 订阅此事件以弹出 ExitOverlay。按 instance_id 过滤使得
+ * 每个卡片只处理自己 PTY 的 exit，不干扰其他卡片。
+ * @param instanceId 目标实例 ID
+ * @param callback 接收该实例的 ProcessExitedPayload
+ * @returns UnlistenFn 取消订阅函数
+ */
+export async function onProcessExitedForInstance(
+  instanceId: string,
+  callback: (payload: ProcessExitedPayload) => void
+): Promise<UnlistenFn> {
+  return listen<ProcessExitedPayload>(
+    EVENT_CHANNELS.ProcessExited,
     (tauriEvent) => {
       if (tauriEvent.payload.instance_id === instanceId) {
         callback(tauriEvent.payload);
