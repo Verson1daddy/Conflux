@@ -151,7 +151,7 @@ function resolvePrimaryInstance(
   instances: Map<string, AgentInstanceInfo>
 ): AgentInstanceInfo | null {
   for (const info of instances.values()) {
-    if (info.is_primary_framework) return info;
+    if (info.is_pinned) return info;
   }
   const first = instances.values().next();
   return first.done ? null : first.value;
@@ -237,8 +237,12 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
   statuses: new Map(),
   trees: new Map(),
   exitStates: new Map(),
-  permissionTiers: new Map(),
-  cardColors: new Map(),
+  permissionTiers: new Map<string, string>(
+    JSON.parse(localStorage.getItem("conflux.permissionTiers") || "[]") as [string, string][]
+  ),
+  cardColors: new Map<string, string>(
+    JSON.parse(localStorage.getItem("conflux.cardColors") || "[]") as [string, string][]
+  ),
   favoriteAdapters: loadFavorites(),
   primaryAdapter: loadPrimaryAdapter(),
   expandedCardId: null,
@@ -302,6 +306,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
     set((state) => {
       const next = new Map(state.permissionTiers);
       next.set(instanceId, tier);
+      localStorage.setItem("conflux.permissionTiers", JSON.stringify([...next]));
       return { permissionTiers: next };
     }),
 
@@ -309,6 +314,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
     set((state) => {
       const next = new Map(state.cardColors);
       next.set(instanceId, color);
+      localStorage.setItem("conflux.cardColors", JSON.stringify([...next]));
       return { cardColors: next };
     }),
 
@@ -353,7 +359,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
       state.instances.forEach((info, id) => {
         nextInstances.set(id, {
           ...info,
-          is_primary_framework: instanceId !== null && id === instanceId,
+          is_pinned: instanceId !== null && id === instanceId,
         });
       });
       return { instances: nextInstances };

@@ -99,25 +99,7 @@ const ICON_LAYERS: FC<{ size: number; color: string }> = ({ size, color }) => (
   </svg>
 );
 
-// ===== Additional icons for Appearance / About =====
-
-const ICON_SUN: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
-  </svg>
-);
-
-const ICON_MOON: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
-  </svg>
-);
-
-const ICON_MONITOR: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect width="20" height="14" x="2" y="3" rx="2" /><line x1="8" x2="16" y1="21" y2="21" /><line x1="12" x2="12" y1="17" y2="21" />
-  </svg>
-);
+// ===== Additional icons for About =====
 
 const ICON_GITHUB: FC<{ size: number; color: string }> = ({ size, color }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -150,22 +132,16 @@ const TIER_CARDS: TierCard[] = [
 
 // ===== Appearance data =====
 
-type ThemeMode = "dark" | "light" | "system";
-type FontSizeOption = 12 | 13 | 14 | 15;
-
-interface AccentPreset {
+interface AccentOption {
   id: string;
-  name: string;
   color: string;
+  label: string;
 }
 
-const ACCENT_PRESETS: AccentPreset[] = [
-  { id: "ice-blue",   name: "Ice Blue",   color: "#B8D4E3" },
-  { id: "lavender",   name: "Lavender",   color: "#C8B5E3" },
-  { id: "mint",       name: "Mint",       color: "#A8D8C0" },
-  { id: "peach",      name: "Peach",      color: "#E3C0A8" },
-  { id: "rose",       name: "Rose",       color: "#E3B8C8" },
-  { id: "gold",       name: "Gold",       color: "#D4C88A" },
+const ACCENT_OPTIONS: AccentOption[] = [
+  { id: "ice-blue",   color: "#B8D4E3", label: "Ice Blue" },
+  { id: "warm-gold",  color: "#FFB800", label: "Warm Gold" },
+  { id: "sage",       color: "#8EA4B8", label: "Sage" },
 ];
 
 // ===== Adapters data =====
@@ -202,10 +178,20 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
   const [activeTab, setActiveTab] = useState<SettingsTab>("frameworks");
   const [tier, setTier] = useState<PermissionTier>("smart");
 
-  // Appearance state (local only — persistence in a later cycle)
-  const [themeMode, setThemeMode] = useState<ThemeMode>("dark");
-  const [fontSize, setFontSize] = useState<FontSizeOption>(13);
-  const [accentColor, setAccentColor] = useState("ice-blue");
+  // Appearance state — accent color persisted to localStorage + CSS custom property
+  const [accentColor, setAccentColor] = useState<string>(() => {
+    const saved = localStorage.getItem("conflux.accentColor");
+    if (saved) {
+      const match = ACCENT_OPTIONS.find((o) => o.color === saved);
+      return match ? match.id : ACCENT_OPTIONS[0].id;
+    }
+    return ACCENT_OPTIONS[0].id;
+  });
+
+  // Close action preference
+  const [closeAction, setCloseAction] = useState<string>(
+    () => localStorage.getItem("conflux.closeAction") || "ask"
+  );
 
   // Frameworks tab state
   const favoriteAdapters = useAgentStore((s) => s.favoriteAdapters);
@@ -535,98 +521,37 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                   Customize the look and feel of your workspace.
                 </p>
 
-                {/* Theme selector */}
-                <div className="flex flex-col" style={{ gap: 8 }}>
-                  <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 10, fontWeight: 600, letterSpacing: 1.5, color: "#6B7280", textTransform: "uppercase" as const }}>
-                    Theme
-                  </span>
-                  <div className="flex" style={{ gap: 8 }}>
-                    {([
-                      { mode: "dark" as ThemeMode, label: "Dark", icon: ICON_MOON },
-                      { mode: "light" as ThemeMode, label: "Light", icon: ICON_SUN },
-                      { mode: "system" as ThemeMode, label: "System", icon: ICON_MONITOR },
-                    ]).map(({ mode, label, icon: Icon }) => {
-                      const sel = themeMode === mode;
-                      const disabled = mode !== "dark";
-                      return (
-                        <button
-                          key={mode}
-                          onClick={() => !disabled && setThemeMode(mode)}
-                          className="flex items-center justify-center flex-1"
-                          style={{
-                            height: 40, gap: 6, borderRadius: 8,
-                            background: sel ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.03)",
-                            border: sel ? "1px solid #B8D4E3" : "1px solid rgba(255,255,255,0.082)",
-                            opacity: disabled ? 0.35 : 1,
-                            cursor: disabled ? "not-allowed" : "pointer",
-                          }}
-                          title={disabled ? "Coming soon" : label}
-                        >
-                          <Icon size={14} color={sel ? "#B8D4E3" : "#6B7280"} />
-                          <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 12, fontWeight: sel ? 600 : 400, color: sel ? "#F2F2F2" : "#B8B3B0" }}>
-                            {label}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Font size */}
-                <div className="flex flex-col" style={{ gap: 8 }}>
-                  <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 10, fontWeight: 600, letterSpacing: 1.5, color: "#6B7280", textTransform: "uppercase" as const }}>
-                    Terminal Font Size
-                  </span>
-                  <div className="flex" style={{ gap: 6 }}>
-                    {([12, 13, 14, 15] as FontSizeOption[]).map((sz) => {
-                      const sel = fontSize === sz;
-                      return (
-                        <button
-                          key={sz}
-                          onClick={() => setFontSize(sz)}
-                          className="flex items-center justify-center"
-                          style={{
-                            width: 44, height: 36, borderRadius: 8,
-                            background: sel ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.03)",
-                            border: sel ? "1px solid #B8D4E3" : "1px solid rgba(255,255,255,0.082)",
-                            fontFamily: "'JetBrains Mono Variable',monospace", fontSize: 13, fontWeight: sel ? 600 : 400,
-                            color: sel ? "#F2F2F2" : "#B8B3B0",
-                          }}
-                        >
-                          {sz}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
                 {/* Accent color */}
                 <div className="flex flex-col" style={{ gap: 8 }}>
                   <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 10, fontWeight: 600, letterSpacing: 1.5, color: "#6B7280", textTransform: "uppercase" as const }}>
                     Accent Color
                   </span>
                   <div className="flex flex-wrap" style={{ gap: 10 }}>
-                    {ACCENT_PRESETS.map((preset) => {
-                      const sel = accentColor === preset.id;
+                    {ACCENT_OPTIONS.map((opt) => {
+                      const sel = accentColor === opt.id;
                       return (
                         <button
-                          key={preset.id}
-                          onClick={() => setAccentColor(preset.id)}
+                          key={opt.id}
+                          onClick={() => {
+                            setAccentColor(opt.id);
+                            document.documentElement.style.setProperty("--accent-primary", opt.color);
+                            localStorage.setItem("conflux.accentColor", opt.color);
+                          }}
                           className="flex flex-col items-center"
                           style={{ gap: 4, cursor: "pointer", background: "none", border: "none", padding: 0 }}
-                          title={preset.name}
+                          title={opt.label}
                         >
                           <div
                             style={{
                               width: 32, height: 32, borderRadius: 9999,
-                              background: preset.color,
+                              background: opt.color,
                               border: sel ? "2px solid #F2F2F2" : "2px solid transparent",
-                              boxShadow: sel ? `0 0 0 2px ${preset.color}40` : "none",
+                              boxShadow: sel ? `0 0 0 2px ${opt.color}40` : "none",
                               transition: "box-shadow 0.15s, border-color 0.15s",
                             }}
                           />
                           <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 9, color: sel ? "#F2F2F2" : "#6B7280" }}>
-                            {preset.name}
+                            {opt.label}
                           </span>
                         </button>
                       );
@@ -671,9 +596,43 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                   </div>
                 </div>
 
-                <p style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 11, color: "#6B7280", margin: 0, fontStyle: "italic" }}>
-                  Theme & accent changes are preview-only — persistence coming in the next cycle.
-                </p>
+                {/* Close Action */}
+                <div className="flex flex-col" style={{ gap: 8 }}>
+                  <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 10, fontWeight: 600, letterSpacing: 1.5, color: "#6B7280", textTransform: "uppercase" as const }}>
+                    Close Button
+                  </span>
+                  <p style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 12, color: "#6B7280", margin: 0, lineHeight: 1.5 }}>
+                    What happens when you click the close button
+                  </p>
+                  <select
+                    value={closeAction}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setCloseAction(val);
+                      if (val === "ask") localStorage.removeItem("conflux.closeAction");
+                      else localStorage.setItem("conflux.closeAction", val);
+                    }}
+                    style={{
+                      width: "100%",
+                      height: 36,
+                      padding: "0 12px",
+                      borderRadius: 8,
+                      background: "rgba(255,255,255,0.04)",
+                      border: "1px solid rgba(255,255,255,0.082)",
+                      fontFamily: "'Geist Sans',sans-serif",
+                      fontSize: 13,
+                      color: "#F2F2F2",
+                      outline: "none",
+                      cursor: "pointer",
+                      appearance: "none" as const,
+                      WebkitAppearance: "none" as const,
+                    }}
+                  >
+                    <option value="ask" style={{ background: "#1C1C1E", color: "#F2F2F2" }}>Always ask</option>
+                    <option value="tray" style={{ background: "#1C1C1E", color: "#F2F2F2" }}>Minimize to tray</option>
+                    <option value="quit" style={{ background: "#1C1C1E", color: "#F2F2F2" }}>Quit completely</option>
+                  </select>
+                </div>
               </>
             )}
 

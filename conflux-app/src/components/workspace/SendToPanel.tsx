@@ -61,8 +61,8 @@ const SendToPanel: FC<SendToPanelProps> = ({ visible, onClose }) => {
   const agentList: AgentInstanceInfo[] = useMemo(() => {
     const arr = Array.from(instances.values());
     arr.sort((a, b) => {
-      if (a.is_primary_framework !== b.is_primary_framework) {
-        return a.is_primary_framework ? -1 : 1;
+      if (a.is_pinned !== b.is_pinned) {
+        return a.is_pinned ? -1 : 1;
       }
       return (b.created_at ?? 0) - (a.created_at ?? 0);
     });
@@ -70,7 +70,7 @@ const SendToPanel: FC<SendToPanelProps> = ({ visible, onClose }) => {
   }, [instances]);
 
   const primaryId = useMemo(
-    () => agentList.find((a) => a.is_primary_framework)?.instance_id ?? agentList[0]?.instance_id ?? null,
+    () => agentList.find((a) => a.is_pinned)?.instance_id ?? agentList[0]?.instance_id ?? null,
     [agentList]
   );
 
@@ -309,7 +309,7 @@ const SendToPanel: FC<SendToPanelProps> = ({ visible, onClose }) => {
                     </span>
 
                     {/* Primary badge */}
-                    {agent.is_primary_framework && (
+                    {agent.is_pinned && (
                       <span
                         className="shrink-0"
                         style={{

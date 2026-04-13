@@ -54,8 +54,8 @@ pub struct AgentStateDetail {
     pub status: AgentStatus,
     /// 工作目录
     pub working_dir: String,
-    /// 是否为灵动岛主框架
-    pub is_primary_framework: bool,
+    /// 是否为钉选实例（灵动岛主框架）
+    pub is_pinned: bool,
     /// 创建时间（Unix 时间戳 ms）
     pub created_at: i64,
     /// 最后活动时间（Unix 时间戳 ms）
@@ -546,8 +546,8 @@ pub struct AgentInstanceInfo {
     pub status: AgentStatus,
     /// 工作目录
     pub working_dir: String,
-    /// 是否为灵动岛主框架
-    pub is_primary_framework: bool,
+    /// 是否为钉选实例（灵动岛主框架）
+    pub is_pinned: bool,
     /// 创建时间（Unix 时间戳 ms）
     pub created_at: i64,
 }

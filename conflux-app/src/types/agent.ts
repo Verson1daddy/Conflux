@@ -45,8 +45,8 @@ export interface AgentStateDetail {
   status: AgentStatus;
   /** 工作目录 */
   working_dir: string;
-  /** 是否为灵动岛主框架 */
-  is_primary_framework: boolean;
+  /** 是否为钉选实例 */
+  is_pinned: boolean;
   /** 创建时间（Unix 时间戳 ms） */
   created_at: number;
   /** 最后活动时间（Unix 时间戳 ms） */
@@ -193,8 +193,8 @@ export interface AgentInstanceInfo {
   status: AgentStatus;
   /** 工作目录 */
   working_dir: string;
-  /** 是否为灵动岛主框架 */
-  is_primary_framework: boolean;
+  /** 是否为钉选实例 */
+  is_pinned: boolean;
   /** 创建时间（Unix 时间戳 ms） */
   created_at: number;
 }

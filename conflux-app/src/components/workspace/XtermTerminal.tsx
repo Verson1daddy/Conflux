@@ -49,6 +49,17 @@ interface XtermTerminalProps {
   content?: string;
   interactive?: boolean;
   subscribeToPty?: boolean;
+  cardWidth?: number;
+}
+
+/** Compute terminal font size proportional to card width. */
+function computeFontSize(cardWidth: number | undefined): number {
+  if (!cardWidth) return 13;
+  const BASE_WIDTH = 580;
+  const BASE_FONT = 13;
+  const MIN_FONT = 8;
+  const MAX_FONT = 16;
+  return Math.round(Math.min(MAX_FONT, Math.max(MIN_FONT, BASE_FONT * (cardWidth / BASE_WIDTH))));
 }
 
 // Opaque Conflux-dark surface for the terminal area. Must be opaque — WebGL
@@ -97,6 +108,7 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
   content,
   interactive = false,
   subscribeToPty = false,
+  cardWidth,
 }) => {
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -173,6 +185,17 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
       setExitStateStore,
     ]
   );
+
+  // Rescale terminal font size when the card is resized.
+  useEffect(() => {
+    if (terminalRef.current && cardWidth) {
+      const newSize = computeFontSize(cardWidth);
+      if (terminalRef.current.options.fontSize !== newSize) {
+        terminalRef.current.options.fontSize = newSize;
+        fitAddonRef.current?.fit();
+      }
+    }
+  }, [cardWidth]);
 
   useEffect(() => {
     if (!hostRef.current) return;

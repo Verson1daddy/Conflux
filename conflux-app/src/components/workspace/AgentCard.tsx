@@ -33,17 +33,6 @@ const SHIELD_PATHS: Record<string, string> = {
   "shield-off":   "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z",
 };
 
-// ===== Status colors =====
-
-const STATUS_DOT_COLORS: Record<AgentStatus, string> = {
-  idle: "#6B7280",
-  thinking: "#FFB800",
-  coding: "#34C759",
-  waiting_permission: "#FFB800",
-  done: "#34C759",
-  error: "#FF3B30",
-};
-
 // ===== Vendor badge mapping =====
 
 const ADAPTER_VENDOR: Record<string, string> = {
@@ -51,6 +40,14 @@ const ADAPTER_VENDOR: Record<string, string> = {
   codex: "openai",
   aider: "paul-gauthier",
   opencode: "opencode",
+};
+
+// Default card accent colors per adapter, used when user hasn't picked a custom color.
+const ADAPTER_DEFAULT_COLORS: Record<string, string> = {
+  "claude-code": "#B8D4E3",
+  "codex": "#FFB800",
+  "aider": "#8EA4B8",
+  "opencode": "#C9B894",
 };
 
 // ===== Demo terminal content =====
@@ -136,12 +133,10 @@ const HEADER_H = 42;
 const FOOTER_H = 32;
 const MIN_TERM_H = 40;
 
-// Minimum card dimensions. The design requires the card's back face (the
-// expanded agent view) to always be legible — sidebar 200 + terminal area +
-// header/footer + padding add up to roughly this footprint. Enforced both
-// at manual-resize time and in the demo layout.
-const MIN_CARD_W = 580;
-const MIN_CARD_H = 380;
+// Minimum card dimensions. Lowered from 580x380 so cards can be made compact
+// on the canvas. Font scaling in XtermTerminal adapts to the narrower width.
+const MIN_CARD_W = 320;
+const MIN_CARD_H = 220;
 
 // ===== Apple-style magnetic snap with hysteresis =====
 //
@@ -236,7 +231,7 @@ function AgentCard({
   card,
   agentName,
   adapterBadge,
-  status,
+  status: _status,
   isSelected,
   layoutMode,
   zoom,
@@ -261,10 +256,12 @@ function AgentCard({
   const shieldRef = useRef<HTMLDivElement>(null);
   const shieldPopoverRef = useRef<HTMLDivElement>(null);
 
-  // C2-A4b Card color — read from store, fallback to adapter default
-  const cardColor = useAgentStore(
-    (s) => s.cardColors.get(card.instance_id)
-  ) ?? STATUS_DOT_COLORS[status] ?? "#6B7280";
+  // C2-A4b Card color — read from store, fallback to adapter default color
+  const cardColors = useAgentStore((s) => s.cardColors);
+  const agentInfo = useAgentStore((s) => s.instances.get(card.instance_id));
+  const cardColor = cardColors.get(card.instance_id)
+    ?? ADAPTER_DEFAULT_COLORS[agentInfo?.adapter_id ?? ""]
+    ?? "#6B7280";
   const setCardColorStore = useAgentStore((s) => s.setCardColor);
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
   const colorPickerRef = useRef<HTMLDivElement>(null);
@@ -796,6 +793,7 @@ function AgentCard({
             instanceId={card.instance_id}
             content={isDemo ? demoContent : undefined}
             subscribeToPty={!isDemo}
+            cardWidth={card.size.width}
           />
         </div>
       )}

@@ -42,7 +42,7 @@ const TopIsland: FC<TopIslandProps> = ({ onExpand }) => {
       try {
         const agents = await listAgentInstances();
         if (cancelled) return;
-        const primary = agents.find((a) => a.is_primary_framework);
+        const primary = agents.find((a) => a.is_pinned);
         if (primary) {
           setPrimaryStatus(primary.status);
           setPrimaryName(primary.adapter_name);
@@ -64,7 +64,7 @@ const TopIsland: FC<TopIslandProps> = ({ onExpand }) => {
       // 重新获取列表以确认是否为主框架
       try {
         const agents = await listAgentInstances();
-        const primary = agents.find((a) => a.is_primary_framework);
+        const primary = agents.find((a) => a.is_pinned);
         if (primary) {
           setPrimaryStatus(primary.status);
           setPrimaryName(primary.adapter_name);

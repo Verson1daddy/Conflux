@@ -4,10 +4,72 @@
 // 回放区：Header + Timeline 进度条 + EventList 纵向时间线
 // 支持播放/暂停、速度控制（1x/2x/4x）、进度条点击定位
 
-import { useCallback, useRef } from "react";
-import type { SessionEvent } from "@/types";
-import { useSessionPlayback } from "@/hooks/useSessionPlayback";
+import { useState, useEffect, useCallback, useRef } from "react";
+import type { SessionSummary, SessionEvent } from "@/types";
+import { listSessions, querySessionEvents } from "@/lib/tauri-bridge";
 import { SessionList } from "@/components/session/SessionList";
+
+// Inlined from deleted hooks/useSessionPlayback.ts
+function useSessionPlayback() {
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [events, setEvents] = useState<SessionEvent[]>([]);
+  const [currentEventIndex, setCurrentEventIndex] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [playbackSpeed, setPlaybackSpeed] = useState(1);
+
+  const playStateRef = useRef({ isPlaying, currentEventIndex, playbackSpeed });
+  playStateRef.current = { isPlaying, currentEventIndex, playbackSpeed };
+  const eventsRef = useRef(events);
+  eventsRef.current = events;
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      const result = await listSessions();
+      if (!cancelled) setSessions(result);
+    }
+    load();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!isPlaying || events.length === 0) return;
+    const intervalMs = 1000 / playbackSpeed;
+    const timerId = window.setInterval(() => {
+      const { currentEventIndex: idx } = playStateRef.current;
+      if (idx >= eventsRef.current.length - 1) { setIsPlaying(false); return; }
+      setCurrentEventIndex(idx + 1);
+    }, intervalMs);
+    return () => { window.clearInterval(timerId); };
+  }, [isPlaying, playbackSpeed, events.length]);
+
+  const selectSession = useCallback(async (instanceId: string) => {
+    setSelectedSessionId(instanceId);
+    setIsPlaying(false);
+    setCurrentEventIndex(0);
+    const sessionEvents = await querySessionEvents(instanceId);
+    setEvents(sessionEvents);
+  }, []);
+
+  const togglePlay = useCallback(() => {
+    setIsPlaying((prev) => {
+      const { currentEventIndex: idx } = playStateRef.current;
+      if (!prev && idx >= eventsRef.current.length - 1 && eventsRef.current.length > 0) {
+        setCurrentEventIndex(0);
+      }
+      return !prev;
+    });
+  }, []);
+
+  const setSpeed = useCallback((speed: number) => { setPlaybackSpeed(speed); }, []);
+
+  const seekTo = useCallback((index: number) => {
+    setCurrentEventIndex(Math.max(0, Math.min(index, events.length - 1)));
+  }, [events.length]);
+
+  return { sessions, selectedSessionId, events, currentEventIndex, isPlaying, playbackSpeed, selectSession, togglePlay, setSpeed, seekTo };
+}
 
 /** 回放速度选项 */
 const SPEED_OPTIONS = [1, 2, 4] as const;

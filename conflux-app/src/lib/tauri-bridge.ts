@@ -292,23 +292,46 @@ export async function endDiscussion(
 }
 
 /**
- * 设置灵动岛主框架
- * 对应 Rust: set_primary_framework(instance_id)
+ * 设置钉选实例
+ * 对应 Rust: set_pinned_instance(instance_id)
  */
-export async function setPrimaryFramework(
+export async function setPinnedInstance(
   instanceId: InstanceId
 ): Promise<void> {
-  return invoke<void>("set_primary_framework", {
+  return invoke<void>("set_pinned_instance", {
     instanceId,
   });
 }
 
 /**
- * 获取当前灵动岛主框架
- * 对应 Rust: get_primary_framework()
+ * 获取当前钉选实例
+ * 对应 Rust: get_pinned_instance()
  */
-export async function getPrimaryFramework(): Promise<InstanceId | null> {
-  return invoke<InstanceId | null>("get_primary_framework");
+export async function getPinnedInstance(): Promise<InstanceId | null> {
+  return invoke<InstanceId | null>("get_pinned_instance");
+}
+
+// ===== Adapter 偏好操作 =====
+// 对应 Rust commands/adapter.rs
+
+export async function setFavoriteAdapters(
+  adapterIds: string[]
+): Promise<void> {
+  return invoke<void>("set_favorite_adapters", { adapterIds });
+}
+
+export async function getFavoriteAdapters(): Promise<string[]> {
+  return invoke<string[]>("get_favorite_adapters");
+}
+
+export async function setPrimaryAdapterBackend(
+  adapterId: string
+): Promise<void> {
+  return invoke<void>("set_primary_adapter", { adapterId });
+}
+
+export async function getPrimaryAdapterBackend(): Promise<string | null> {
+  return invoke<string | null>("get_primary_adapter");
 }
 
 // ===== 持久化操作 =====

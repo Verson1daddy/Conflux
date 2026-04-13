@@ -9,7 +9,7 @@
 import { type FC, useState, useCallback, useMemo } from "react";
 import { useIslandStore } from "@/stores/islandStore";
 import { useAgentStore } from "@/stores/agentStore";
-import { focusAgentCard, respondToPermission, setPrimaryFramework } from "@/lib/tauri-bridge";
+import { focusAgentCard, respondToPermission, setPinnedInstance } from "@/lib/tauri-bridge";
 import type { AgentStatus, PermissionDecision } from "@/types";
 
 interface SidebarProps {
@@ -57,7 +57,7 @@ const Sidebar: FC<SidebarProps> = ({ visible, onCollapse }) => {
       // 即时本地反馈
       setPrimary(next);
       // 后端同步（demo 期可能无效，忽略失败）
-      try { await setPrimaryFramework(next ?? ""); } catch { /* ignore */ }
+      try { await setPinnedInstance(next ?? ""); } catch { /* ignore */ }
     },
     [setPrimary]
   );
@@ -191,8 +191,8 @@ const Sidebar: FC<SidebarProps> = ({ visible, onCollapse }) => {
                     padding: "10px 12px",
                     gap: 10,
                     borderRadius: 8,
-                    background: agent.is_primary_framework ? "#1C1C1E" : "#0E0E10",
-                    border: agent.is_primary_framework ? "1px solid #B8D4E3" : "1px solid transparent",
+                    background: agent.is_pinned ? "#1C1C1E" : "#0E0E10",
+                    border: agent.is_pinned ? "1px solid #B8D4E3" : "1px solid transparent",
                   }}
                   onClick={() => handleAgentClick(agent.instance_id)}
                 >
@@ -246,22 +246,22 @@ const Sidebar: FC<SidebarProps> = ({ visible, onCollapse }) => {
                   {/* Pin icon — hidden by default, only visible on row hover */}
                   <span
                     role="button"
-                    aria-label={agent.is_primary_framework ? "Unpin as primary" : "Pin as primary"}
-                    onClick={(e) => handleTogglePin(e, agent.instance_id, agent.is_primary_framework)}
-                    className={`shrink-0 flex items-center justify-center sidebar-pin ${agent.is_primary_framework ? "pinned" : ""}`}
+                    aria-label={agent.is_pinned ? "Unpin as primary" : "Pin as primary"}
+                    onClick={(e) => handleTogglePin(e, agent.instance_id, agent.is_pinned)}
+                    className={`shrink-0 flex items-center justify-center sidebar-pin ${agent.is_pinned ? "pinned" : ""}`}
                     style={{
                       width: 20,
                       height: 20,
-                      color: agent.is_primary_framework ? "#B8D4E3" : "#6B7280",
+                      color: agent.is_pinned ? "#B8D4E3" : "#6B7280",
                       cursor: "pointer",
                     }}
-                    title={agent.is_primary_framework ? "Pinned as primary (click to unpin)" : "Pin as primary"}
+                    title={agent.is_pinned ? "Pinned as primary (click to unpin)" : "Pin as primary"}
                   >
                     <svg
                       width="13"
                       height="13"
                       viewBox="0 0 24 24"
-                      fill={agent.is_primary_framework ? "currentColor" : "none"}
+                      fill={agent.is_pinned ? "currentColor" : "none"}
                       stroke="currentColor"
                       strokeWidth="2"
                       strokeLinecap="round"

@@ -635,7 +635,7 @@ impl PtyManager {
     /// 列出所有活跃实例
     ///
     /// 返回当前所有 PTY 进程的基本信息列表。
-    /// is_primary_framework 字段始终为 false（由上层 AppState 管理）。
+    /// is_pinned 字段始终为 false（由上层 AppState 管理）。
     pub fn list_instances(&self) -> Vec<AgentInstanceInfo> {
         let processes = self.processes.read();
         processes
@@ -646,7 +646,7 @@ impl PtyManager {
                 adapter_name: proc.adapter_name.clone(),
                 status: proc.status.clone(),
                 working_dir: proc.working_dir.clone(),
-                is_primary_framework: false, // 由 AppState 层管理
+                is_pinned: false, // 由 AppState 层管理
                 created_at: proc.created_at,
             })
             .collect()
@@ -654,7 +654,7 @@ impl PtyManager {
 
     /// 获取指定实例的状态详情
     ///
-    /// is_primary_framework 字段始终为 false（由上层 AppState 管理）。
+    /// is_pinned 字段始终为 false（由上层 AppState 管理）。
     pub fn get_instance_state(
         &self,
         instance_id: &str,
@@ -672,7 +672,7 @@ impl PtyManager {
             adapter_name: process.adapter_name.clone(),
             status: process.status.clone(),
             working_dir: process.working_dir.clone(),
-            is_primary_framework: false, // 由 AppState 层管理
+            is_pinned: false, // 由 AppState 层管理
             created_at: process.created_at,
             last_activity_at: now_millis(), // 查询时刷新
         })

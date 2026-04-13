@@ -19,6 +19,12 @@ import "./index.css";
 // eslint-disable-next-line no-console
 console.log("[conflux] main.tsx: mounting React...");
 
+// Restore persisted accent color before React mounts so the first paint uses it
+const savedAccent = localStorage.getItem("conflux.accentColor");
+if (savedAccent) {
+  document.documentElement.style.setProperty("--accent-primary", savedAccent);
+}
+
 const rootEl = document.getElementById("root");
 if (!rootEl) {
   throw new Error("[conflux] #root element not found in index.html");

@@ -206,6 +206,8 @@ function guessDefaultWorkingDir(): string {
 const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
   const addInstance = useAgentStore((s) => s.addInstance);
   const addCard = useWorkspaceStore((s) => s.addCard);
+  const favoriteAdapters = useAgentStore((s) => s.favoriteAdapters);
+  const primaryAdapterId = useAgentStore((s) => s.primaryAdapter);
 
   const [adapters, setAdapters] = useState<AdapterInfo[]>([]);
   const [selectedId, setSelectedId] = useState<AdapterId | null>(null);
@@ -217,11 +219,13 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
   const [error, setError] = useState<string | null>(null);
   const [authStatuses, setAuthStatuses] = useState<Map<string, AdapterAuthStatus>>(new Map());
   const [authGuide, setAuthGuide] = useState<AdapterAuthStatus | null>(null);
+  const [showAllExpanded, setShowAllExpanded] = useState(false);
 
-  // Restore last-used working dir + auto-assign adapter default color
+  // Restore last-used working dir + reset expand state
   useEffect(() => {
     if (!visible) return;
     setWorkingDir(guessDefaultWorkingDir());
+    setShowAllExpanded(false);
   }, [visible]);
 
   // When adapter selection changes, auto-set color to adapter default
@@ -241,7 +245,12 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
       .then((list) => {
         setAdapters(list);
         if (list.length > 0 && selectedId === null) {
-          setSelectedId(list[0].id);
+          // Default to primary adapter if favorites are configured, else first adapter
+          if (favoriteAdapters.size > 0 && primaryAdapterId && list.some((a) => a.id === primaryAdapterId)) {
+            setSelectedId(primaryAdapterId);
+          } else {
+            setSelectedId(list[0].id);
+          }
         }
         // Fire auth detection for each adapter (non-blocking)
         for (const adapter of list) {
@@ -267,7 +276,11 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
           { id: "opencode", name: "OpenCode", command: "opencode", capabilities: { can_coordinate: false, coordination_template: null, can_parse_tree: false, can_detect_permission: false }, is_builtin: true },
         ];
         setAdapters(demo);
-        setSelectedId(demo[0].id);
+        if (favoriteAdapters.size > 0 && primaryAdapterId && demo.some((a) => a.id === primaryAdapterId)) {
+          setSelectedId(primaryAdapterId);
+        } else {
+          setSelectedId(demo[0].id);
+        }
         setError("Backend unavailable — showing built-in adapter list (preview only).");
       })
       .finally(() => setLoading(false));
@@ -433,110 +446,168 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto flex flex-col" style={{ padding: "22px 24px", gap: 14 }}>
-          <span
-            style={{
+          {loading ? (
+            <div style={{ padding: "24px", textAlign: "center", color: "#6B7280", fontFamily: "'Geist Sans',sans-serif", fontSize: 12 }}>
+              Loading adapters...
+            </div>
+          ) : adapters.length === 0 ? (
+            <div style={{ padding: "24px", textAlign: "center", color: "#6B7280", fontFamily: "'Geist Sans',sans-serif", fontSize: 12 }}>
+              No adapters registered.
+            </div>
+          ) : (() => {
+            const hasFavorites = favoriteAdapters.size > 0;
+            const favList = hasFavorites ? adapters.filter((a) => favoriteAdapters.has(a.id)) : [];
+            const otherList = hasFavorites ? adapters.filter((a) => !favoriteAdapters.has(a.id)) : [];
+
+            const sectionLabelStyle = {
               fontFamily: "'Geist Sans', sans-serif",
               fontSize: 10,
               fontWeight: 600,
               letterSpacing: 1.5,
               color: "#6B7280",
-              textTransform: "uppercase",
-            }}
-          >
-            Available Adapters
-          </span>
+              textTransform: "uppercase" as const,
+            };
 
-          <div className="flex flex-col" style={{ gap: 8 }}>
-            {loading ? (
-              <div style={{ padding: "24px", textAlign: "center", color: "#6B7280", fontFamily: "'Geist Sans',sans-serif", fontSize: 12 }}>
-                Loading adapters...
-              </div>
-            ) : adapters.length === 0 ? (
-              <div style={{ padding: "24px", textAlign: "center", color: "#6B7280", fontFamily: "'Geist Sans',sans-serif", fontSize: 12 }}>
-                No adapters registered.
-              </div>
-            ) : (
-              adapters.map((adapter) => {
-                const isSelected = selectedId === adapter.id;
-                const meta = metaFor(adapter.id);
-                const IconComp = meta.icon;
-                const authStatus = authStatuses.get(adapter.id);
-                return (
-                  <button
-                    key={adapter.id}
-                    onClick={() => setSelectedId(adapter.id)}
-                    className="flex items-center w-full text-left transition-colors"
+            const renderAdapterRow = (adapter: AdapterInfo) => {
+              const isSelected = selectedId === adapter.id;
+              const meta = metaFor(adapter.id);
+              const IconComp = meta.icon;
+              const authStatus = authStatuses.get(adapter.id);
+              return (
+                <button
+                  key={adapter.id}
+                  onClick={() => setSelectedId(adapter.id)}
+                  className="flex items-center w-full text-left transition-colors"
+                  style={{
+                    padding: "14px 16px",
+                    gap: 14,
+                    borderRadius: 8,
+                    background: isSelected ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.04)",
+                    border: isSelected ? "1px solid #B8D4E3" : "1px solid rgba(255,255,255,0.082)",
+                  }}
+                >
+                  {/* Icon bg */}
+                  <div
+                    className="shrink-0 flex items-center justify-center"
                     style={{
-                      padding: "14px 16px",
-                      gap: 14,
+                      width: 36,
+                      height: 36,
                       borderRadius: 8,
-                      background: isSelected ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.04)",
-                      border: isSelected ? "1px solid #B8D4E3" : "1px solid rgba(255,255,255,0.082)",
+                      background: isSelected ? "rgba(184,212,227,0.15)" : "rgba(255,255,255,0.055)",
                     }}
                   >
-                    {/* Icon bg */}
-                    <div
-                      className="shrink-0 flex items-center justify-center"
-                      style={{
-                        width: 36,
-                        height: 36,
-                        borderRadius: 8,
-                        background: isSelected ? "rgba(184,212,227,0.15)" : "rgba(255,255,255,0.055)",
-                      }}
-                    >
-                      <IconComp size={18} color={isSelected ? "#B8D4E3" : "#B8B3B0"} />
-                    </div>
+                    <IconComp size={18} color={isSelected ? "#B8D4E3" : "#B8B3B0"} />
+                  </div>
 
-                    {/* Name + caption */}
-                    <div className="flex-1 min-w-0 flex flex-col" style={{ gap: 3 }}>
-                      <div className="flex items-center" style={{ gap: 8 }}>
-                        <span
-                          className="truncate"
-                          style={{
-                            fontFamily: "'Geist Sans',sans-serif",
-                            fontSize: 14,
-                            fontWeight: 600,
-                            color: "#F2F2F2",
-                          }}
-                        >
-                          {adapter.name}
-                        </span>
-                        {/* Auth badge */}
-                        {authStatus && (
-                          <span
-                            style={{
-                              fontFamily: "'Geist Sans',sans-serif",
-                              fontSize: 9,
-                              fontWeight: 600,
-                              padding: "2px 7px",
-                              borderRadius: 9999,
-                              letterSpacing: 0.3,
-                              background: authStatus.ready ? "rgba(52,199,89,0.15)" : "rgba(255,184,0,0.15)",
-                              color: authStatus.ready ? "#34C759" : "#FFB800",
-                              border: `1px solid ${authStatus.ready ? "rgba(52,199,89,0.3)" : "rgba(255,184,0,0.3)"}`,
-                              whiteSpace: "nowrap" as const,
-                            }}
-                          >
-                            {authStatus.ready ? "Ready" : "Setup needed"}
-                          </span>
-                        )}
-                      </div>
+                  {/* Name + caption */}
+                  <div className="flex-1 min-w-0 flex flex-col" style={{ gap: 3 }}>
+                    <div className="flex items-center" style={{ gap: 8 }}>
                       <span
                         className="truncate"
                         style={{
                           fontFamily: "'Geist Sans',sans-serif",
-                          fontSize: 11,
-                          color: "#6B7280",
+                          fontSize: 14,
+                          fontWeight: 600,
+                          color: "#F2F2F2",
                         }}
                       >
-                        {meta.caption}
+                        {adapter.name}
                       </span>
+                      {/* Auth badge */}
+                      {authStatus && (
+                        <span
+                          style={{
+                            fontFamily: "'Geist Sans',sans-serif",
+                            fontSize: 9,
+                            fontWeight: 600,
+                            padding: "2px 7px",
+                            borderRadius: 9999,
+                            letterSpacing: 0.3,
+                            background: authStatus.ready ? "rgba(52,199,89,0.15)" : "rgba(255,184,0,0.15)",
+                            color: authStatus.ready ? "#34C759" : "#FFB800",
+                            border: `1px solid ${authStatus.ready ? "rgba(52,199,89,0.3)" : "rgba(255,184,0,0.3)"}`,
+                            whiteSpace: "nowrap" as const,
+                          }}
+                        >
+                          {authStatus.ready ? "Ready" : "Setup needed"}
+                        </span>
+                      )}
                     </div>
-                  </button>
-                );
-              })
-            )}
-          </div>
+                    <span
+                      className="truncate"
+                      style={{
+                        fontFamily: "'Geist Sans',sans-serif",
+                        fontSize: 11,
+                        color: "#6B7280",
+                      }}
+                    >
+                      {meta.caption}
+                    </span>
+                  </div>
+                </button>
+              );
+            };
+
+            // If no favorites configured (not onboarded), show all as before
+            if (!hasFavorites) {
+              return (
+                <>
+                  <span style={sectionLabelStyle}>Available Adapters</span>
+                  <div className="flex flex-col" style={{ gap: 8 }}>
+                    {adapters.map(renderAdapterRow)}
+                  </div>
+                </>
+              );
+            }
+
+            // Favorites + collapsible "Show all"
+            return (
+              <>
+                {/* FAVORITES section */}
+                <span style={sectionLabelStyle}>Favorites</span>
+                <div className="flex flex-col" style={{ gap: 8 }}>
+                  {favList.length > 0 ? favList.map(renderAdapterRow) : (
+                    <div style={{ padding: "12px", fontFamily: "'Geist Sans',sans-serif", fontSize: 12, color: "#6B7280", textAlign: "center" }}>
+                      No favorites selected
+                    </div>
+                  )}
+                </div>
+
+                {/* Show all frameworks toggle */}
+                {otherList.length > 0 && (
+                  <>
+                    <button
+                      onClick={() => setShowAllExpanded((p) => !p)}
+                      className="flex items-center w-full"
+                      style={{
+                        padding: "8px 0", gap: 6, background: "none", border: "none",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <span style={sectionLabelStyle}>
+                        {showAllExpanded ? "Hide other frameworks" : "Show all frameworks"}
+                      </span>
+                      <svg
+                        width={12} height={12} viewBox="0 0 24 24" fill="none"
+                        stroke="#6B7280" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                        style={{
+                          transform: showAllExpanded ? "rotate(180deg)" : "rotate(0deg)",
+                          transition: "transform 0.15s",
+                        }}
+                      >
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
+                    </button>
+                    {showAllExpanded && (
+                      <div className="flex flex-col" style={{ gap: 8 }}>
+                        {otherList.map(renderAdapterRow)}
+                      </div>
+                    )}
+                  </>
+                )}
+              </>
+            );
+          })()}
 
           {/* Working Directory section */}
           <div className="flex flex-col" style={{ gap: 10, marginTop: 6 }}>

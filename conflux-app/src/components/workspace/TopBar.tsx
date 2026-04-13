@@ -8,11 +8,10 @@
 //   3. normal — 显示活跃 agent 数量
 // 胶囊 hover 时右侧出现 ✎ 铅笔（Send to... 主动发起入口）
 
-import { type FC, useEffect, useMemo, useState } from "react";
+import { type FC, useMemo, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useIslandStore } from "@/stores/islandStore";
 import { useAgentStore } from "@/stores/agentStore";
-import { listAgentInstances } from "@/lib/tauri-bridge";
-import { onAgentStatusChanged } from "@/lib/event-listener";
 import type { AgentStatus } from "@/types";
 
 interface TopBarProps {
@@ -23,41 +22,31 @@ interface TopBarProps {
   onAddAgent: () => void;
   onSearch: () => void;
   onSettings: () => void;
+  onClose: () => void;
 }
 
-const TopBar: FC<TopBarProps> = ({ onIslandClick, onTrayOpen, onSendToOpen, onDiscussionOpen, onAddAgent, onSearch, onSettings }) => {
+const TopBar: FC<TopBarProps> = ({ onIslandClick, onTrayOpen, onSendToOpen, onDiscussionOpen, onAddAgent, onSearch, onSettings, onClose }) => {
   const pendingPermissions = useIslandStore((s) => s.pendingPermissions);
   const notifications = useIslandStore((s) => s.notifications);
   const instances = useAgentStore((s) => s.instances);
-  const [activeCount, setActiveCount] = useState(0);
-  const [primaryStatus, setPrimaryStatus] = useState<AgentStatus>("idle");
+  const instanceCount = instances.size;
   const [capsuleHover, setCapsuleHover] = useState(false);
 
   // 从 agentStore 找到 pinned primary，没有则 fallback 到 "Conflux" 品牌名
   const primaryLabel = useMemo(() => {
     for (const inst of instances.values()) {
-      if (inst.is_primary_framework) return inst.adapter_name;
+      if (inst.is_pinned) return inst.adapter_name;
     }
     return "Conflux";
   }, [instances]);
 
-  // 获取 Agent 列表
-  const fetchAgents = async () => {
-    try {
-      const agents = await listAgentInstances();
-      setActiveCount(agents.length);
-      const primary = agents.find((a) => a.is_primary_framework);
-      if (primary) setPrimaryStatus(primary.status);
-    } catch { /* 后端不可用 */ }
-  };
-
-  useEffect(() => { fetchAgents(); }, []);
-
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    onAgentStatusChanged(() => fetchAgents()).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
-  }, []);
+  // Primary agent status derived from store
+  const primaryStatus: AgentStatus = useMemo(() => {
+    for (const inst of instances.values()) {
+      if (inst.is_pinned) return inst.status;
+    }
+    return "idle";
+  }, [instances]);
 
   const isActive = primaryStatus === "thinking" || primaryStatus === "coding";
   const hasPermission = pendingPermissions.length > 0;
@@ -69,7 +58,7 @@ const TopBar: FC<TopBarProps> = ({ onIslandClick, onTrayOpen, onSendToOpen, onDi
       ? "permission"
       : hasNotification
         ? "notification"
-        : isActive || activeCount > 0
+        : isActive || instanceCount > 0
           ? "active"
           : "idle";
 
@@ -95,8 +84,8 @@ const TopBar: FC<TopBarProps> = ({ onIslandClick, onTrayOpen, onSendToOpen, onDi
       ? "Approval Needed"
       : capsuleState === "notification"
         ? `${notifications[0]?.source_adapter_name || "Agent"} · task done`
-        : activeCount > 0
-          ? `${activeCount} Agent${activeCount > 1 ? "s" : ""} Active`
+        : instanceCount > 0
+          ? `${instanceCount} Agent${instanceCount > 1 ? "s" : ""} Active`
           : "No Agents";
 
   // 胶囊 click 行为：通知态 → tray；其他 → sidebar
@@ -124,6 +113,7 @@ const TopBar: FC<TopBarProps> = ({ onIslandClick, onTrayOpen, onSendToOpen, onDi
 
   return (
     <header
+      data-tauri-drag-region
       className="flex items-center h-[52px] px-5 shrink-0 relative z-30"
       style={{
         background: "rgba(255,255,255,0.04)",
@@ -142,6 +132,7 @@ const TopBar: FC<TopBarProps> = ({ onIslandClick, onTrayOpen, onSendToOpen, onDi
           border: "1px solid rgba(255,255,255,0.08)",
         }}
         onClick={onAddAgent}
+        onPointerDown={(e) => e.stopPropagation()}
         title="Add new agent instance"
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#B8D4E3" strokeWidth="2" strokeLinecap="round">
@@ -169,6 +160,7 @@ const TopBar: FC<TopBarProps> = ({ onIslandClick, onTrayOpen, onSendToOpen, onDi
               : "1px solid rgba(255,255,255,0.07)",
         }}
         onClick={handleCapsuleClick}
+        onPointerDown={(e) => e.stopPropagation()}
         onMouseEnter={() => setCapsuleHover(true)}
         onMouseLeave={() => setCapsuleHover(false)}
         aria-label={`Dynamic island: ${capsuleText}. Click to ${capsuleState === "notification" ? "open notifications" : "expand sidebar"}.`}
@@ -261,6 +253,7 @@ const TopBar: FC<TopBarProps> = ({ onIslandClick, onTrayOpen, onSendToOpen, onDi
         <button
           className="text-[#6B7280] hover:text-[#B8B3B0] transition-colors"
           onClick={onDiscussionOpen}
+          onPointerDown={(e) => e.stopPropagation()}
           title="New Discussion"
           aria-label="Start a new discussion"
         >
@@ -275,6 +268,7 @@ const TopBar: FC<TopBarProps> = ({ onIslandClick, onTrayOpen, onSendToOpen, onDi
             hasNotification ? "text-[#FFB800]" : "text-[#6B7280] hover:text-[#B8B3B0]"
           }`}
           onClick={onTrayOpen}
+          onPointerDown={(e) => e.stopPropagation()}
           title={hasNotification ? `${notifications.length} notification${notifications.length > 1 ? "s" : ""}` : "Notifications"}
           aria-label="Open notifications tray"
         >
@@ -293,6 +287,7 @@ const TopBar: FC<TopBarProps> = ({ onIslandClick, onTrayOpen, onSendToOpen, onDi
         <button
           className="text-[#6B7280] hover:text-[#B8B3B0] transition-colors"
           onClick={onSearch}
+          onPointerDown={(e) => e.stopPropagation()}
           title="Search (⌘K)"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -303,12 +298,43 @@ const TopBar: FC<TopBarProps> = ({ onIslandClick, onTrayOpen, onSendToOpen, onDi
         <button
           className="text-[#6B7280] hover:text-[#B8B3B0] transition-colors"
           onClick={onSettings}
+          onPointerDown={(e) => e.stopPropagation()}
           title="Settings"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
             <circle cx="12" cy="12" r="3" />
           </svg>
+        </button>
+      </div>
+
+      {/* Window Controls — minimize + close */}
+      <div style={{ display: "flex", alignItems: "center", gap: 2, marginLeft: 8 }}>
+        <button
+          onClick={() => getCurrentWindow().minimize()}
+          onPointerDown={(e) => e.stopPropagation()}
+          style={{
+            width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center",
+            background: "transparent", border: "none", borderRadius: 6, cursor: "pointer", color: "#B8B3B0",
+          }}
+          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.07)"; }}
+          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+          title="Minimize"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 12h14"/></svg>
+        </button>
+        <button
+          onClick={onClose}
+          onPointerDown={(e) => e.stopPropagation()}
+          style={{
+            width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center",
+            background: "transparent", border: "none", borderRadius: 6, cursor: "pointer", color: "#B8B3B0",
+          }}
+          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgba(255,59,48,0.2)"; (e.currentTarget as HTMLElement).style.color = "#FF3B30"; }}
+          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B8B3B0"; }}
+          title="Close"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
         </button>
       </div>
     </header>

@@ -19,12 +19,12 @@ impl ContextAggregator {
     ///
     /// [1] inst-abc (claude-code) — 状态: thinking
     ///     工作目录: /home/user/project
-    ///     主框架: 是
+    ///     钉选: 是
     ///     最后活动: 1714000000000
     ///
     /// [2] inst-def (codex-cli) — 状态: idle
     ///     工作目录: /home/user/other
-    ///     主框架: 否
+    ///     钉选: 否
     ///     最后活动: 1714000001000
     /// ```
     ///
@@ -47,7 +47,7 @@ impl ContextAggregator {
 
         for (i, inst) in instances.iter().enumerate() {
             let status_str = format!("{:?}", inst.status).to_lowercase();
-            let primary_str = if inst.is_primary_framework {
+            let primary_str = if inst.is_pinned {
                 "是"
             } else {
                 "否"
@@ -61,7 +61,7 @@ impl ContextAggregator {
                 status_str,
             ));
             lines.push(format!("    工作目录: {}", inst.working_dir));
-            lines.push(format!("    主框架: {}", primary_str));
+            lines.push(format!("    钉选: {}", primary_str));
             lines.push(format!("    最后活动: {}", inst.last_activity_at));
             lines.push(String::new());
         }
@@ -89,7 +89,7 @@ mod tests {
             adapter_name: "claude-code".to_string(),
             status: AgentStatus::Thinking,
             working_dir: "/home/user/project".to_string(),
-            is_primary_framework: true,
+            is_pinned: true,
             created_at: 1000,
             last_activity_at: 2000,
         }];
@@ -99,7 +99,7 @@ mod tests {
         assert!(result.contains("inst-001"));
         assert!(result.contains("claude-code"));
         assert!(result.contains("thinking"));
-        assert!(result.contains("主框架: 是"));
+        assert!(result.contains("钉选: 是"));
     }
 
     #[test]
@@ -111,7 +111,7 @@ mod tests {
                 adapter_name: "adapter-x".to_string(),
                 status: AgentStatus::Idle,
                 working_dir: "/dir/a".to_string(),
-                is_primary_framework: false,
+                is_pinned: false,
                 created_at: 1000,
                 last_activity_at: 1500,
             },
@@ -121,7 +121,7 @@ mod tests {
                 adapter_name: "adapter-y".to_string(),
                 status: AgentStatus::Coding,
                 working_dir: "/dir/b".to_string(),
-                is_primary_framework: true,
+                is_pinned: true,
                 created_at: 2000,
                 last_activity_at: 2500,
             },

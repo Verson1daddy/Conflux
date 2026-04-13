@@ -38,7 +38,7 @@ mod agent_command_tests {
         adapter_name: String,
         status: AgentStatus,
         working_dir: String,
-        is_primary_framework: bool,
+        is_pinned: bool,
         created_at: i64,
     }
 
@@ -49,7 +49,7 @@ mod agent_command_tests {
         adapter_name: String,
         status: AgentStatus,
         working_dir: String,
-        is_primary_framework: bool,
+        is_pinned: bool,
         created_at: i64,
         last_activity_at: i64,
     }
@@ -88,7 +88,7 @@ mod agent_command_tests {
             adapter_name: "Claude Code".to_string(),
             status: AgentStatus::Idle,
             working_dir: "/home/user/project".to_string(),
-            is_primary_framework: false,
+            is_pinned: false,
             created_at: 1700000000000,
         };
 
@@ -102,7 +102,7 @@ mod agent_command_tests {
         assert_eq!(parsed["adapter_name"], "Claude Code");
         assert_eq!(parsed["status"], "idle");
         assert_eq!(parsed["working_dir"], "/home/user/project");
-        assert_eq!(parsed["is_primary_framework"], false);
+        assert_eq!(parsed["is_pinned"], false);
         assert_eq!(parsed["created_at"], 1700000000000_i64);
     }
 
@@ -114,7 +114,7 @@ mod agent_command_tests {
             "adapter_name": "Codex CLI",
             "status": "thinking",
             "working_dir": "D:\\projects\\test",
-            "is_primary_framework": true,
+            "is_pinned": true,
             "created_at": 1700000001000
         }"#;
 
@@ -125,7 +125,7 @@ mod agent_command_tests {
         assert_eq!(info.adapter_id.0, "codex-cli");
         assert_eq!(info.adapter_name, "Codex CLI");
         assert_eq!(info.status, AgentStatus::Thinking);
-        assert!(info.is_primary_framework);
+        assert!(info.is_pinned);
     }
 
     #[test]
@@ -136,7 +136,7 @@ mod agent_command_tests {
             adapter_name: "Aider".to_string(),
             status: AgentStatus::Coding,
             working_dir: "/tmp/workspace".to_string(),
-            is_primary_framework: false,
+            is_pinned: false,
             created_at: 1700000002000,
         };
 
@@ -159,7 +159,7 @@ mod agent_command_tests {
             adapter_name: "Claude Code".to_string(),
             status: AgentStatus::WaitingPermission,
             working_dir: "/workspace".to_string(),
-            is_primary_framework: true,
+            is_pinned: true,
             created_at: 1700000000000,
             last_activity_at: 1700000005000,
         };
@@ -168,7 +168,7 @@ mod agent_command_tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("JSON 解析失败");
 
         assert_eq!(parsed["status"], "waiting_permission");
-        assert_eq!(parsed["is_primary_framework"], true);
+        assert_eq!(parsed["is_pinned"], true);
         assert_eq!(parsed["last_activity_at"], 1700000005000_i64);
     }
 
@@ -190,7 +190,7 @@ mod agent_command_tests {
                 adapter_name: "Test".to_string(),
                 status,
                 working_dir: "/test".to_string(),
-                is_primary_framework: false,
+                is_pinned: false,
                 created_at: 0,
                 last_activity_at: 0,
             };
@@ -446,7 +446,7 @@ mod agent_command_tests {
                 adapter_name: "Claude Code".to_string(),
                 status: AgentStatus::Thinking,
                 working_dir: "/project-a".to_string(),
-                is_primary_framework: true,
+                is_pinned: true,
                 created_at: 1700000000000,
             },
             AgentInstanceInfo {
@@ -455,7 +455,7 @@ mod agent_command_tests {
                 adapter_name: "Aider".to_string(),
                 status: AgentStatus::Idle,
                 working_dir: "/project-b".to_string(),
-                is_primary_framework: false,
+                is_pinned: false,
                 created_at: 1700000001000,
             },
         ];
@@ -467,10 +467,10 @@ mod agent_command_tests {
         assert_eq!(restored.len(), 2);
         assert_eq!(restored[0].instance_id.0, "inst-a");
         assert_eq!(restored[0].status, AgentStatus::Thinking);
-        assert!(restored[0].is_primary_framework);
+        assert!(restored[0].is_pinned);
         assert_eq!(restored[1].instance_id.0, "inst-b");
         assert_eq!(restored[1].status, AgentStatus::Idle);
-        assert!(!restored[1].is_primary_framework);
+        assert!(!restored[1].is_pinned);
     }
 
     // ===== InstanceId/AdapterId Newtype 测试 =====

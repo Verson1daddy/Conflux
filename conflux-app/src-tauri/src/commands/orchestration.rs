@@ -173,7 +173,7 @@ pub async fn end_discussion(
 /// # 参数
 /// - `instance_id`: 要设为主框架的实例 ID
 #[tauri::command]
-pub async fn set_primary_framework(
+pub async fn set_pinned_instance(
     state: State<'_, AppState>,
     instance_id: InstanceId,
 ) -> Result<(), ConfluxError> {
@@ -189,7 +189,7 @@ pub async fn set_primary_framework(
 
     // 设置主框架
     {
-        let mut primary = state.primary_framework.write();
+        let mut primary = state.pinned_instance.write();
         *primary = Some(instance_id.clone());
     }
 
@@ -202,9 +202,9 @@ pub async fn set_primary_framework(
 /// # 返回
 /// 当前主框架的实例 ID，如果未设置则返回 None
 #[tauri::command]
-pub async fn get_primary_framework(
+pub async fn get_pinned_instance(
     state: State<'_, AppState>,
 ) -> Result<Option<InstanceId>, ConfluxError> {
-    let primary = state.primary_framework.read();
+    let primary = state.pinned_instance.read();
     Ok(primary.clone())
 }

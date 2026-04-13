@@ -1,113 +1,253 @@
 // ===== OnboardingWizard =====
-// C2-A3: First-launch wizard for selecting favorite frameworks + primary adapter.
-// Two steps: 1) Pick favorites (≥1), 2) Choose primary from favorites.
-// Guarded by localStorage["conflux.onboarded.v1"] — shows once, never again
-// unless localStorage is cleared.
+// C2-B1 Tasks 10: 3-step onboarding wizard.
+// Step 1: Choose favorite frameworks (checkbox multi-select, >= 1 required)
+// Step 2: Choose primary framework (radio single-select from favorites)
+// Step 3: Create first agent instance (adapter dropdown + working dir + auth check)
 //
-// Visual: full-screen modal with glass card (560×auto), Conflux branding,
-// same glass tokens as Settings/AddAgent panels.
+// Guarded by localStorage["conflux.onboarded.v1"] in App.tsx.
+// On complete: persists favorites, primary, optionally creates first agent.
 
-import { type FC, useCallback, useState } from "react";
+import { type FC, useCallback, useEffect, useMemo, useState } from "react";
+import { createAgentInstance, detectAdapterAuth } from "@/lib/tauri-bridge";
 import { useAgentStore } from "@/stores/agentStore";
+import { useWorkspaceStore } from "@/stores/workspaceStore";
+import type { AdapterAuthStatus } from "@/types";
 
 // ===== Adapter metadata =====
 
-interface AdapterMeta {
+interface BuiltinAdapter {
   id: string;
   name: string;
-  vendor: string;
-  description: string;
+  desc: string;
+  color: string;
 }
 
-const ALL_ADAPTERS: AdapterMeta[] = [
-  { id: "claude-code", name: "Claude Code", vendor: "Anthropic", description: "Flagship agent framework with sub-agent orchestration" },
-  { id: "codex", name: "Codex", vendor: "OpenAI", description: "Code-focused reasoning and analysis" },
-  { id: "aider", name: "Aider", vendor: "Paul Gauthier", description: "Git-aware pair programmer" },
-  { id: "opencode", name: "OpenCode", vendor: "OpenCode", description: "PR review and codebase triage" },
+const BUILTIN_ADAPTERS: BuiltinAdapter[] = [
+  { id: "claude-code", name: "Claude Code", desc: "Anthropic CLI agent", color: "#B8D4E3" },
+  { id: "codex", name: "Codex", desc: "OpenAI CLI agent", color: "#FFB800" },
+  { id: "aider", name: "Aider", desc: "Pair programming agent", color: "#8EA4B8" },
+  { id: "opencode", name: "OpenCode", desc: "Open-source CLI agent", color: "#C9B894" },
 ];
 
-// ===== Icons =====
+// ===== Inline SVG icons =====
 
-const ICON_CHECK: FC<{ size: number; color: string }> = ({ size, color }) => (
+const CheckIcon: FC<{ size: number; color: string }> = ({ size, color }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
     <path d="m9 12 2 2 4-4" />
   </svg>
 );
 
-const ICON_STAR: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill={color} stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-    <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+const ArrowRightIcon: FC<{ size: number; color: string }> = ({ size, color }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M5 12h14M12 5l7 7-7 7" />
   </svg>
 );
 
-const ICON_ARROW: FC<{ size: number; color: string }> = ({ size, color }) => (
+const ArrowLeftIcon: FC<{ size: number; color: string }> = ({ size, color }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M5 12h14M12 5l7 7-7 7" />
+    <path d="M19 12H5M12 19l-7-7 7-7" />
+  </svg>
+);
+
+const ChevronDownIcon: FC<{ size: number; color: string }> = ({ size, color }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="m6 9 6 6 6-6" />
   </svg>
 );
 
 // ===== Component =====
 
 interface OnboardingWizardProps {
+  visible?: boolean;
   onComplete: () => void;
 }
 
-const OnboardingWizard: FC<OnboardingWizardProps> = ({ onComplete }) => {
-  const [step, setStep] = useState<1 | 2>(1);
+type WizardStep = 1 | 2 | 3;
+
+const OnboardingWizard: FC<OnboardingWizardProps> = ({ visible = true, onComplete }) => {
+  const [step, setStep] = useState<WizardStep>(1);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [primary, setPrimary] = useState<string | null>(null);
 
+  // Step 3 state
+  const [createAdapterId, setCreateAdapterId] = useState<string>("");
+  const [workingDir, setWorkingDir] = useState<string>(
+    () => localStorage.getItem("conflux.lastWorkingDir") || ""
+  );
+  const [authStatus, setAuthStatus] = useState<AdapterAuthStatus | null>(null);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+
+  // Store actions
+  const addInstance = useAgentStore((s) => s.addInstance);
+  const setCardColor = useAgentStore((s) => s.setCardColor);
   const setFavoriteAdapters = useAgentStore((s) => s.setFavoriteAdapters);
   const setPrimaryAdapter = useAgentStore((s) => s.setPrimaryAdapter);
+  const addCard = useWorkspaceStore((s) => s.addCard);
+
+  // Filtered adapters for step 2 and step 3
+  const favoriteAdapters = useMemo(
+    () => BUILTIN_ADAPTERS.filter((a) => selected.has(a.id)),
+    [selected]
+  );
+
+  // When entering step 3, default the create adapter to the primary
+  useEffect(() => {
+    if (step === 3 && primary && !createAdapterId) {
+      setCreateAdapterId(primary);
+    }
+  }, [step, primary, createAdapterId]);
+
+  // Auth detection: run on mount of step 3 and when adapter changes
+  useEffect(() => {
+    if (step !== 3 || !createAdapterId) return;
+    let cancelled = false;
+    setAuthLoading(true);
+    setAuthStatus(null);
+    detectAdapterAuth(createAdapterId)
+      .then((status) => {
+        if (!cancelled) setAuthStatus(status);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAuthStatus({
+            adapter_id: createAdapterId,
+            ready: false,
+            message: "Could not detect auth status",
+            login_command: null,
+            docs_url: null,
+          });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setAuthLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [step, createAdapterId]);
+
+  // ===== Handlers =====
 
   const toggleAdapter = useCallback((id: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) {
         next.delete(id);
-        if (primary === id) setPrimary(null);
       } else {
         next.add(id);
       }
       return next;
     });
-  }, [primary]);
+  }, []);
+
+  // When deselecting an adapter that is the primary, clear primary
+  useEffect(() => {
+    if (primary && !selected.has(primary)) {
+      setPrimary(null);
+    }
+  }, [selected, primary]);
 
   const handleNext = useCallback(() => {
     if (step === 1 && selected.size >= 1) {
-      // Auto-select primary if only 1 favorite
       if (selected.size === 1) {
         setPrimary([...selected][0]);
       }
       setStep(2);
+    } else if (step === 2 && primary) {
+      setStep(3);
     }
-  }, [step, selected]);
+  }, [step, selected, primary]);
 
-  const handleFinish = useCallback(() => {
-    const finalPrimary = primary ?? [...selected][0] ?? null;
+  const handleBack = useCallback(() => {
+    if (step === 2) setStep(1);
+    else if (step === 3) {
+      setCreateError(null);
+      setStep(2);
+    }
+  }, [step]);
+
+  const finishOnboarding = useCallback(() => {
     setFavoriteAdapters(selected);
-    setPrimaryAdapter(finalPrimary);
-    localStorage.setItem("conflux.onboarded.v1", "1");
+    setPrimaryAdapter(primary);
+    localStorage.setItem("conflux.onboarded.v1", "true");
     onComplete();
   }, [selected, primary, setFavoriteAdapters, setPrimaryAdapter, onComplete]);
 
-  const canNext = step === 1 && selected.size >= 1;
-  const canFinish = step === 2 && primary !== null;
+  const handleCreate = useCallback(async () => {
+    if (!createAdapterId || creating) return;
+    setCreating(true);
+    setCreateError(null);
+
+    const adapterMeta = BUILTIN_ADAPTERS.find((a) => a.id === createAdapterId);
+    const adapterColor = adapterMeta?.color || "#B8D4E3";
+    const dir = workingDir.trim() || undefined;
+
+    // Persist working dir for future use
+    if (dir) {
+      localStorage.setItem("conflux.lastWorkingDir", dir);
+    }
+
+    try {
+      const info = await createAgentInstance(createAdapterId, dir);
+      addInstance(info);
+      setCardColor(info.instance_id, adapterColor);
+      addCard({
+        instance_id: info.instance_id,
+        position: { x: 24, y: 24 },
+        size: { width: 580, height: 380 },
+        z_index: 1,
+      });
+      finishOnboarding();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      // Provide guidance for auth-related errors
+      if (authStatus && !authStatus.ready && authStatus.login_command) {
+        setCreateError(
+          `${message}\n\nTry running: ${authStatus.login_command}`
+        );
+      } else {
+        setCreateError(message);
+      }
+    } finally {
+      setCreating(false);
+    }
+  }, [createAdapterId, creating, workingDir, authStatus, addInstance, setCardColor, addCard, finishOnboarding]);
+
+  const handleSkip = useCallback(() => {
+    finishOnboarding();
+  }, [finishOnboarding]);
+
+  if (!visible) return null;
+
+  // ===== Rendering helpers =====
+
+  const canNext1 = selected.size >= 1;
+  const canNext2 = primary !== null;
+
+  const currentAdapter = BUILTIN_ADAPTERS.find((a) => a.id === createAdapterId);
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
       style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 50,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
         background: "rgba(5,5,7,0.85)",
         backdropFilter: "blur(12px)",
         WebkitBackdropFilter: "blur(12px)",
       }}
     >
       <div
-        className="flex flex-col overflow-hidden"
         style={{
-          width: 520,
+          width: 480,
           maxHeight: "88vh",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
           background: "rgba(255,255,255,0.04)",
           backdropFilter: "blur(24px)",
           WebkitBackdropFilter: "blur(24px)",
@@ -117,156 +257,528 @@ const OnboardingWizard: FC<OnboardingWizardProps> = ({ onComplete }) => {
         }}
       >
         {/* Header */}
-        <div className="flex flex-col shrink-0" style={{ padding: "32px 36px 24px 36px", gap: 8 }}>
+        <div style={{ padding: "32px 36px 24px 36px", flexShrink: 0 }}>
           <h1 style={{
             fontFamily: "'Fraunces Variable',Georgia,serif",
-            fontSize: 28, fontWeight: 700, color: "#F2F2F2",
-            letterSpacing: -0.3, margin: 0, lineHeight: 1.2,
+            fontSize: step === 1 ? 28 : 24,
+            fontWeight: 700,
+            color: "#F2F2F2",
+            letterSpacing: -0.3,
+            margin: 0,
+            lineHeight: 1.2,
           }}>
-            {step === 1 ? "Welcome to Conflux" : "Choose your primary"}
+            {step === 1 && "Welcome to Conflux"}
+            {step === 2 && "Pick your primary"}
+            {step === 3 && "Create your first agent"}
           </h1>
           <p style={{
             fontFamily: "'Geist Sans',sans-serif",
-            fontSize: 13, color: "#6B7280", margin: 0, lineHeight: 1.5,
+            fontSize: step === 1 ? 14 : 13,
+            color: "#6B7280",
+            margin: "8px 0 0 0",
+            lineHeight: 1.5,
           }}>
-            {step === 1
-              ? "Pick the agent frameworks you use. You can change this anytime in Settings."
-              : "Select one framework as your default — the capsule and Send-to panel will use it."}
+            {step === 1 && "Pick the frameworks you use"}
+            {step === 2 && "Your default framework for discussions and quick actions"}
+            {step === 3 && "Let's make sure it works"}
           </p>
           {/* Step indicator */}
-          <div className="flex items-center" style={{ gap: 6, marginTop: 4 }}>
-            <div style={{
-              width: 24, height: 3, borderRadius: 2,
-              background: "#B8D4E3",
-            }} />
-            <div style={{
-              width: 24, height: 3, borderRadius: 2,
-              background: step === 2 ? "#B8D4E3" : "rgba(255,255,255,0.12)",
-              transition: "background 0.2s",
-            }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 12 }}>
+            {([1, 2, 3] as const).map((s) => (
+              <div
+                key={s}
+                style={{
+                  width: 24,
+                  height: 3,
+                  borderRadius: 2,
+                  background: s <= step ? "#B8D4E3" : "rgba(255,255,255,0.12)",
+                  transition: "background 0.2s",
+                }}
+              />
+            ))}
           </div>
         </div>
 
         {/* Divider */}
-        <div style={{ height: 1, background: "rgba(255,255,255,0.082)" }} />
+        <div style={{ height: 1, background: "rgba(255,255,255,0.082)", flexShrink: 0 }} />
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto flex flex-col" style={{ padding: "20px 28px", gap: 10 }}>
-          {step === 1 && ALL_ADAPTERS.map((a) => {
+        <div style={{
+          flex: 1,
+          overflowY: "auto",
+          padding: "20px 28px",
+          display: "flex",
+          flexDirection: "column",
+          gap: 10,
+        }}>
+          {/* ===== STEP 1: Choose Favorites ===== */}
+          {step === 1 && BUILTIN_ADAPTERS.map((a) => {
             const isSel = selected.has(a.id);
             return (
               <button
                 key={a.id}
                 onClick={() => toggleAdapter(a.id)}
-                className="flex items-center w-full text-left transition-colors"
                 style={{
-                  padding: "16px 18px", gap: 14, borderRadius: 10,
+                  display: "flex",
+                  alignItems: "center",
+                  width: "100%",
+                  height: 64,
+                  padding: "0 18px",
+                  gap: 14,
+                  borderRadius: 10,
                   background: isSel ? "rgba(184,212,227,0.08)" : "rgba(255,255,255,0.03)",
                   border: isSel ? "1px solid #B8D4E3" : "1px solid rgba(255,255,255,0.082)",
+                  cursor: "pointer",
+                  textAlign: "left",
+                  transition: "background 0.15s, border-color 0.15s",
                 }}
               >
+                {/* Color block */}
+                <div style={{
+                  width: 40,
+                  height: 40,
+                  borderRadius: 8,
+                  background: a.color,
+                  flexShrink: 0,
+                  opacity: isSel ? 1 : 0.6,
+                  transition: "opacity 0.15s",
+                }} />
+                {/* Text */}
+                <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
+                  <span style={{
+                    fontFamily: "'Geist Sans',sans-serif",
+                    fontSize: 14,
+                    fontWeight: 600,
+                    color: "#F2F2F2",
+                  }}>
+                    {a.name}
+                  </span>
+                  <span style={{
+                    fontFamily: "'Geist Sans',sans-serif",
+                    fontSize: 11,
+                    color: "#6B7280",
+                  }}>
+                    {a.desc}
+                  </span>
+                </div>
                 {/* Checkbox */}
-                <div className="shrink-0 flex items-center justify-center" style={{
-                  width: 22, height: 22, borderRadius: 6,
+                <div style={{
+                  width: 22,
+                  height: 22,
+                  borderRadius: 6,
+                  flexShrink: 0,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
                   background: isSel ? "#B8D4E3" : "rgba(255,255,255,0.06)",
                   border: isSel ? "none" : "1px solid rgba(255,255,255,0.15)",
                   transition: "background 0.15s",
                 }}>
-                  {isSel && <ICON_CHECK size={14} color="#0A0F15" />}
-                </div>
-                <div className="flex-1 min-w-0 flex flex-col" style={{ gap: 3 }}>
-                  <div className="flex items-center" style={{ gap: 8 }}>
-                    <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 15, fontWeight: 600, color: "#F2F2F2" }}>
-                      {a.name}
-                    </span>
-                    <span style={{
-                      fontFamily: "'Geist Sans',sans-serif", fontSize: 10, fontWeight: 500,
-                      padding: "2px 8px", borderRadius: 9999,
-                      background: "rgba(255,255,255,0.06)", color: "#6B7280",
-                    }}>
-                      {a.vendor}
-                    </span>
-                  </div>
-                  <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 11, color: "#6B7280" }}>
-                    {a.description}
-                  </span>
+                  {isSel && <CheckIcon size={14} color="#0A0F15" />}
                 </div>
               </button>
             );
           })}
 
-          {step === 2 && [...selected].map((id) => {
-            const a = ALL_ADAPTERS.find((x) => x.id === id)!;
-            const isPrimary = primary === id;
+          {step === 1 && (
+            <p style={{
+              fontFamily: "'Geist Sans',sans-serif",
+              fontSize: 12,
+              color: "#6B7280",
+              textAlign: "center",
+              margin: "4px 0 0 0",
+            }}>
+              Select at least one to continue
+            </p>
+          )}
+
+          {/* ===== STEP 2: Choose Primary ===== */}
+          {step === 2 && favoriteAdapters.map((a) => {
+            const isPrimary = primary === a.id;
             return (
               <button
-                key={id}
-                onClick={() => setPrimary(id)}
-                className="flex items-center w-full text-left transition-colors"
+                key={a.id}
+                onClick={() => setPrimary(a.id)}
                 style={{
-                  padding: "16px 18px", gap: 14, borderRadius: 10,
+                  display: "flex",
+                  alignItems: "center",
+                  width: "100%",
+                  height: 64,
+                  padding: "0 18px",
+                  gap: 14,
+                  borderRadius: 10,
                   background: isPrimary ? "rgba(184,212,227,0.08)" : "rgba(255,255,255,0.03)",
                   border: isPrimary ? "1px solid #B8D4E3" : "1px solid rgba(255,255,255,0.082)",
+                  cursor: "pointer",
+                  textAlign: "left",
+                  transition: "background 0.15s, border-color 0.15s",
                 }}
               >
-                {/* Radio */}
-                <div className="shrink-0 flex items-center justify-center" style={{
-                  width: 22, height: 22, borderRadius: 9999,
-                  background: isPrimary ? "#B8D4E3" : "rgba(255,255,255,0.06)",
-                  border: isPrimary ? "none" : "1px solid rgba(255,255,255,0.15)",
-                }}>
-                  {isPrimary && <ICON_STAR size={12} color="#0A0F15" />}
-                </div>
-                <div className="flex-1 min-w-0 flex flex-col" style={{ gap: 3 }}>
-                  <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 15, fontWeight: 600, color: "#F2F2F2" }}>
+                {/* Color block */}
+                <div style={{
+                  width: 40,
+                  height: 40,
+                  borderRadius: 8,
+                  background: a.color,
+                  flexShrink: 0,
+                  opacity: isPrimary ? 1 : 0.6,
+                  transition: "opacity 0.15s",
+                }} />
+                {/* Text */}
+                <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
+                  <span style={{
+                    fontFamily: "'Geist Sans',sans-serif",
+                    fontSize: 14,
+                    fontWeight: 600,
+                    color: "#F2F2F2",
+                  }}>
                     {a.name}
                   </span>
-                  <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 11, color: "#6B7280" }}>
-                    {a.vendor} · {a.description}
+                  <span style={{
+                    fontFamily: "'Geist Sans',sans-serif",
+                    fontSize: 11,
+                    color: "#6B7280",
+                  }}>
+                    {a.desc}
                   </span>
+                </div>
+                {/* Radio circle */}
+                <div style={{
+                  width: 22,
+                  height: 22,
+                  borderRadius: 9999,
+                  flexShrink: 0,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: isPrimary ? "#B8D4E3" : "rgba(255,255,255,0.06)",
+                  border: isPrimary ? "none" : "1px solid rgba(255,255,255,0.15)",
+                  transition: "background 0.15s",
+                }}>
+                  {isPrimary && (
+                    <div style={{
+                      width: 10,
+                      height: 10,
+                      borderRadius: 9999,
+                      background: "#0A0F15",
+                    }} />
+                  )}
                 </div>
               </button>
             );
           })}
+
+          {/* ===== STEP 3: Create First Agent ===== */}
+          {step === 3 && (
+            <>
+              {/* Framework dropdown */}
+              <label style={{
+                fontFamily: "'Geist Sans',sans-serif",
+                fontSize: 12,
+                fontWeight: 500,
+                color: "#B8B3B0",
+                marginBottom: 2,
+              }}>
+                Framework
+              </label>
+              <div style={{ position: "relative" }}>
+                <button
+                  onClick={() => setDropdownOpen((v) => !v)}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    width: "100%",
+                    height: 44,
+                    padding: "0 14px",
+                    gap: 10,
+                    borderRadius: 8,
+                    background: "rgba(255,255,255,0.04)",
+                    border: "1px solid rgba(255,255,255,0.10)",
+                    cursor: "pointer",
+                    textAlign: "left",
+                  }}
+                >
+                  {currentAdapter && (
+                    <div style={{
+                      width: 24,
+                      height: 24,
+                      borderRadius: 6,
+                      background: currentAdapter.color,
+                      flexShrink: 0,
+                    }} />
+                  )}
+                  <span style={{
+                    fontFamily: "'Geist Sans',sans-serif",
+                    fontSize: 13,
+                    color: "#F2F2F2",
+                    flex: 1,
+                  }}>
+                    {currentAdapter?.name || "Select framework"}
+                  </span>
+                  <ChevronDownIcon size={16} color="#6B7280" />
+                </button>
+                {dropdownOpen && (
+                  <div style={{
+                    position: "absolute",
+                    top: "calc(100% + 4px)",
+                    left: 0,
+                    right: 0,
+                    zIndex: 10,
+                    background: "rgba(28,30,34,0.98)",
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    borderRadius: 8,
+                    padding: 4,
+                    boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
+                  }}>
+                    {favoriteAdapters.map((a) => (
+                      <button
+                        key={a.id}
+                        onClick={() => {
+                          setCreateAdapterId(a.id);
+                          setDropdownOpen(false);
+                          setCreateError(null);
+                        }}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          width: "100%",
+                          height: 38,
+                          padding: "0 10px",
+                          gap: 10,
+                          borderRadius: 6,
+                          background: createAdapterId === a.id ? "rgba(184,212,227,0.10)" : "transparent",
+                          border: "none",
+                          cursor: "pointer",
+                          textAlign: "left",
+                        }}
+                      >
+                        <div style={{
+                          width: 20,
+                          height: 20,
+                          borderRadius: 5,
+                          background: a.color,
+                          flexShrink: 0,
+                        }} />
+                        <span style={{
+                          fontFamily: "'Geist Sans',sans-serif",
+                          fontSize: 13,
+                          color: "#F2F2F2",
+                        }}>
+                          {a.name}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Working directory */}
+              <label style={{
+                fontFamily: "'Geist Sans',sans-serif",
+                fontSize: 12,
+                fontWeight: 500,
+                color: "#B8B3B0",
+                marginTop: 8,
+                marginBottom: 2,
+              }}>
+                Working directory
+              </label>
+              <input
+                type="text"
+                value={workingDir}
+                onChange={(e) => setWorkingDir(e.target.value)}
+                placeholder="D:\Projects\my-app"
+                style={{
+                  width: "100%",
+                  height: 44,
+                  padding: "0 14px",
+                  borderRadius: 8,
+                  background: "rgba(255,255,255,0.04)",
+                  border: "1px solid rgba(255,255,255,0.10)",
+                  fontFamily: "'Geist Sans',sans-serif",
+                  fontSize: 13,
+                  color: "#F2F2F2",
+                  outline: "none",
+                  boxSizing: "border-box",
+                }}
+              />
+
+              {/* Auth status badge */}
+              <div style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                marginTop: 8,
+                padding: "8px 0",
+              }}>
+                {authLoading ? (
+                  <>
+                    <div style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: 9999,
+                      background: "#6B7280",
+                      animation: "pulse 1.5s ease-in-out infinite",
+                    }} />
+                    <span style={{
+                      fontFamily: "'Geist Sans',sans-serif",
+                      fontSize: 12,
+                      color: "#6B7280",
+                    }}>
+                      Checking auth...
+                    </span>
+                  </>
+                ) : authStatus ? (
+                  <>
+                    <div style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: 9999,
+                      background: authStatus.ready ? "#5FD47F" : "#FFB800",
+                    }} />
+                    <span style={{
+                      fontFamily: "'Geist Sans',sans-serif",
+                      fontSize: 12,
+                      color: authStatus.ready ? "#5FD47F" : "#FFB800",
+                    }}>
+                      {authStatus.ready ? "Ready" : "Setup needed"}
+                    </span>
+                    {!authStatus.ready && authStatus.login_command && (
+                      <span style={{
+                        fontFamily: "'Geist Sans',sans-serif",
+                        fontSize: 11,
+                        color: "#6B7280",
+                        marginLeft: 4,
+                      }}>
+                        Run: {authStatus.login_command}
+                      </span>
+                    )}
+                  </>
+                ) : null}
+              </div>
+
+              {/* Create error */}
+              {createError && (
+                <div style={{
+                  fontFamily: "'Geist Sans',sans-serif",
+                  fontSize: 12,
+                  color: "#FF6B6B",
+                  lineHeight: 1.5,
+                  whiteSpace: "pre-wrap",
+                  padding: "8px 12px",
+                  borderRadius: 8,
+                  background: "rgba(255,107,107,0.08)",
+                  border: "1px solid rgba(255,107,107,0.20)",
+                }}>
+                  {createError}
+                </div>
+              )}
+            </>
+          )}
         </div>
 
         {/* Footer */}
-        <div style={{ height: 1, background: "rgba(255,255,255,0.06)" }} />
-        <div className="flex items-center shrink-0" style={{ padding: "18px 28px", gap: 12, justifyContent: "space-between" }}>
-          {step === 2 ? (
-            <button
-              onClick={() => setStep(1)}
-              style={{
-                padding: "10px 18px", borderRadius: 9999,
-                background: "rgba(255,255,255,0.04)",
-                border: "1px solid rgba(255,255,255,0.082)",
-                fontFamily: "'Geist Sans',sans-serif", fontSize: 13, fontWeight: 500,
-                color: "#B8B3B0", cursor: "pointer",
-              }}
-            >
-              Back
-            </button>
-          ) : (
-            <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 11, color: "#6B728060" }}>
+        <div style={{ height: 1, background: "rgba(255,255,255,0.06)", flexShrink: 0 }} />
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "18px 28px",
+          flexShrink: 0,
+        }}>
+          {/* Left side */}
+          {step === 1 ? (
+            <span style={{
+              fontFamily: "'Geist Sans',sans-serif",
+              fontSize: 11,
+              color: "rgba(107,114,128,0.38)",
+            }}>
               {selected.size} selected
             </span>
+          ) : (
+            <button
+              onClick={handleBack}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "10px 18px",
+                borderRadius: 9999,
+                background: "rgba(255,255,255,0.04)",
+                border: "1px solid rgba(255,255,255,0.082)",
+                fontFamily: "'Geist Sans',sans-serif",
+                fontSize: 13,
+                fontWeight: 500,
+                color: "#B8B3B0",
+                cursor: "pointer",
+              }}
+            >
+              <ArrowLeftIcon size={14} color="#B8B3B0" />
+              <span>Back</span>
+            </button>
           )}
-          <button
-            onClick={step === 1 ? handleNext : handleFinish}
-            disabled={step === 1 ? !canNext : !canFinish}
-            className="flex items-center transition-opacity"
-            style={{
-              padding: "10px 22px", gap: 8, borderRadius: 9999,
-              background: "#B8D4E3",
-              fontFamily: "'Geist Sans',sans-serif", fontSize: 13, fontWeight: 600,
-              color: "#0A0F15",
-              opacity: (step === 1 ? canNext : canFinish) ? 1 : 0.4,
-              cursor: (step === 1 ? canNext : canFinish) ? "pointer" : "not-allowed",
-            }}
-          >
-            <span>{step === 1 ? "Next" : "Get Started"}</span>
-            <ICON_ARROW size={14} color="#0A0F15" />
-          </button>
+
+          {/* Right side */}
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            {step === 3 && (
+              <button
+                onClick={handleSkip}
+                style={{
+                  background: "none",
+                  border: "none",
+                  fontFamily: "'Geist Sans',sans-serif",
+                  fontSize: 12,
+                  color: "#6B7280",
+                  textDecoration: "underline",
+                  cursor: "pointer",
+                  padding: "4px 8px",
+                }}
+              >
+                I'll do this later
+              </button>
+            )}
+            <button
+              onClick={step === 3 ? handleCreate : handleNext}
+              disabled={
+                (step === 1 && !canNext1) ||
+                (step === 2 && !canNext2) ||
+                (step === 3 && (!createAdapterId || creating))
+              }
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "10px 22px",
+                borderRadius: 9999,
+                background: "#B8D4E3",
+                border: "none",
+                fontFamily: "'Geist Sans',sans-serif",
+                fontSize: 13,
+                fontWeight: 600,
+                color: "#0A0F15",
+                opacity:
+                  (step === 1 && !canNext1) ||
+                  (step === 2 && !canNext2) ||
+                  (step === 3 && (!createAdapterId || creating))
+                    ? 0.4
+                    : 1,
+                cursor:
+                  (step === 1 && !canNext1) ||
+                  (step === 2 && !canNext2) ||
+                  (step === 3 && (!createAdapterId || creating))
+                    ? "not-allowed"
+                    : "pointer",
+                transition: "opacity 0.15s",
+              }}
+            >
+              <span>
+                {step === 1 && "Next"}
+                {step === 2 && "Get Started"}
+                {step === 3 && (creating ? "Creating..." : "Create Agent")}
+              </span>
+              <ArrowRightIcon size={14} color="#0A0F15" />
+            </button>
+          </div>
         </div>
       </div>
     </div>

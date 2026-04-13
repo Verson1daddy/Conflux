@@ -770,7 +770,7 @@ const StepParticipants: FC = () => {
   const rows = useMemo(() => {
     const arr: AgentInstanceInfo[] = [];
     // Primary first, then rest in insertion order
-    const primary = Array.from(instances.values()).find((i) => i.is_primary_framework);
+    const primary = Array.from(instances.values()).find((i) => i.is_pinned);
     if (primary) arr.push(primary);
     instances.forEach((info) => {
       if (!primary || info.instance_id !== primary.instance_id) arr.push(info);
@@ -794,7 +794,7 @@ const StepParticipants: FC = () => {
         </span>
         {rows.map((info) => {
           const isSelected = selected.has(info.instance_id);
-          const isPrimary = info.is_primary_framework;
+          const isPrimary = info.is_pinned;
           return (
             <button
               key={info.instance_id}
@@ -1163,7 +1163,7 @@ const DiscussionPanel: FC = () => {
 
   const primaryInstance = useMemo(() => {
     for (const info of instances.values()) {
-      if (info.is_primary_framework) return info;
+      if (info.is_pinned) return info;
     }
     return instances.values().next().value ?? null;
   }, [instances]);

@@ -109,3 +109,72 @@ pub async fn detect_adapter_auth(
         }),
     }
 }
+
+/// 设置用户收藏的适配器列表
+/// adapter_ids: 收藏适配器的 ID 列表（全量覆盖）
+#[tauri::command]
+pub async fn set_favorite_adapters(
+    state: State<'_, AppState>,
+    adapter_ids: Vec<String>,
+) -> Result<(), ConfluxError> {
+    // 输入验证：上限 50 个，每个 ID 验证存在于 registry
+    if adapter_ids.len() > 50 {
+        return Err(ConfluxError::InvalidConfig {
+            message: "Too many favorite adapters (max 50)".to_string(),
+        });
+    }
+    {
+        let registry = state.adapter_registry.read();
+        for id in &adapter_ids {
+            if registry.get_config(id).is_none() {
+                return Err(ConfluxError::AdapterNotFound {
+                    adapter_id: id.clone(),
+                });
+            }
+        }
+    }
+    let mut favs = state.favorite_adapters.write();
+    *favs = adapter_ids;
+    Ok(())
+}
+
+/// 获取用户收藏的适配器列表
+#[tauri::command]
+pub async fn get_favorite_adapters(
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, ConfluxError> {
+    let favs = state.favorite_adapters.read();
+    Ok(favs.clone())
+}
+
+/// 设置主适配器（用户默认使用的适配器）
+/// adapter_id: 要设为主适配器的适配器 ID（必须已注册）
+#[tauri::command]
+pub async fn set_primary_adapter(
+    state: State<'_, AppState>,
+    adapter_id: String,
+) -> Result<(), ConfluxError> {
+    // 验证 adapter 存在于 registry
+    {
+        let registry = state.adapter_registry.read();
+        if registry.get_config(&adapter_id).is_none() {
+            return Err(ConfluxError::AdapterNotFound {
+                adapter_id: adapter_id.clone(),
+            });
+        }
+    }
+
+    let mut pa = state.primary_adapter.write();
+    *pa = Some(adapter_id);
+    Ok(())
+}
+
+/// 获取当前主适配器
+/// 返回主适配器 ID，如果未设置则返回 None
+#[tauri::command]
+pub async fn get_primary_adapter(
+    state: State<'_, AppState>,
+) -> Result<Option<String>, ConfluxError> {
+    let pa = state.primary_adapter.read();
+    Ok(pa.clone())
+}

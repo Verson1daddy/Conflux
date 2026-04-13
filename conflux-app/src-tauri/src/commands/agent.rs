@@ -104,7 +104,7 @@ pub async fn create_agent_instance(
         adapter_name: adapter_config.name,
         status: AgentStatus::Idle,
         working_dir: work_dir,
-        is_primary_framework: false,
+        is_pinned: false,
         created_at: now_ms,
     })
 }
@@ -147,7 +147,7 @@ pub async fn destroy_agent_instance(
 
     // 4. 如果是主框架实例，清除主框架引用
     {
-        let mut primary = state.primary_framework.write();
+        let mut primary = state.pinned_instance.write();
         if primary.as_ref().map(|p| p == &instance_id).unwrap_or(false) {
             *primary = None;
         }
@@ -218,7 +218,7 @@ pub async fn get_agent_state(
 
     // 4. 检查是否为主框架
     let is_primary = {
-        let primary = state.primary_framework.read();
+        let primary = state.pinned_instance.read();
         primary.as_ref().map(|p| p == &instance_id).unwrap_or(false)
     };
 
@@ -228,7 +228,7 @@ pub async fn get_agent_state(
         adapter_name,
         status: detail.status,
         working_dir: detail.working_dir,
-        is_primary_framework: is_primary,
+        is_pinned: is_primary,
         created_at: detail.created_at,
         last_activity_at: detail.last_activity_at,
     })
@@ -425,7 +425,7 @@ pub async fn respawn_agent_instance(
         adapter_name: new_adapter_name,
         status: AgentStatus::Idle,
         working_dir: work_dir,
-        is_primary_framework: false,
+        is_pinned: false,
         created_at: now_ms,
     })
 }

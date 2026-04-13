@@ -174,7 +174,7 @@ pub async fn auto_pack_layout(
 
     // 3. 为每个实例分配 CardSizeSlot
     let primary_id = {
-        let primary = state.primary_framework.read();
+        let primary = state.pinned_instance.read();
         primary.clone()
     };
 

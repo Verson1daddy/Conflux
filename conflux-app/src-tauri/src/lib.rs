@@ -18,6 +18,7 @@ pub mod pty;
 pub mod adapter;
 pub mod orchestration;
 pub mod persistence;
+pub mod tray;
 
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -44,8 +45,12 @@ pub struct AppState {
     pub adapter_registry: Arc<RwLock<AdapterRegistry>>,
     /// 当前灵动岛模式
     pub island_mode: RwLock<IslandMode>,
-    /// 灵动岛主框架 instance_id
-    pub primary_framework: RwLock<Option<InstanceId>>,
+    /// 灵动岛钉选实例 instance_id
+    pub pinned_instance: RwLock<Option<InstanceId>>,
+    /// 用户收藏的适配器 ID 列表
+    pub favorite_adapters: RwLock<Vec<String>>,
+    /// 主适配器
+    pub primary_adapter: RwLock<Option<String>>,
     /// Agent 实例映射: instance_id -> adapter_id
     pub instance_adapter_map: RwLock<HashMap<String, String>>,
     /// stdin 注入安全策略（附录 B1）
@@ -71,7 +76,9 @@ impl AppState {
             pty_manager: Arc::new(PtyManager::new()),
             adapter_registry: Arc::new(RwLock::new(AdapterRegistry::new())),
             island_mode: RwLock::new(IslandMode::TopIsland),
-            primary_framework: RwLock::new(None),
+            pinned_instance: RwLock::new(None),
+            favorite_adapters: RwLock::new(Vec::new()),
+            primary_adapter: RwLock::new(None),
             instance_adapter_map: RwLock::new(HashMap::new()),
             stdin_policy: RwLock::new(StdinInjectionPolicy::default()),
             injection_rate_counter: RwLock::new(Vec::new()),
@@ -109,6 +116,11 @@ pub fn run() {
 
             app.manage(app_state);
 
+            // 系统托盘
+            if let Err(e) = tray::create_tray(app) {
+                eprintln!("系统托盘初始化失败: {e}");
+            }
+
             // DevTools: 按 F12 手动打开（自动打开增加 ~500ms 启动延迟）
 
             Ok(())
@@ -142,8 +154,8 @@ pub fn run() {
             commands::orchestration::start_discussion,
             commands::orchestration::send_discussion_message,
             commands::orchestration::end_discussion,
-            commands::orchestration::set_primary_framework,
-            commands::orchestration::get_primary_framework,
+            commands::orchestration::set_pinned_instance,
+            commands::orchestration::get_pinned_instance,
             // BE-4: 持久化查询
             commands::persistence::list_sessions,
             commands::persistence::query_session_events,

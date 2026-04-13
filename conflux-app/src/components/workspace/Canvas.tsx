@@ -21,9 +21,11 @@ interface CanvasProps {
    *  flip rather than as an overlay. App.tsx decides based on window
    *  fullscreen state. */
   isFullscreen: boolean;
+  /** Callback to open the Add Agent modal from empty-state CTA. */
+  onAddAgent?: () => void;
 }
 
-function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
+function Canvas({ agents, agentStatuses, isFullscreen, onAddAgent }: CanvasProps) {
   const expandedCardId = useAgentStore((s) => s.expandedCardId);
   const cards = useWorkspaceStore((s) => s.cards);
   const layoutMode = useWorkspaceStore((s) => s.layoutMode);
@@ -192,46 +194,116 @@ function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
       }}
       onPointerDown={handlePointerDown}
     >
-      {/* Transformed canvas layer */}
-      <div
-        ref={transformLayerRef}
-        className="absolute top-0 left-0 origin-top-left"
-        style={{
-          transform: `translate(${storePan.x}px,${storePan.y}px) scale(${storeZoom})`,
-          width: 0,
-          height: 0,
-        }}
-      >
-        {cards.map((card) => {
-          const agentInfo = agents.get(card.instance_id);
-          const agentStatus = agentStatuses.get(card.instance_id) ?? "idle";
-          const agentName = agentInfo?.adapter_name ?? "Unknown Agent";
-          const adapterBadge = agentInfo?.adapter_id ?? "---";
+      {/* Empty-state fallback — shown when no cards exist */}
+      {cards.length === 0 ? (
+        <div
+          style={{
+            position: "absolute",
+            top: "50%",
+            left: "50%",
+            transform: "translate(-50%, -50%)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: 16,
+            pointerEvents: "auto",
+          }}
+        >
+          <div
+            style={{
+              width: 64,
+              height: 64,
+              borderRadius: "50%",
+              background: "rgba(255,255,255,0.07)",
+              border: "1px solid rgba(255,255,255,0.08)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <span style={{ fontSize: 28, color: "#6B7280" }}>+</span>
+          </div>
+          <span
+            style={{
+              fontFamily: "'Fraunces Variable', Georgia, serif",
+              fontSize: 24,
+              fontWeight: 600,
+              color: "#B8B3B0",
+            }}
+          >
+            No agents yet
+          </span>
+          <span
+            style={{
+              fontFamily: "'Geist Sans', sans-serif",
+              fontSize: 14,
+              color: "rgba(107,114,128,0.56)",
+            }}
+          >
+            Add your first agent to get started
+          </span>
+          <button
+            onClick={() => onAddAgent?.()}
+            style={{
+              fontFamily: "'Geist Sans', sans-serif",
+              fontSize: 14,
+              fontWeight: 600,
+              color: "#050507",
+              background: "#B8D4E3",
+              border: "none",
+              borderRadius: 9999,
+              padding: "10px 20px",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            <span>+</span> Add Agent
+          </button>
+        </div>
+      ) : (
+        /* Transformed canvas layer */
+        <div
+          ref={transformLayerRef}
+          className="absolute top-0 left-0 origin-top-left"
+          style={{
+            transform: `translate(${storePan.x}px,${storePan.y}px) scale(${storeZoom})`,
+            width: 0,
+            height: 0,
+          }}
+        >
+          {cards.map((card) => {
+            const agentInfo = agents.get(card.instance_id);
+            const agentStatus = agentStatuses.get(card.instance_id) ?? "idle";
+            const agentName = agentInfo?.adapter_name ?? "Unknown Agent";
+            const adapterBadge = agentInfo?.adapter_id ?? "---";
 
-          const isFlipped =
-            isFullscreen && expandedCardId === card.instance_id;
-          const isDimmed =
-            isFullscreen &&
-            expandedCardId !== null &&
-            expandedCardId !== card.instance_id;
-          return (
-            <AgentCard
-              key={card.instance_id}
-              card={card}
-              agentName={agentName}
-              adapterBadge={adapterBadge}
-              status={agentStatus}
-              isSelected={selectedCardId === card.instance_id}
-              layoutMode={layoutMode}
-              zoom={liveZoom.current}
-              fileCount={0}
-              lastActivity={agentInfo?.created_at ?? 0}
-              isFlipped={isFlipped}
-              isDimmed={isDimmed}
-            />
-          );
-        })}
-      </div>
+            const isFlipped =
+              isFullscreen && expandedCardId === card.instance_id;
+            const isDimmed =
+              isFullscreen &&
+              expandedCardId !== null &&
+              expandedCardId !== card.instance_id;
+            return (
+              <AgentCard
+                key={card.instance_id}
+                card={card}
+                agentName={agentName}
+                adapterBadge={adapterBadge}
+                status={agentStatus}
+                isSelected={selectedCardId === card.instance_id}
+                layoutMode={layoutMode}
+                zoom={liveZoom.current}
+                fileCount={0}
+                lastActivity={agentInfo?.created_at ?? 0}
+                isFlipped={isFlipped}
+                isDimmed={isDimmed}
+              />
+            );
+          })}
+        </div>
+      )}
 
       <LayoutManager onAutoPack={triggerAutoPack} />
 

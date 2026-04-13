@@ -5,7 +5,7 @@
 // expanded terminal so keystrokes echo locally (Phase B placeholder until
 // backend PTY is wired).
 
-import { type FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type FC, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useAgentStore } from "@/stores/agentStore";
 import { XtermTerminal } from "./XtermTerminal";
@@ -77,9 +77,7 @@ const Icon: FC<{ path: string; size?: number }> = ({ path, size = 14 }) => (
 
 const PATH_MINIMIZE = "M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7";
 const PATH_X = "M18 6 6 18M6 6l12 12";
-const PATH_GIT_BRANCH = "M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM15 6a9 9 0 0 0-9 9";
 const PATH_TIMER = "M10 2h4M12 14l3-3M12 22a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z";
-const PATH_FILE = "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7zM14 2v6h6M16 13H8M16 17H8M10 9H8";
 const PATH_MSG = "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z";
 
 // ===== Props =====
@@ -145,42 +143,14 @@ const DEMO_EXPANDED: Record<string, string> = {
     line(ANSI.success, "  ✓ Review approved"),
 };
 
-// ===== Demo sub-agents and tree (mock until backend AgentTree feed) =====
-
-interface DemoSubAgent {
-  name: string;
-  status: "running" | "waiting";
-  task: string;
-  time: string;
+// ===== Elapsed time formatter =====
+function formatElapsed(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
 }
-
-const DEMO_SUB_AGENTS: DemoSubAgent[] = [
-  {
-    name: "Code Writer",
-    status: "running",
-    task: "Writing LayoutManager.tsx",
-    time: "0:42",
-  },
-  {
-    name: "Test Runner",
-    status: "waiting",
-    task: "Queued · vitest",
-    time: "—",
-  },
-];
-
-interface DemoTreeNode {
-  label: string;
-  depth: number;
-  status: "active" | "done" | "pending";
-}
-
-const DEMO_TREE: DemoTreeNode[] = [
-  { label: "claude-code (root)", depth: 0, status: "active" },
-  { label: "Code Writer", depth: 1, status: "active" },
-  { label: "Context Gather", depth: 1, status: "done" },
-  { label: "vitest runner", depth: 2, status: "pending" },
-];
 
 // ===== Component =====
 
@@ -188,6 +158,7 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
   const setExpanded = useAgentStore((s) => s.setExpandedCard);
   const openDiscussionWizard = useAgentStore((s) => s.openDiscussionWizard);
   const instance = useAgentStore((s) => s.instances.get(instanceId));
+  const tree = useAgentStore((s) => s.trees.get(instanceId));
 
   // C2-A4 Shield — shared with AgentCard via store
   const shieldTier = (useAgentStore(
@@ -427,134 +398,77 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
 
         {/* ===== Body: Sidebar + Terminal ===== */}
         <div className="flex-1 min-h-0 flex">
-          {/* ----- Sidebar (200) ----- */}
+          {/* ----- Sidebar (200) — sub-agents + agent tree ----- */}
           <aside
             className="shrink-0 flex flex-col overflow-y-auto"
             style={{
               width: 200,
-              padding: 12,
-              gap: 12,
               background: COLORS.surfaceTertiary,
               borderRight: `1px solid ${COLORS.borderSoft}`,
             }}
           >
-            <div
-              style={{
-                fontFamily: "'Geist Sans',sans-serif",
-                fontSize: 10,
-                fontWeight: 600,
-                letterSpacing: 1.5,
-                color: COLORS.textMuted,
-                paddingTop: 4,
-              }}
-            >
-              SUB-AGENTS
+            {/* Sub-agents placeholder */}
+            <div style={{
+              flex: 1, display: "flex", flexDirection: "column",
+              alignItems: "center", justifyContent: "center", gap: 8,
+              borderBottom: `1px solid ${COLORS.borderSoft}`, padding: 16,
+            }}>
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#6B7280" strokeWidth="1.5">
+                <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+                <circle cx="9" cy="7" r="4"/>
+                <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+                <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+              </svg>
+              <span style={{ fontFamily: "'Geist Sans', sans-serif", fontSize: 12, color: "#6B7280", textAlign: "center" }}>
+                No sub-agents yet
+              </span>
             </div>
-            <div className="flex flex-col" style={{ gap: 8 }}>
-              {DEMO_SUB_AGENTS.map((sa, i) => (
-                <div
-                  key={i}
-                  className="flex items-start"
-                  style={{
-                    padding: "8px 10px",
-                    gap: 8,
-                    borderRadius: 8,
-                    background:
-                      sa.status === "running"
-                        ? COLORS.surfaceElevated
-                        : COLORS.surfaceSecondary,
-                    border: `1px solid ${COLORS.borderSoft}`,
-                  }}
-                >
-                  <span
-                    className="rounded-full shrink-0"
-                    style={{
-                      width: 6,
-                      height: 6,
-                      marginTop: 6,
-                      background:
-                        sa.status === "running"
-                          ? COLORS.success
-                          : COLORS.accent,
-                    }}
-                  />
-                  <div className="flex flex-col min-w-0" style={{ gap: 2 }}>
-                    <span
-                      className="truncate"
-                      style={{
-                        fontFamily: "'Geist Sans',sans-serif",
-                        fontSize: 12,
-                        fontWeight: 600,
-                        color: COLORS.textPrimary,
-                      }}
-                    >
-                      {sa.name}
-                    </span>
-                    <span
-                      className="truncate"
-                      style={{
-                        fontFamily: "'Geist Sans',sans-serif",
-                        fontSize: 10,
-                        color: COLORS.textMuted,
-                      }}
-                    >
-                      {sa.task}
-                    </span>
-                  </div>
+
+            {/* Agent tree — read from store, placeholder when empty */}
+            <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+              <div
+                style={{
+                  fontFamily: "'Geist Sans',sans-serif",
+                  fontSize: 10,
+                  fontWeight: 600,
+                  letterSpacing: 1.5,
+                  color: COLORS.textMuted,
+                  padding: "12px 12px 4px 12px",
+                }}
+              >
+                AGENT TREE
+              </div>
+              {tree ? (
+                <div className="flex flex-col" style={{ gap: 4, padding: "4px 12px 12px 16px" }}>
+                  {(function renderTreeNode(node: NonNullable<typeof tree>, depth: number): ReactNode {
+                    const info = node.root;
+                    return (
+                      <div key={info.id}>
+                        <div className="flex items-center" style={{ paddingLeft: depth * 14, gap: 6 }}>
+                          <span className="shrink-0" style={{
+                            width: 4, height: 4, borderRadius: 9999,
+                            background: info.status === "coding" ? COLORS.success
+                              : info.status === "done" ? COLORS.accent
+                              : COLORS.textMuted,
+                          }} />
+                          <span className="truncate" style={{
+                            fontFamily: "'JetBrains Mono Variable',monospace",
+                            fontSize: 11,
+                            color: info.status === "coding" ? COLORS.textPrimary : COLORS.textSecondary,
+                          }}>
+                            {info.name}
+                          </span>
+                        </div>
+                        {node.children.map((child) => renderTreeNode(child, depth + 1))}
+                      </div>
+                    );
+                  })(tree, 0)}
                 </div>
-              ))}
-            </div>
-            <div
-              style={{
-                fontFamily: "'Geist Sans',sans-serif",
-                fontSize: 10,
-                fontWeight: 600,
-                letterSpacing: 1.5,
-                color: COLORS.textMuted,
-                paddingTop: 4,
-              }}
-            >
-              AGENT TREE
-            </div>
-            <div className="flex flex-col" style={{ gap: 4, paddingLeft: 4 }}>
-              {DEMO_TREE.map((node, i) => (
-                <div
-                  key={i}
-                  className="flex items-center"
-                  style={{
-                    paddingLeft: node.depth * 14,
-                    gap: 6,
-                  }}
-                >
-                  <span
-                    className="shrink-0"
-                    style={{
-                      width: 4,
-                      height: 4,
-                      borderRadius: 9999,
-                      background:
-                        node.status === "active"
-                          ? COLORS.success
-                          : node.status === "done"
-                            ? COLORS.accent
-                            : COLORS.textMuted,
-                    }}
-                  />
-                  <span
-                    className="truncate"
-                    style={{
-                      fontFamily: "'JetBrains Mono Variable',monospace",
-                      fontSize: 11,
-                      color:
-                        node.status === "active"
-                          ? COLORS.textPrimary
-                          : COLORS.textSecondary,
-                    }}
-                  >
-                    {node.label}
-                  </span>
+              ) : (
+                <div style={{ padding: 20, textAlign: "center", color: "#6B7280", fontSize: 12 }}>
+                  No activity detected
                 </div>
-              ))}
+              )}
             </div>
           </aside>
 
@@ -571,6 +485,7 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
               content={isDemo ? demoContent : undefined}
               interactive
               subscribeToPty={!isDemo}
+              cardWidth={embedded ? undefined : 800}
             />
           </div>
         </div>
@@ -586,11 +501,7 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
             borderTop: `1px solid ${COLORS.borderSoft}`,
           }}
         >
-          <FooterItem icon={PATH_GIT_BRANCH} label="2 sub-agents" />
-          <Separator />
-          <FooterItem icon={PATH_TIMER} label="3m 24s" />
-          <Separator />
-          <FooterItem icon={PATH_FILE} label="4 files changed" />
+          <FooterItem icon={PATH_TIMER} label={instance?.created_at ? formatElapsed(Date.now() - instance.created_at) : "\u2014"} />
           <div className="flex-1" />
           <button
             data-no-expand
@@ -691,17 +602,6 @@ const FooterItem: FC<{ icon: string; label: string }> = ({ icon, label }) => (
       {label}
     </span>
   </div>
-);
-
-const Separator: FC = () => (
-  <span
-    className="shrink-0"
-    style={{
-      width: 1,
-      height: 14,
-      background: COLORS.borderSoft,
-    }}
-  />
 );
 
 export { ExpandedAgentCard };

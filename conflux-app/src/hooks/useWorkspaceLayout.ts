@@ -7,7 +7,6 @@ import { useWorkspaceStore } from "@/stores/workspaceStore";
 import {
   loadWorkspaceLayout,
   saveWorkspaceLayout,
-  autoPackLayout,
   listAgentInstances,
 } from "@/lib/tauri-bridge";
 import { onAgentStatusChanged } from "@/lib/event-listener";
@@ -18,9 +17,8 @@ import type {
 } from "@/types";
 
 // ===== Default card dimensions for new agents =====
-// Must stay >= MIN_CARD_W/H (580x380) enforced by AgentCard. Using 620x420
-// gives a little breathing room for the header + footer chrome + a few rows
-// of terminal content.
+// Must stay >= MIN_CARD_W/H (320x220) enforced by AgentCard. Using 620x420
+// gives comfortable room for header + footer chrome + several rows of terminal.
 const DEFAULT_CARD_WIDTH = 620;
 const DEFAULT_CARD_HEIGHT = 420;
 const CARD_SPAWN_OFFSET = 40;
@@ -162,20 +160,13 @@ export function useWorkspaceLayout() {
   // ===== Actions =====
 
   /**
-   * Trigger backend AutoPack algorithm.
-   * Replaces all card positions/sizes with the backend-computed layout.
+   * Trigger auto-arrange using the frontend store's algorithm.
+   * The backend autoPackLayout IPC returns empty for frontend-only cards,
+   * so we use the client-side autoArrange instead.
    */
-  const triggerAutoPack = useCallback(async () => {
-    try {
-      const result: WorkspaceLayout = await autoPackLayout(autoPackConfig);
-      setCards(result.cards);
-      if (result.auto_pack_config) {
-        setAutoPackConfig(result.auto_pack_config);
-      }
-    } catch (err) {
-      console.error("[useWorkspaceLayout] autoPackLayout failed:", err);
-    }
-  }, [autoPackConfig, setCards, setAutoPackConfig]);
+  const triggerAutoPack = useCallback(() => {
+    useWorkspaceStore.getState().autoArrange();
+  }, []);
 
   /**
    * Persist current workspace layout to backend storage.
