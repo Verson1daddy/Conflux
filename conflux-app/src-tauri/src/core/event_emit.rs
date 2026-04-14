@@ -6,7 +6,7 @@
 //   1. 统一通道 `conflux://event`（包含完整 ConfluxEvent，便于审计/录制）
 //   2. 分类型通道（只包含内部 payload 字段），前端的 on* hooks 使用
 
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use super::event::ConfluxEvent;
 
@@ -188,5 +188,15 @@ pub fn emit_conflux_event(app: &AppHandle, event: &ConfluxEvent) {
 
     if let Err(e) = app.emit(channel, &payload) {
         log::warn!("emit typed channel '{}' failed: {}", channel, e);
+    }
+
+    // DB 录制——跳过 PtyOutput（高频，每秒数十次）
+    if !matches!(event, ConfluxEvent::PtyOutput { .. }) {
+        if let Some(state) = app.try_state::<crate::AppState>() {
+            let conn = state.db.lock();
+            if let Err(e) = crate::persistence::session::insert_session_event(&conn, event) {
+                log::warn!("session_event 写入失败: {e}");
+            }
+        }
     }
 }

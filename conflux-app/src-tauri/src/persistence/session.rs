@@ -184,6 +184,58 @@ pub fn list_sessions(
     Ok(summaries)
 }
 
+/// 插入新 agent 实例记录到 agent_instances 表
+///
+/// 使用 INSERT OR REPLACE 语义，保证幂等。初始状态为 'idle'，is_primary = 0。
+///
+/// # 参数
+/// - `conn`: SQLite 数据库连接引用
+/// - `instance_id`: 实例唯一标识
+/// - `adapter_id`: 适配器 ID
+/// - `adapter_name`: 适配器显示名称
+/// - `working_dir`: 工作目录
+/// - `created_at`: 创建时间戳（Unix ms）
+pub fn insert_agent_instance(
+    conn: &Connection,
+    instance_id: &str,
+    adapter_id: &str,
+    adapter_name: &str,
+    working_dir: &str,
+    created_at: i64,
+) -> Result<(), ConfluxError> {
+    conn.execute(
+        "INSERT OR REPLACE INTO agent_instances (instance_id, adapter_id, adapter_name, working_dir, status, is_primary, created_at) VALUES (?1, ?2, ?3, ?4, 'idle', 0, ?5)",
+        params![instance_id, adapter_id, adapter_name, working_dir, created_at],
+    )
+    .map_err(|e| ConfluxError::DatabaseError {
+        message: format!("insert_agent_instance: {e}"),
+    })?;
+    Ok(())
+}
+
+/// 标记 agent 实例结束（设置 ended_at 时间戳）
+///
+/// # 参数
+/// - `conn`: SQLite 数据库连接引用
+/// - `instance_id`: 要标记结束的实例 ID
+pub fn close_agent_instance(
+    conn: &Connection,
+    instance_id: &str,
+) -> Result<(), ConfluxError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    conn.execute(
+        "UPDATE agent_instances SET ended_at = ?1 WHERE instance_id = ?2",
+        params![now, instance_id],
+    )
+    .map_err(|e| ConfluxError::DatabaseError {
+        message: format!("close_agent_instance: {e}"),
+    })?;
+    Ok(())
+}
+
 /// 从 ConfluxEvent 提取时间戳
 fn extract_timestamp(event: &ConfluxEvent) -> i64 {
     match event {

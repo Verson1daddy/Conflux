@@ -624,7 +624,18 @@ impl Default for StdinInjectionPolicy {
             require_confirmation_for_auto: true,
             max_injection_length: 10_000,
             rate_limit_per_minute: 30,
-            forbidden_patterns: Vec::new(),
+            forbidden_patterns: vec![
+                "rm -rf /".to_string(),
+                "rm -rf ~".to_string(),
+                "mkfs".to_string(),
+                "dd if=".to_string(),
+                ":(){:|:&};:".to_string(),     // fork bomb
+                "DROP TABLE".to_string(),
+                "DROP DATABASE".to_string(),
+                "DELETE FROM".to_string(),
+                "FORMAT C:".to_string(),
+                "del /f /s /q C:\\\\".to_string(),
+            ],
         }
     }
 }

@@ -54,9 +54,9 @@ pub async fn inject_stdin(
             });
         }
 
-        // 禁止模式检查
+        // 禁止模式检查（case-insensitive）
         for pattern in &policy.forbidden_patterns {
-            if input.contains(pattern) {
+            if input.to_lowercase().contains(&pattern.to_lowercase()) {
                 return Err(ConfluxError::OrchestrationError {
                     message: format!("注入内容包含禁止模式: '{}'", pattern),
                 });

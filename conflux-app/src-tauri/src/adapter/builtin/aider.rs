@@ -2,6 +2,7 @@
 // Aider AI pair programming 的适配器实现
 
 use async_trait::async_trait;
+use regex::Regex;
 
 use crate::adapter::traits::{AgentAdapter, AgentInstance};
 use crate::core::{
@@ -9,9 +10,19 @@ use crate::core::{
     StatusPatterns,
 };
 
+/// Aider 预编译正则模式集合
+struct AiderPatterns {
+    thinking: Regex,
+    coding: Regex,
+    done: Regex,
+    error: Regex,
+}
+
 pub struct AiderAdapter {
     config: AdapterConfig,
     capabilities: AdapterCapabilities,
+    /// 预编译的正则模式
+    patterns: AiderPatterns,
 }
 
 impl AiderAdapter {
@@ -44,14 +55,35 @@ impl AiderAdapter {
             capabilities: capabilities.clone(),
         };
 
+        // 预编译所有正则模式（case-insensitive）
+        let patterns = AiderPatterns {
+            thinking: Regex::new(r"(?i)Thinking\.\.\.|^> ")
+                .expect("内置 aider thinking 正则编译失败"),
+            coding: Regex::new(r"(?i)───|Editing|^\+[^+]|^-[^-]")
+                .expect("内置 aider coding 正则编译失败"),
+            done: Regex::new(r"(?i)Tokens:|Applied edit|^Commit ")
+                .expect("内置 aider done 正则编译失败"),
+            error: Regex::new(r"(?i)Error|Failed|Can't|Unable")
+                .expect("内置 aider error 正则编译失败"),
+        };
+
         Self {
             config,
             capabilities,
+            patterns,
         }
     }
 
     pub fn config(&self) -> &AdapterConfig {
         &self.config
+    }
+
+    /// 获取当前时间戳（毫秒）
+    fn now_ms() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64
     }
 }
 
@@ -75,12 +107,12 @@ impl AgentAdapter for AiderAdapter {
 
     fn parse_output(&self, raw_line: &str) -> Option<ConfluxEvent> {
         let placeholder_id = InstanceId("unknown".to_string());
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
+        let now = Self::now_ms();
 
-        if raw_line.contains("Error") || raw_line.contains("Failed") {
+        // 检测优先级（从高到低）：error > coding > thinking > done
+
+        // 1. 错误状态检测
+        if self.patterns.error.is_match(raw_line) {
             return Some(ConfluxEvent::AgentStatusChanged {
                 instance_id: placeholder_id,
                 old_status: AgentStatus::Idle,
@@ -88,6 +120,38 @@ impl AgentAdapter for AiderAdapter {
                 timestamp: now,
             });
         }
+
+        // 2. 编码状态检测
+        if self.patterns.coding.is_match(raw_line) {
+            return Some(ConfluxEvent::AgentStatusChanged {
+                instance_id: placeholder_id,
+                old_status: AgentStatus::Idle,
+                new_status: AgentStatus::Coding,
+                timestamp: now,
+            });
+        }
+
+        // 3. 思考状态检测
+        if self.patterns.thinking.is_match(raw_line) {
+            return Some(ConfluxEvent::AgentStatusChanged {
+                instance_id: placeholder_id,
+                old_status: AgentStatus::Idle,
+                new_status: AgentStatus::Thinking,
+                timestamp: now,
+            });
+        }
+
+        // 4. 完成状态检测
+        if self.patterns.done.is_match(raw_line) {
+            return Some(ConfluxEvent::AgentStatusChanged {
+                instance_id: placeholder_id,
+                old_status: AgentStatus::Idle,
+                new_status: AgentStatus::Done,
+                timestamp: now,
+            });
+        }
+
+        // 无匹配——普通输出行
         None
     }
 

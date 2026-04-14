@@ -115,6 +115,16 @@ pub async fn create_agent_instance(
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
 
+    // 8b. 写入 agent_instances 表
+    {
+        let conn = state.db.lock();
+        if let Err(e) = crate::persistence::session::insert_agent_instance(
+            &conn, &instance_id.0, &adapter_id.0, &adapter_config.name, &work_dir, now_ms,
+        ) {
+            log::warn!("agent_instances 写入失败: {e}");
+        }
+    }
+
     Ok(AgentInstanceInfo {
         instance_id,
         adapter_id,
@@ -169,6 +179,14 @@ pub async fn destroy_agent_instance(
     {
         let mut pinned = state.pinned_instances.write();
         pinned.remove(&instance_id.0);
+    }
+
+    // 5. 标记 agent_instances 结束时间
+    {
+        let conn = state.db.lock();
+        if let Err(e) = crate::persistence::session::close_agent_instance(&conn, &instance_id.0) {
+            log::warn!("agent_instances close 失败: {e}");
+        }
     }
 
     Ok(())
