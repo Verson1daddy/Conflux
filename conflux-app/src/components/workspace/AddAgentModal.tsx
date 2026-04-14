@@ -369,7 +369,7 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
     } finally {
       setCreating(false);
     }
-  }, [selectedId, creating, workingDir, displayName, cardColor, addInstance, addCard, setCardColorStore, onClose]);
+  }, [selectedId, creating, workingDir, displayName, cardColor, addInstance, addCard, setCardColorStore, onClose, authStatuses]);
 
   if (!visible) return null;
 

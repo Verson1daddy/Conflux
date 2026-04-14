@@ -272,6 +272,7 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
               color: "#6B7280",
             }}
             aria-label="Close"
+            title="Close settings (Esc)"
           >
             <ICON_X size={16} color="currentColor" />
           </button>
@@ -295,6 +296,7 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                   key={item.id}
                   onClick={() => setActiveTab(item.id)}
                   className="flex items-center text-left"
+                  title={item.label}
                   style={{
                     padding: "10px 12px",
                     gap: 10,
@@ -320,7 +322,7 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
           </nav>
 
           {/* Content */}
-          <div className="flex-1 min-w-0 overflow-y-auto flex flex-col" style={{ padding: "26px 32px", gap: 20 }}>
+          <div key={activeTab} className="flex-1 min-w-0 overflow-y-auto flex flex-col settings-tab-content" style={{ padding: "26px 32px", gap: 20 }}>
             {/* ===== Frameworks Tab ===== */}
             {activeTab === "frameworks" && (
               <>
@@ -333,14 +335,19 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
 
                 {/* Primary indicator */}
                 {primaryAdapter && (
-                  <div className="flex items-center" style={{
-                    padding: "10px 14px", gap: 10, borderRadius: 8,
-                    background: "rgba(184,212,227,0.06)",
-                    border: "1px solid rgba(184,212,227,0.2)",
-                  }}>
-                    <span style={{ fontSize: 14 }}>⭐</span>
-                    <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 12, color: "#B8D4E3", fontWeight: 500 }}>
-                      Primary: {BUILTIN_ADAPTERS.find((a) => a.id === primaryAdapter)?.name ?? primaryAdapter}
+                  <div className="flex flex-col" style={{ gap: 4 }}>
+                    <div className="flex items-center" style={{
+                      padding: "10px 14px", gap: 10, borderRadius: 8,
+                      background: "rgba(184,212,227,0.06)",
+                      border: "1px solid rgba(184,212,227,0.2)",
+                    }}>
+                      <span style={{ fontSize: 14 }}>⭐</span>
+                      <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 12, color: "#B8D4E3", fontWeight: 500 }}>
+                        Primary: {BUILTIN_ADAPTERS.find((a) => a.id === primaryAdapter)?.name ?? primaryAdapter}
+                      </span>
+                    </div>
+                    <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 11, color: "#6B7280", paddingLeft: 2 }}>
+                      Default adapter for new instances and discussion moderator. Does not affect workspace cards.
                     </span>
                   </div>
                 )}
@@ -408,6 +415,7 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                         {isFav && !isPrimary && (
                           <button
                             onClick={() => setPrimaryAdapterAction(adapter.id)}
+                            title={`Set ${adapter.name} as primary adapter`}
                             style={{
                               padding: "4px 10px", borderRadius: 9999,
                               background: "rgba(255,255,255,0.04)",
@@ -461,6 +469,7 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                         key={card.id}
                         onClick={() => setTier(card.id)}
                         className="flex items-center w-full text-left"
+                        title={`${card.name}: ${card.description}`}
                         style={{
                           padding: "16px 18px",
                           gap: 14,
@@ -776,6 +785,7 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                 <div className="flex" style={{ gap: 12 }}>
                   <div
                     className="flex items-center"
+                    title="Open GitHub repository"
                     style={{
                       gap: 6, padding: "8px 14px", borderRadius: 8,
                       background: "rgba(255,255,255,0.04)",
@@ -790,6 +800,7 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                   </div>
                   <div
                     className="flex items-center"
+                    title="Sponsor this project"
                     style={{
                       gap: 6, padding: "8px 14px", borderRadius: 8,
                       background: "rgba(255,255,255,0.04)",

@@ -9,7 +9,7 @@
 // 注意: 这些测试在 Windows 上执行，使用 cmd.exe 作为测试命令。
 // CI 环境需要确保 cmd.exe 可用（Windows 默认可用）。
 
-use conflux_lib::core::{AgentStatus, ConfluxError};
+use conflux_lib::core::{AgentMode, AgentStatus, ConfluxError};
 use conflux_lib::pty::manager::PtyManager;
 
 /// 辅助函数：获取平台对应的测试命令
@@ -60,7 +60,7 @@ fn test_spawn_returns_instance_id() {
         "Test Adapter",
         None,
         None,
-        conflux_app::core::AgentMode::Full,
+        AgentMode::Full,
         false,
         None,
     );
@@ -92,6 +92,9 @@ fn test_spawn_creates_instance_in_list() {
             "Test Adapter",
             None,
             None,
+            AgentMode::Full,
+            false,
+            None,
         )
         .unwrap();
 
@@ -116,6 +119,9 @@ fn test_multiple_spawns() {
             "Adapter 1",
             None,
             None,
+            AgentMode::Full,
+            false,
+            None,
         )
         .unwrap();
     let id2 = manager
@@ -126,6 +132,9 @@ fn test_multiple_spawns() {
             "adapter-2",
             "Adapter 2",
             None,
+            None,
+            AgentMode::Full,
+            false,
             None,
         )
         .unwrap();
@@ -153,6 +162,9 @@ fn test_kill_removes_instance() {
             "test-adapter",
             "Test Adapter",
             None,
+            None,
+            AgentMode::Full,
+            false,
             None,
         )
         .unwrap();
@@ -200,6 +212,9 @@ fn test_inject_stdin_to_valid_instance() {
             "Test Adapter",
             None,
             None,
+            AgentMode::Full,
+            false,
+            None,
         )
         .unwrap();
 
@@ -245,6 +260,9 @@ fn test_get_instance_state() {
             "My Adapter",
             None,
             None,
+            AgentMode::Full,
+            false,
+            None,
         )
         .unwrap();
 
@@ -278,6 +296,9 @@ fn test_update_status() {
             "test-adapter",
             "Test Adapter",
             None,
+            None,
+            AgentMode::Full,
+            false,
             None,
         )
         .unwrap();
@@ -325,6 +346,9 @@ fn test_get_buffer() {
             "Test Adapter",
             None,
             None,
+            AgentMode::Full,
+            false,
+            None,
         )
         .unwrap();
 
@@ -371,6 +395,9 @@ fn test_resize() {
             "Test Adapter",
             None,
             None,
+            AgentMode::Full,
+            false,
+            None,
         )
         .unwrap();
 
@@ -406,6 +433,9 @@ fn test_output_captured_in_buffer() {
             "test-adapter",
             "Test Adapter",
             None,
+            None,
+            AgentMode::Full,
+            false,
             None,
         )
         .unwrap();
@@ -451,7 +481,7 @@ fn test_spawn_invalid_command() {
         "Test Adapter",
         None,
         None,
-        conflux_app::core::AgentMode::Full,
+        AgentMode::Full,
         false,
         None,
     );
@@ -471,4 +501,96 @@ fn test_spawn_invalid_command() {
         }
     }
     // 如果 spawn 成功了（某些平台的行为），那也是可接受的
+}
+
+// ===== display_name 测试 =====
+
+#[test]
+fn test_rename_instance() {
+    let manager = PtyManager::new();
+    let instance_id = manager
+        .spawn(
+            test_command(),
+            &echo_args(),
+            &test_working_dir(),
+            "test-adapter",
+            "Test Adapter",
+            None,
+            None,
+            AgentMode::Full,
+            false,
+            None,
+        )
+        .unwrap();
+
+    // rename to "my-alias"
+    manager
+        .rename_instance(&instance_id, Some("my-alias".to_string()))
+        .unwrap();
+    let instances = manager.list_instances();
+    let inst = instances.iter().find(|i| i.instance_id.0 == instance_id).unwrap();
+    assert_eq!(inst.display_name, Some("my-alias".to_string()));
+
+    // rename back to None
+    manager
+        .rename_instance(&instance_id, None)
+        .unwrap();
+    let instances = manager.list_instances();
+    let inst = instances.iter().find(|i| i.instance_id.0 == instance_id).unwrap();
+    assert_eq!(inst.display_name, None);
+
+    // 清理
+    let _ = manager.kill(&instance_id);
+}
+
+#[test]
+fn test_display_name_in_spawn() {
+    let manager = PtyManager::new();
+    let instance_id = manager
+        .spawn(
+            test_command(),
+            &echo_args(),
+            &test_working_dir(),
+            "test-adapter",
+            "Test Adapter",
+            None,
+            None,
+            AgentMode::Full,
+            false,
+            Some("test-name".to_string()),
+        )
+        .unwrap();
+
+    let instances = manager.list_instances();
+    let inst = instances.iter().find(|i| i.instance_id.0 == instance_id).unwrap();
+    assert_eq!(inst.display_name, Some("test-name".to_string()));
+
+    // 清理
+    let _ = manager.kill(&instance_id);
+}
+
+#[test]
+fn test_display_name_none_by_default() {
+    let manager = PtyManager::new();
+    let instance_id = manager
+        .spawn(
+            test_command(),
+            &echo_args(),
+            &test_working_dir(),
+            "test-adapter",
+            "Test Adapter",
+            None,
+            None,
+            AgentMode::Full,
+            false,
+            None,
+        )
+        .unwrap();
+
+    let instances = manager.list_instances();
+    let inst = instances.iter().find(|i| i.instance_id.0 == instance_id).unwrap();
+    assert_eq!(inst.display_name, None);
+
+    // 清理
+    let _ = manager.kill(&instance_id);
 }

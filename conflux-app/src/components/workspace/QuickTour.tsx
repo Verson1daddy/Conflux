@@ -73,7 +73,7 @@ const QuickTour: FC<QuickTourProps> = ({ visible, onDismiss, onStart }) => {
         boxShadow: "0 12px 40px rgba(0,0,0,0.4)",
         padding: "20px 22px",
         opacity,
-        transition: "opacity 0.3s ease",
+        transition: "opacity 0.3s cubic-bezier(0.22, 1, 0.36, 1)",
       }}
     >
       <h3 style={{

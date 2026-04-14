@@ -268,7 +268,7 @@ const OnboardingWizard: FC<OnboardingWizardProps> = ({ visible = true, onComplet
             lineHeight: 1.2,
           }}>
             {step === 1 && "Welcome to Conflux"}
-            {step === 2 && "Pick your primary"}
+            {step === 2 && "Choose Default Adapter"}
             {step === 3 && "Create your first agent"}
           </h1>
           <p style={{
@@ -279,7 +279,7 @@ const OnboardingWizard: FC<OnboardingWizardProps> = ({ visible = true, onComplet
             lineHeight: 1.5,
           }}>
             {step === 1 && "Pick the frameworks you use"}
-            {step === 2 && "Your default framework for discussions and quick actions"}
+            {step === 2 && "Used for new instances and as discussion moderator"}
             {step === 3 && "Let's make sure it works"}
           </p>
           {/* Step indicator */}
@@ -318,6 +318,7 @@ const OnboardingWizard: FC<OnboardingWizardProps> = ({ visible = true, onComplet
               <button
                 key={a.id}
                 onClick={() => toggleAdapter(a.id)}
+                title={isSel ? `Deselect ${a.name}` : `Select ${a.name}`}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -399,6 +400,7 @@ const OnboardingWizard: FC<OnboardingWizardProps> = ({ visible = true, onComplet
               <button
                 key={a.id}
                 onClick={() => setPrimary(a.id)}
+                title={`Set ${a.name} as default adapter`}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -484,6 +486,7 @@ const OnboardingWizard: FC<OnboardingWizardProps> = ({ visible = true, onComplet
               <div style={{ position: "relative" }}>
                 <button
                   onClick={() => setDropdownOpen((v) => !v)}
+                  title="Select framework"
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -538,6 +541,7 @@ const OnboardingWizard: FC<OnboardingWizardProps> = ({ visible = true, onComplet
                           setDropdownOpen(false);
                           setCreateError(null);
                         }}
+                        title={a.name}
                         style={{
                           display: "flex",
                           alignItems: "center",
@@ -698,6 +702,7 @@ const OnboardingWizard: FC<OnboardingWizardProps> = ({ visible = true, onComplet
           ) : (
             <button
               onClick={handleBack}
+              title="Go back to previous step"
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -723,6 +728,7 @@ const OnboardingWizard: FC<OnboardingWizardProps> = ({ visible = true, onComplet
             {step === 3 && (
               <button
                 onClick={handleSkip}
+                title="Skip agent creation and finish setup"
                 style={{
                   background: "none",
                   border: "none",
@@ -744,6 +750,7 @@ const OnboardingWizard: FC<OnboardingWizardProps> = ({ visible = true, onComplet
                 (step === 2 && !canNext2) ||
                 (step === 3 && (!createAdapterId || creating))
               }
+              title={step === 1 ? "Continue to adapter selection" : step === 2 ? "Continue to agent creation" : creating ? "Creating agent..." : "Create a new agent instance"}
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -771,12 +778,26 @@ const OnboardingWizard: FC<OnboardingWizardProps> = ({ visible = true, onComplet
                 transition: "opacity 0.15s",
               }}
             >
+              {step === 3 && creating && (
+                <span
+                  className="animate-spin"
+                  style={{
+                    display: "inline-block",
+                    width: 14,
+                    height: 14,
+                    borderRadius: 9999,
+                    border: "2px solid rgba(10,15,21,0.2)",
+                    borderTopColor: "#0A0F15",
+                    flexShrink: 0,
+                  }}
+                />
+              )}
               <span>
                 {step === 1 && "Next"}
                 {step === 2 && "Get Started"}
                 {step === 3 && (creating ? "Creating..." : "Create Agent")}
               </span>
-              <ArrowRightIcon size={14} color="#0A0F15" />
+              {!(step === 3 && creating) && <ArrowRightIcon size={14} color="#0A0F15" />}
             </button>
           </div>
         </div>

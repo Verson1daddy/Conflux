@@ -6,7 +6,7 @@
 //     AGENTS 区域 (gap:4) — 每项 padding [10,12], radius-md
 //     NOTIFICATIONS 区域 (gap:8) — 图标圆圈 + 内容
 
-import { type FC, useState, useCallback, useMemo } from "react";
+import { type FC, useState, useCallback, useMemo, useRef } from "react";
 import { useIslandStore } from "@/stores/islandStore";
 import { useAgentStore, agentDisplayLabel } from "@/stores/agentStore";
 import { focusAgentCard, respondToPermission, togglePinInstance } from "@/lib/tauri-bridge";
@@ -42,6 +42,7 @@ const Sidebar: FC<SidebarProps> = ({ visible, onCollapse }) => {
   const instances = useAgentStore((s) => s.instances);
   const togglePin = useAgentStore((s) => s.togglePin);
   const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
+  const pendingRef = useRef<Set<string>>(new Set());
 
   // 从 agentStore 读取 agents（保持和 canvas/TopBar 一致）
   // Pinned agents 排在顶部
@@ -71,11 +72,14 @@ const Sidebar: FC<SidebarProps> = ({ visible, onCollapse }) => {
 
   const handlePermissionDecision = useCallback(
     async (instanceId: string, permissionId: string, decision: PermissionDecision) => {
-      if (pendingIds.has(permissionId)) return;
+      if (pendingRef.current.has(permissionId)) return;
+      pendingRef.current.add(permissionId);
       setPendingIds((prev) => new Set(prev).add(permissionId));
       try {
         await respondToPermission(instanceId, permissionId, decision);
-      } catch { /* 即使失败也清理 UI */ }
+      } catch { /* 即使失败也清理 UI */ } finally {
+        pendingRef.current.delete(permissionId);
+      }
       removePermissionRequest(permissionId);
       clearNotification(permissionId);
       setPendingIds((prev) => {
@@ -84,7 +88,7 @@ const Sidebar: FC<SidebarProps> = ({ visible, onCollapse }) => {
         return next;
       });
     },
-    [pendingIds, removePermissionRequest, clearNotification]
+    [removePermissionRequest, clearNotification]
   );
 
   return (
@@ -105,10 +109,10 @@ const Sidebar: FC<SidebarProps> = ({ visible, onCollapse }) => {
         className={`
           fixed top-0 right-0 z-40 h-full w-[420px]
           flex flex-col overflow-hidden
-          transition-transform duration-300 ease-in-out
+          transition-transform duration-300
           ${visible ? "translate-x-0" : "translate-x-full"}
         `}
-        style={{ background: "#050507" }}
+        style={{ background: "#050507", transitionTimingFunction: "cubic-bezier(0.22, 1, 0.36, 1)" }}
         role="complementary"
         aria-label="Island sidebar"
       >

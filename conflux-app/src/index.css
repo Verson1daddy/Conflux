@@ -101,6 +101,28 @@ body {
   background: rgba(255, 255, 255, 0.07);
 }
 
+/* Generic fade-in for content swap (re-mount via React key) */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.fade-in {
+  animation: fadeIn 0.2s ease;
+}
+
+/* Settings tab content — fade in on switch */
+.settings-tab-content {
+  animation: fadeIn 0.2s ease;
+}
+
+/* Canvas zoom: smooth transition for wheel-zoom / fit-all; disabled during drag */
+.canvas-transform-layer {
+  transition: none;
+}
+.canvas-transform-layer[data-zooming="true"] {
+  transition: transform 0.15s var(--ease-apple);
+}
+
 /* Canvas gradient background */
 .canvas-gradient {
   background: linear-gradient(180deg, #0D1117 0%, #111820 50%, #0A0F15 100%);
@@ -159,7 +181,7 @@ body {
   }
 }
 .tray-enter {
-  animation: tray-enter 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+  animation: tray-enter 0.22s var(--ease-apple);
 }
 
 /* Notification card success flash (green) on reply sent — then slide right + fade */
@@ -219,7 +241,7 @@ body {
   }
 }
 .notif-flash-dismiss {
-  animation: notif-flash-dismiss 0.36s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  animation: notif-flash-dismiss 0.36s var(--ease-out-smooth) forwards;
   overflow: hidden;
   pointer-events: none;
 }
@@ -236,7 +258,7 @@ body {
   }
 }
 .sendto-enter {
-  animation: sendto-enter 0.26s cubic-bezier(0.22, 1, 0.36, 1);
+  animation: sendto-enter 0.26s var(--ease-apple);
 }
 
 /* Expanded agent card — scrim fade + panel slide-in from right */
@@ -288,7 +310,7 @@ body {
   }
 }
 .discussion-panel-enter {
-  animation: discussion-panel-enter 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+  animation: discussion-panel-enter 0.32s var(--ease-apple);
 }
 
 /* C2-T1 Exit Overlay — fade + lift in when the PTY process exits.

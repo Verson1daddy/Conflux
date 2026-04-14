@@ -67,7 +67,7 @@ const CloseConfirmModal: FC<CloseConfirmModalProps> = ({ visible, onConfirm, onC
               borderRadius: 10,
               background: action === "tray" ? "rgba(184,212,227,0.08)" : "transparent",
               border: action === "tray" ? "1px solid rgba(184,212,227,0.20)" : "1px solid rgba(255,255,255,0.06)",
-              transition: "all 150ms ease",
+              transition: "all 150ms cubic-bezier(0.22, 1, 0.36, 1)",
             }}
             onClick={() => setAction("tray")}
           >
@@ -109,7 +109,7 @@ const CloseConfirmModal: FC<CloseConfirmModalProps> = ({ visible, onConfirm, onC
               borderRadius: 10,
               background: action === "quit" ? "rgba(184,212,227,0.08)" : "transparent",
               border: action === "quit" ? "1px solid rgba(184,212,227,0.20)" : "1px solid rgba(255,255,255,0.06)",
-              transition: "all 150ms ease",
+              transition: "all 150ms cubic-bezier(0.22, 1, 0.36, 1)",
             }}
             onClick={() => setAction("quit")}
           >
@@ -164,7 +164,7 @@ const CloseConfirmModal: FC<CloseConfirmModalProps> = ({ visible, onConfirm, onC
               alignItems: "center",
               justifyContent: "center",
               flexShrink: 0,
-              transition: "all 150ms ease",
+              transition: "all 150ms cubic-bezier(0.22, 1, 0.36, 1)",
             }}
           >
             {remember && (
@@ -199,7 +199,7 @@ const CloseConfirmModal: FC<CloseConfirmModalProps> = ({ visible, onConfirm, onC
               fontSize: 13,
               fontWeight: 500,
               cursor: "pointer",
-              transition: "all 150ms ease",
+              transition: "all 150ms cubic-bezier(0.22, 1, 0.36, 1)",
             }}
             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.05)"; }}
             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
@@ -219,7 +219,7 @@ const CloseConfirmModal: FC<CloseConfirmModalProps> = ({ visible, onConfirm, onC
               fontSize: 13,
               fontWeight: 600,
               cursor: "pointer",
-              transition: "all 150ms ease",
+              transition: "all 150ms cubic-bezier(0.22, 1, 0.36, 1)",
             }}
             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "#c8e0ed"; }}
             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "#B8D4E3"; }}

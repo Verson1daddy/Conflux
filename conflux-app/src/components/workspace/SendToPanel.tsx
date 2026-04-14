@@ -257,6 +257,7 @@ const SendToPanel: FC<SendToPanelProps> = ({ visible, onClose }) => {
                     key={agent.instance_id}
                     type="button"
                     className="flex items-center text-left"
+                    title={`Select ${agent.display_name ? `${agent.adapter_name} · ${agent.display_name}` : agent.adapter_name} as recipient`}
                     style={{
                       padding: "10px 12px",
                       gap: 10,
@@ -278,18 +279,20 @@ const SendToPanel: FC<SendToPanelProps> = ({ visible, onClose }) => {
                         height: 14,
                         borderRadius: 9999,
                         border: `1.5px solid ${isSelected ? COLORS.accent : COLORS.textMuted}`,
+                        transition: "border-color 0.15s cubic-bezier(0.22, 1, 0.36, 1)",
                       }}
                     >
-                      {isSelected && (
-                        <span
-                          style={{
-                            width: 6,
-                            height: 6,
-                            borderRadius: 9999,
-                            background: COLORS.accent,
-                          }}
-                        />
-                      )}
+                      <span
+                        style={{
+                          width: 6,
+                          height: 6,
+                          borderRadius: 9999,
+                          background: COLORS.accent,
+                          transition: "transform 0.15s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.15s",
+                          transform: isSelected ? "scale(1)" : "scale(0)",
+                          opacity: isSelected ? 1 : 0,
+                        }}
+                      />
                     </span>
 
                     {/* Status dot + agent name */}
@@ -422,6 +425,7 @@ const SendToPanel: FC<SendToPanelProps> = ({ visible, onClose }) => {
               disabled={!canSend}
               onClick={handleSend}
               className="flex items-center"
+              title="Send message (Ctrl+Enter)"
               style={{
                 gap: 6,
                 padding: "10px 20px",

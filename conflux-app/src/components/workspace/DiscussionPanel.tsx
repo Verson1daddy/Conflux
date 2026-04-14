@@ -220,6 +220,7 @@ const Footer: FC<FooterProps> = ({ leftLabel, leftOnClick, rightLabel, rightIcon
       <button
         onClick={leftOnClick}
         className="flex items-center"
+        title={leftLabel}
         style={{
           height: 38,
           padding: "0 18px",
@@ -241,7 +242,7 @@ const Footer: FC<FooterProps> = ({ leftLabel, leftOnClick, rightLabel, rightIcon
     <button
       onClick={rightOnClick}
       disabled={rightDisabled}
-      title={rightDisabled ? "Fill in the direction first" : undefined}
+      title={rightDisabled ? "Fill in the direction first" : rightLabel}
       className="flex items-center"
       style={{
         height: 38,
@@ -435,6 +436,7 @@ const StepRules: FC = () => {
                   key={opt.id}
                   onClick={() => setRules({ turnOrder: opt.id })}
                   className="flex items-center"
+                  title={`${opt.label}: ${opt.sub}`}
                   style={{
                     gap: 10,
                     background: "transparent",
@@ -503,6 +505,7 @@ const StepRules: FC = () => {
               cursor: "pointer",
             }}
             aria-label="Toggle auto-end"
+            title={rules.autoEndOnConsensus ? "Disable auto-end on consensus" : "Enable auto-end on consensus"}
           >
             <div style={{ width: 16, height: 16, borderRadius: 9999, background: "#FFFFFF" }} />
           </button>
@@ -526,6 +529,7 @@ const PresetChip: FC<{ label: string; active: boolean; onClick: () => void }> = 
   <button
     onClick={onClick}
     className="flex items-center justify-center"
+    title={label}
     style={{
       padding: "7px 14px",
       borderRadius: 9999,
@@ -734,6 +738,7 @@ const ChipRow: FC<{ label: string; value: string; onClick: () => void }> = ({ la
   <button
     onClick={onClick}
     className="flex items-center"
+    title={`Toggle ${label}`}
     style={{
       justifyContent: "space-between",
       padding: "14px 18px",
@@ -801,6 +806,7 @@ const StepParticipants: FC = () => {
               onClick={() => toggle(info.instance_id)}
               disabled={isPrimary}
               className="flex items-center"
+              title={isPrimary ? "Primary agent (always participates)" : isSelected ? `Remove ${info.display_name ?? info.adapter_name} from discussion` : `Add ${info.display_name ?? info.adapter_name} to discussion`}
               style={{
                 gap: 12,
                 padding: "14px 16px",
@@ -1306,6 +1312,7 @@ const DiscussionPanel: FC = () => {
               <div className="flex items-center" style={{ gap: 10, justifyContent: "flex-end" }}>
                 <button
                   onClick={cancelEnd}
+                  title="Continue the discussion"
                   style={{
                     height: 36, padding: "0 16px",
                     borderRadius: 9999,
@@ -1320,6 +1327,7 @@ const DiscussionPanel: FC = () => {
                 </button>
                 <button
                   onClick={confirmEnd}
+                  title="End discussion and close chatroom"
                   style={{
                     height: 36, padding: "0 18px",
                     borderRadius: 9999,

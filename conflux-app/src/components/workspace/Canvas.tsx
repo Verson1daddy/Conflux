@@ -51,10 +51,24 @@ function Canvas({ agents, agentStatuses, isFullscreen, onAddAgent }: CanvasProps
   const livePan = useRef({ x: storePan.x, y: storePan.y });
   const spaceHeldRef = useRef(false);
   const commitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const zoomRafRef = useRef<number | null>(null);
 
   // Sync refs from store on external changes
   useEffect(() => { liveZoom.current = storeZoom; }, [storeZoom]);
   useEffect(() => { livePan.current = { x: storePan.x, y: storePan.y }; }, [storePan.x, storePan.y]);
+
+  // Briefly enable zoom transition via data-attribute, then remove after rAF
+  const enableZoomTransition = useCallback(() => {
+    const el = transformLayerRef.current;
+    if (!el) return;
+    el.dataset.zooming = "true";
+    if (zoomRafRef.current) cancelAnimationFrame(zoomRafRef.current);
+    zoomRafRef.current = requestAnimationFrame(() => {
+      zoomRafRef.current = requestAnimationFrame(() => {
+        el.dataset.zooming = "false";
+      });
+    });
+  }, []);
 
   // Direct DOM update for transform layer
   const applyTransform = useCallback(() => {
@@ -122,13 +136,14 @@ function Canvas({ agents, agentStatuses, isFullscreen, onAddAgent }: CanvasProps
         x: cursorX - worldX * newZoom,
         y: cursorY - worldY * newZoom,
       };
+      enableZoomTransition();
       applyTransform();
       scheduleCommit();
     };
 
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [applyTransform, scheduleCommit]);
+  }, [applyTransform, scheduleCommit, enableZoomTransition]);
 
   // ===== Pan start =====
   const handlePointerDown = useCallback(
@@ -183,8 +198,9 @@ function Canvas({ agents, agentStatuses, isFullscreen, onAddAgent }: CanvasProps
     const state = useWorkspaceStore.getState();
     liveZoom.current = state.zoom;
     livePan.current = { x: state.pan.x, y: state.pan.y };
+    enableZoomTransition();
     applyTransform();
-  }, [fitAll, applyTransform]);
+  }, [fitAll, applyTransform, enableZoomTransition]);
 
   return (
     <div
@@ -268,7 +284,7 @@ function Canvas({ agents, agentStatuses, isFullscreen, onAddAgent }: CanvasProps
         /* Transformed canvas layer */
         <div
           ref={transformLayerRef}
-          className="absolute top-0 left-0 origin-top-left"
+          className="absolute top-0 left-0 origin-top-left canvas-transform-layer"
           style={{
             transform: `translate(${storePan.x}px,${storePan.y}px) scale(${storeZoom})`,
             width: 0,

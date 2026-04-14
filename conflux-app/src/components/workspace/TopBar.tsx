@@ -171,6 +171,7 @@ const TopBar: FC<TopBarProps> = ({ onIslandClick, onTrayOpen, onSendToOpen, onDi
             capsuleState === "notification" || capsuleState === "permission"
               ? "1px solid rgba(255,184,0,0.3)"
               : "1px solid rgba(255,255,255,0.07)",
+          transition: "background 0.3s cubic-bezier(0.22, 1, 0.36, 1), border-color 0.3s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.3s cubic-bezier(0.22, 1, 0.36, 1)",
         }}
         onClick={handleCapsuleClick}
         onPointerDown={(e) => e.stopPropagation()}
@@ -204,7 +205,10 @@ const TopBar: FC<TopBarProps> = ({ onIslandClick, onTrayOpen, onSendToOpen, onDi
         )}
 
         {/* 状态文字 */}
-        <span className="text-white text-xs font-medium tracking-wide font-body truncate max-w-[200px]">
+        <span
+          className="text-white text-xs font-medium tracking-wide font-body truncate max-w-[200px] fade-in"
+          key={capsuleState}
+        >
           {capsuleText}
         </span>
 
