@@ -212,6 +212,7 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
   const [adapters, setAdapters] = useState<AdapterInfo[]>([]);
   const [selectedId, setSelectedId] = useState<AdapterId | null>(null);
   const [workingDir, setWorkingDir] = useState<string>("");
+  const [displayName, setDisplayName] = useState<string>("");
   const [cardColor, setCardColor] = useState<string>(CARD_COLOR_PRESETS[0].color);
   const setCardColorStore = useAgentStore((s) => s.setCardColor);
   const [loading, setLoading] = useState(false);
@@ -306,10 +307,13 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
       // backend falls back to std::env::current_dir().
       const trimmedDir = workingDir.trim();
       const dirArg = trimmedDir.length > 0 ? trimmedDir : undefined;
+      const trimmedName = displayName.trim();
+      const nameArg = trimmedName.length > 0 ? trimmedName : undefined;
       const instance: AgentInstanceInfo = await createAgentInstance(
         selectedId,
         dirArg,
         undefined,
+        nameArg,
       );
       addInstance(instance);
       // Save user-picked card color
@@ -333,6 +337,7 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
       if (dirArg) localStorage.setItem("conflux.lastWorkingDir", dirArg);
       onClose();
       setSelectedId(null);
+      setDisplayName("");
     } catch (err) {
       const errorMsg = formatBackendError(err);
       console.error("[AddAgent] create_agent_instance failed:", err);
@@ -364,7 +369,7 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
     } finally {
       setCreating(false);
     }
-  }, [selectedId, creating, workingDir, addInstance, addCard, onClose]);
+  }, [selectedId, creating, workingDir, displayName, cardColor, addInstance, addCard, setCardColorStore, onClose]);
 
   if (!visible) return null;
 
@@ -672,6 +677,46 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
               }}
             >
               Agent binary will start with this as its cwd. Leave blank to use Conflux's own working directory.
+            </span>
+          </div>
+
+          {/* Instance nickname */}
+          <div className="flex flex-col" style={{ gap: 6, marginTop: 2 }}>
+            <span
+              style={{
+                fontFamily: "'Geist Sans', sans-serif",
+                fontSize: 10, fontWeight: 600, letterSpacing: 1.5,
+                color: "#6B7280", textTransform: "uppercase" as const,
+              }}
+            >
+              Nickname (optional)
+            </span>
+            <input
+              type="text"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              placeholder="e.g. Frontend, Backend, Reviewer..."
+              className="outline-none"
+              maxLength={32}
+              style={{
+                padding: "10px 14px",
+                borderRadius: 8,
+                background: "rgba(255,255,255,0.04)",
+                border: "1px solid rgba(255,255,255,0.082)",
+                fontFamily: "'Geist Sans', sans-serif",
+                fontSize: 12,
+                color: "#F2F2F2",
+              }}
+            />
+            <span
+              style={{
+                fontFamily: "'Geist Sans', sans-serif",
+                fontSize: 10,
+                color: "#6B7280",
+                lineHeight: 1.5,
+              }}
+            >
+              Helps tell apart multiple instances of the same adapter. Shows as "Adapter · Nickname".
             </span>
           </div>
 

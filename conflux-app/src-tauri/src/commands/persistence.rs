@@ -173,9 +173,9 @@ pub async fn auto_pack_layout(
     }
 
     // 3. 为每个实例分配 CardSizeSlot
-    let primary_id = {
-        let primary = state.pinned_instance.read();
-        primary.clone()
+    let pinned_set = {
+        let pinned = state.pinned_instances.read();
+        pinned.clone()
     };
 
     let sized_items: Vec<(InstanceId, CardSizeSlot)> = sorted_instances
@@ -183,10 +183,7 @@ pub async fn auto_pack_layout(
         .map(|inst| {
             let slot = match config.size_preset {
                 CardSizePreset::Smart => {
-                    let is_primary = primary_id
-                        .as_ref()
-                        .map(|p| p == &inst.instance_id)
-                        .unwrap_or(false);
+                    let is_primary = pinned_set.contains(&inst.instance_id.0);
                     smart_size_slot(&inst.status, is_primary)
                 }
                 CardSizePreset::Uniform => CardSizeSlot::Mini,

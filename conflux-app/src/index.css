@@ -126,6 +126,14 @@ body {
   opacity: 1 !important;
 }
 
+/* AgentCard pin icon — hidden by default, visible on card hover or when pinned */
+.agent-card-container:hover .agent-card-pin {
+  opacity: 0.5 !important;
+}
+.agent-card-container:hover .agent-card-pin:hover {
+  opacity: 1 !important;
+}
+
 /* Capsule amber glow pulse (notification state) */
 @keyframes capsule-pulse {
   0%, 100% {

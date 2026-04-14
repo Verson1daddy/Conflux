@@ -8,7 +8,7 @@ import { useCallback, useRef, useLayoutEffect, useMemo, useState, useEffect } fr
 import { createPortal } from "react-dom";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useAgentStore } from "@/stores/agentStore";
-import { destroyAgentInstance } from "@/lib/tauri-bridge";
+import { destroyAgentInstance, renameAgentInstance } from "@/lib/tauri-bridge";
 import { SNAP_GRID_PX } from "@/types/layout";
 import type { CardLayout, AgentStatus, Position, LayoutMode } from "@/types";
 import { XtermTerminal } from "./XtermTerminal";
@@ -113,6 +113,7 @@ interface AgentCardProps {
   adapterBadge: string;
   status: AgentStatus;
   isSelected: boolean;
+  isPinned: boolean;
   layoutMode: LayoutMode;
   zoom: number;
   fileCount: number;
@@ -125,6 +126,7 @@ interface AgentCardProps {
    *  in fullscreen flip mode — the card fades out of the way so attention
    *  collapses onto the flipped card. */
   isDimmed?: boolean;
+  onTogglePin?: () => void;
 }
 
 // ===== Layout breakpoints =====
@@ -233,10 +235,12 @@ function AgentCard({
   adapterBadge,
   status: _status,
   isSelected,
+  isPinned,
   layoutMode,
   zoom,
   isFlipped = false,
   isDimmed = false,
+  onTogglePin,
 }: AgentCardProps) {
   const updateCardPosition = useWorkspaceStore((s) => s.updateCardPosition);
   const updateCardSize = useWorkspaceStore((s) => s.updateCardSize);
@@ -266,6 +270,33 @@ function AgentCard({
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
   const colorPickerRef = useRef<HTMLDivElement>(null);
 
+  // Inline rename state
+  const setDisplayName = useAgentStore((s) => s.setDisplayName);
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  const handleStartRename = useCallback(() => {
+    setRenameValue(agentInfo?.display_name ?? "");
+    setRenaming(true);
+    setTimeout(() => renameInputRef.current?.select(), 0);
+  }, [agentInfo?.display_name]);
+
+  const handleCommitRename = useCallback(async () => {
+    setRenaming(false);
+    const trimmed = renameValue.trim();
+    const newName = trimmed.length > 0 ? trimmed : null;
+    // Skip if unchanged
+    if (newName === (agentInfo?.display_name ?? null)) return;
+    setDisplayName(card.instance_id, newName);
+    try {
+      await renameAgentInstance(card.instance_id, newName);
+    } catch {
+      // Revert on failure
+      setDisplayName(card.instance_id, agentInfo?.display_name ?? null);
+    }
+  }, [renameValue, agentInfo?.display_name, card.instance_id, setDisplayName]);
+
   useEffect(() => {
     if (!colorPickerOpen) return;
     const handleClick = (e: MouseEvent) => {
@@ -293,6 +324,15 @@ function AgentCard({
     document.addEventListener("pointerdown", handleClick);
     return () => document.removeEventListener("pointerdown", handleClick);
   }, [shieldOpen]);
+
+  // Close all popovers when expanded view opens/closes or when flipping.
+  // Prevents portaled menus from lingering on top of the header.
+  const expandedCardId = useAgentStore((s) => s.expandedCardId);
+  useEffect(() => {
+    setShieldOpen(false);
+    setColorPickerOpen(false);
+    setRenaming(false);
+  }, [expandedCardId, isFlipped]);
 
   // Keep the back face mounted during flip-back so the transition animates
   // out cleanly; unmount ~660ms after isFlipped becomes false to free the
@@ -530,7 +570,7 @@ function AgentCard({
   return (
     <div
       ref={cardRef}
-      className="absolute card-appear"
+      className="absolute card-appear agent-card-container"
       style={{
         left: card.position.x,
         top: card.position.y,
@@ -567,11 +607,11 @@ function AgentCard({
           backdropFilter: "blur(20px)",
           WebkitBackdropFilter: "blur(20px)",
           border: isSelected
-            ? "1px solid rgba(184,212,227,0.4)"
-            : "1px solid rgba(255,255,255,0.082)",
+            ? `1.5px solid ${cardColor}88`
+            : `1px solid ${cardColor}30`,
           borderRadius: 12,
           boxShadow: isSelected
-            ? "0 8px 32px rgba(0,0,0,0.19), 0 20px 60px rgba(0,0,0,0.7)"
+            ? `0 8px 32px rgba(0,0,0,0.19), 0 0 24px ${cardColor}20`
             : "0 8px 32px rgba(0,0,0,0.19)",
         }}
       >
@@ -583,6 +623,7 @@ function AgentCard({
           padding: "0 16px",
           gap: 8,
           background: "rgba(255,255,255,0.024)",
+          borderBottom: `1px solid ${cardColor}18`,
         }}
       >
         {/* C2-A4b Clickable color dot — shows custom card color, click to change */}
@@ -627,12 +668,58 @@ function AgentCard({
             </div>
           )}
         </div>
-        <span
-          className="truncate"
-          style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 14, fontWeight: 600, color: "#F2F2F2" }}
+        {renaming ? (
+          <input
+            ref={renameInputRef}
+            data-no-expand
+            className="truncate outline-none"
+            style={{
+              fontFamily: "'Geist Sans',sans-serif", fontSize: 14, fontWeight: 600, color: "#F2F2F2",
+              background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.2)",
+              borderRadius: 4, padding: "1px 6px", minWidth: 60, maxWidth: 180,
+            }}
+            value={renameValue}
+            maxLength={32}
+            onChange={(e) => setRenameValue(e.target.value)}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Enter") handleCommitRename();
+              if (e.key === "Escape") setRenaming(false);
+            }}
+            onBlur={handleCommitRename}
+            onPointerDown={(e) => e.stopPropagation()}
+            placeholder="Nickname..."
+          />
+        ) : (
+          <span
+            className="truncate"
+            style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 14, fontWeight: 600, color: "#F2F2F2", cursor: "default" }}
+            data-no-expand
+            onDoubleClick={(e) => { e.stopPropagation(); handleStartRename(); }}
+            title="Double-click to rename"
+          >
+            {agentName}
+          </span>
+        )}
+        {/* Pin indicator/button */}
+        <button
+          className="shrink-0 flex items-center justify-center agent-card-pin"
+          data-no-expand
+          style={{
+            width: 16, height: 16, padding: 0, cursor: "pointer",
+            color: isPinned ? "#B8D4E3" : "#6B7280",
+            opacity: isPinned ? 1 : 0,
+            transition: "opacity 0.15s",
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); onTogglePin?.(); }}
+          title={isPinned ? "Pinned (click to unpin)" : "Pin"}
         >
-          {agentName}
-        </span>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill={isPinned ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 17v5" />
+            <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" />
+          </svg>
+        </button>
         {showBadge && vendorBadge && (
           <span
             className="shrink-0"

@@ -5,6 +5,7 @@
 
 import { type FC, useEffect, useState, useCallback, useRef } from "react";
 import { useIslandStore } from "@/stores/islandStore";
+import { useAgentStore } from "@/stores/agentStore";
 import { injectStdin } from "@/lib/tauri-bridge";
 import { PTY_ENTER } from "@/lib/constants";
 import type { NotificationItem, NotificationLevel } from "@/types";
@@ -54,12 +55,13 @@ type RemovalState = "idle" | "success" | "dismiss";
 
 interface NotificationCardProps {
   notif: NotificationItem;
+  isPinned: boolean;
   onDismiss: (id: string) => void;
   onReply: (notif: NotificationItem, reply: string) => Promise<void>;
   removalState: RemovalState;
 }
 
-const NotificationCard: FC<NotificationCardProps> = ({ notif, onDismiss, onReply, removalState }) => {
+const NotificationCard: FC<NotificationCardProps> = ({ notif, isPinned, onDismiss, onReply, removalState }) => {
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
 
@@ -100,6 +102,7 @@ const NotificationCard: FC<NotificationCardProps> = ({ notif, onDismiss, onReply
         borderRadius: 8,
         background: "rgba(255,255,255,0.04)",
         border: "1px solid rgba(255,255,255,0.082)",
+        borderLeft: isPinned ? "3px solid #B8D4E3" : "1px solid rgba(255,255,255,0.082)",
       }}
     >
       {/* Header row */}
@@ -209,8 +212,19 @@ const NotificationCard: FC<NotificationCardProps> = ({ notif, onDismiss, onReply
 const REMOVE_ANIMATION_MS = 360;
 
 const NotificationTray: FC<NotificationTrayProps> = ({ visible, onClose }) => {
-  const notifications = useIslandStore((s) => s.notifications);
+  const rawNotifications = useIslandStore((s) => s.notifications);
+  const instances = useAgentStore((s) => s.instances);
   const clearNotification = useIslandStore((s) => s.clearNotification);
+
+  // Sort notifications: pinned agents first, then by time (newest first)
+  const notifications = [...rawNotifications].sort((a, b) => {
+    const aInst = instances.get(a.source_instance_id);
+    const bInst = instances.get(b.source_instance_id);
+    const aPinned = aInst?.is_pinned ? 1 : 0;
+    const bPinned = bInst?.is_pinned ? 1 : 0;
+    if (aPinned !== bPinned) return bPinned - aPinned;
+    return b.created_at - a.created_at;
+  });
   const [removalMap, setRemovalMap] = useState<Map<string, RemovalState>>(new Map());
 
   // Esc to close
@@ -364,6 +378,7 @@ const NotificationTray: FC<NotificationTrayProps> = ({ visible, onClose }) => {
               <NotificationCard
                 key={notif.id}
                 notif={notif}
+                isPinned={instances.get(notif.source_instance_id)?.is_pinned ?? false}
                 onDismiss={handleDismiss}
                 onReply={handleReply}
                 removalState={removalMap.get(notif.id) ?? "idle"}

@@ -3,6 +3,7 @@
 // Manages card layouts, zoom, pan, layout mode, and selection
 
 import { create } from "zustand";
+import { useAgentStore } from "@/stores/agentStore";
 import type {
   CardLayout,
   LayoutMode,
@@ -273,10 +274,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       const GAP = 16;
       const START = 24;
 
-      // Sort: wider cards first for better packing
-      const sorted = [...state.cards].sort(
-        (a, b) => b.size.width * b.size.height - a.size.width * a.size.height
-      );
+      // Sort: pinned first, then wider cards for better packing
+      const agentInstances = useAgentStore.getState().instances;
+      const sorted = [...state.cards].sort((a, b) => {
+        const aPinned = agentInstances.get(a.instance_id)?.is_pinned ? 1 : 0;
+        const bPinned = agentInstances.get(b.instance_id)?.is_pinned ? 1 : 0;
+        if (aPinned !== bPinned) return bPinned - aPinned;
+        return b.size.width * b.size.height - a.size.width * a.size.height;
+      });
 
       // Simple row-based packing: fill row left→right, wrap when exceeding
       // a reasonable max width (~3 cards wide or 2000px, whichever is smaller).

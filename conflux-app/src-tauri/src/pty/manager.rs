@@ -158,6 +158,8 @@ struct PtyProcess {
     adapter_id: String,
     /// 适配器名称
     adapter_name: String,
+    /// 用户自定义别名
+    display_name: Option<String>,
     /// 工作目录
     working_dir: String,
     /// 当前 Agent 状态
@@ -234,6 +236,7 @@ impl PtyManager {
         dispatch: Option<EventDispatcher>,
         mode: AgentMode,
         hidden: bool,
+        display_name: Option<String>,
     ) -> Result<String, ConfluxError> {
         let instance_id = uuid::Uuid::new_v4().to_string();
         self.spawn_inner(
@@ -247,6 +250,7 @@ impl PtyManager {
             dispatch,
             mode,
             hidden,
+            display_name,
         )
     }
 
@@ -268,6 +272,7 @@ impl PtyManager {
         dispatch: Option<EventDispatcher>,
         mode: AgentMode,
         hidden: bool,
+        display_name: Option<String>,
     ) -> Result<String, ConfluxError> {
         log::debug!(
             "PTY spawn 开始: instance_id={}, command={}, working_dir={}",
@@ -478,6 +483,7 @@ impl PtyManager {
             created_at: now_millis(),
             adapter_id: adapter_id.to_string(),
             adapter_name: adapter_name.to_string(),
+            display_name,
             working_dir: working_dir.to_string(),
             status: AgentStatus::Idle,
             pty_size: default_size,
@@ -494,6 +500,22 @@ impl PtyManager {
 
         log::debug!("PTY spawn 完成: instance_id={}", instance_id);
         Ok(instance_id)
+    }
+
+    /// 修改实例的用户自定义别名
+    pub fn rename_instance(
+        &self,
+        instance_id: &str,
+        display_name: Option<String>,
+    ) -> Result<(), ConfluxError> {
+        let mut processes = self.processes.write();
+        let process = processes.get_mut(instance_id).ok_or_else(|| {
+            ConfluxError::InstanceNotFound {
+                instance_id: instance_id.to_string(),
+            }
+        })?;
+        process.display_name = display_name;
+        Ok(())
     }
 
     /// 向指定实例的 stdin 注入内容
@@ -593,6 +615,7 @@ impl PtyManager {
         dispatch: Option<EventDispatcher>,
         mode: AgentMode,
         hidden: bool,
+        display_name: Option<String>,
     ) -> Result<String, ConfluxError> {
         // 1. 如果 map 里还有旧 entry，先 kill。kill 失败不 fatal——child 可能
         //    已经自然退出或被前端先 close 过，此时直接 spawn 新的即可。
@@ -622,6 +645,7 @@ impl PtyManager {
             dispatch,
             mode,
             hidden,
+            display_name,
         )
     }
 
@@ -670,9 +694,10 @@ impl PtyManager {
                 instance_id: InstanceId(id.clone()),
                 adapter_id: AdapterId(proc.adapter_id.clone()),
                 adapter_name: proc.adapter_name.clone(),
+                display_name: proc.display_name.clone(),
                 status: proc.status.clone(),
                 working_dir: proc.working_dir.clone(),
-                is_pinned: false, // 由 AppState 层管理
+                is_pinned: false, // 由 AppState 层管理，list_agent_instances 会 merge
                 created_at: proc.created_at,
                 mode: proc.mode.clone(),
                 hidden: proc.hidden,
@@ -698,6 +723,7 @@ impl PtyManager {
             instance_id: InstanceId(instance_id.to_string()),
             adapter_id: AdapterId(process.adapter_id.clone()),
             adapter_name: process.adapter_name.clone(),
+            display_name: process.display_name.clone(),
             status: process.status.clone(),
             working_dir: process.working_dir.clone(),
             is_pinned: false, // 由 AppState 层管理

@@ -112,7 +112,8 @@ pub async fn start_discussion(
             Some(adapter_arc),
             Some(dispatcher),
             AgentMode::Sandbox,
-            true, // hidden = true
+            true,  // hidden = true
+            None,  // display_name: sandbox 实例不需要别名
         )?;
 
         let sandbox_id = InstanceId(sandbox_id_str);
@@ -280,18 +281,20 @@ pub async fn end_discussion(
     Ok(summary)
 }
 
-/// 设置灵动岛主框架
+/// 切换实例的钉选状态（Pin 多选）
 ///
-/// 指定一个 Agent 实例作为灵动岛的主框架（负责接收调度指令）。
-/// 同一时间只能有一个主框架。
+/// 如果实例已钉选则取消，否则添加。支持同时钉选多个实例。
 ///
 /// # 参数
-/// - `instance_id`: 要设为主框架的实例 ID
+/// - `instance_id`: 要切换钉选状态的实例 ID
+///
+/// # 返回
+/// 切换后该实例是否处于钉选状态
 #[tauri::command]
-pub async fn set_pinned_instance(
+pub async fn toggle_pin_instance(
     state: State<'_, AppState>,
     instance_id: InstanceId,
-) -> Result<(), ConfluxError> {
+) -> Result<bool, ConfluxError> {
     // 验证实例存在
     {
         let map = state.instance_adapter_map.read();
@@ -302,24 +305,34 @@ pub async fn set_pinned_instance(
         }
     }
 
-    // 设置主框架
-    {
-        let mut primary = state.pinned_instance.write();
-        *primary = Some(instance_id.clone());
-    }
+    // 切换钉选
+    let is_now_pinned = {
+        let mut pinned = state.pinned_instances.write();
+        if pinned.contains(&instance_id.0) {
+            pinned.remove(&instance_id.0);
+            false
+        } else {
+            pinned.insert(instance_id.0.clone());
+            true
+        }
+    };
 
-    log::debug!("主框架已设置: {}", instance_id.0);
-    Ok(())
+    log::debug!(
+        "Pin 切换: {} → {}",
+        instance_id.0,
+        if is_now_pinned { "pinned" } else { "unpinned" }
+    );
+    Ok(is_now_pinned)
 }
 
-/// 获取当前灵动岛主框架
+/// 获取所有钉选实例 ID 列表
 ///
 /// # 返回
-/// 当前主框架的实例 ID，如果未设置则返回 None
+/// 当前所有钉选实例的 ID 列表
 #[tauri::command]
-pub async fn get_pinned_instance(
+pub async fn get_pinned_instances(
     state: State<'_, AppState>,
-) -> Result<Option<InstanceId>, ConfluxError> {
-    let primary = state.pinned_instance.read();
-    Ok(primary.clone())
+) -> Result<Vec<InstanceId>, ConfluxError> {
+    let pinned = state.pinned_instances.read();
+    Ok(pinned.iter().map(|id| InstanceId(id.clone())).collect())
 }

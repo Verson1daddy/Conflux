@@ -46,12 +46,28 @@ import type {
 export async function createAgentInstance(
   adapterId: AdapterId,
   workingDir?: string,
-  args?: string[]
+  args?: string[],
+  displayName?: string
 ): Promise<AgentInstanceInfo> {
   return invoke<AgentInstanceInfo>("create_agent_instance", {
     adapterId,
     workingDir: workingDir ?? null,
     args: args ?? null,
+    displayName: displayName ?? null,
+  });
+}
+
+/**
+ * 重命名 Agent 实例（设置用户自定义别名）
+ * 对应 Rust: rename_agent_instance(instance_id, display_name)
+ */
+export async function renameAgentInstance(
+  instanceId: InstanceId,
+  displayName: string | null
+): Promise<void> {
+  return invoke<void>("rename_agent_instance", {
+    instanceId,
+    displayName,
   });
 }
 
@@ -308,23 +324,24 @@ export async function endDiscussion(
 }
 
 /**
- * 设置钉选实例
- * 对应 Rust: set_pinned_instance(instance_id)
+ * 切换实例钉选状态（多选）
+ * 对应 Rust: toggle_pin_instance(instance_id)
+ * @returns 切换后该实例是否处于钉选状态
  */
-export async function setPinnedInstance(
+export async function togglePinInstance(
   instanceId: InstanceId
-): Promise<void> {
-  return invoke<void>("set_pinned_instance", {
+): Promise<boolean> {
+  return invoke<boolean>("toggle_pin_instance", {
     instanceId,
   });
 }
 
 /**
- * 获取当前钉选实例
- * 对应 Rust: get_pinned_instance()
+ * 获取所有钉选实例 ID 列表
+ * 对应 Rust: get_pinned_instances()
  */
-export async function getPinnedInstance(): Promise<InstanceId | null> {
-  return invoke<InstanceId | null>("get_pinned_instance");
+export async function getPinnedInstances(): Promise<InstanceId[]> {
+  return invoke<InstanceId[]>("get_pinned_instances");
 }
 
 // ===== Adapter 偏好操作 =====

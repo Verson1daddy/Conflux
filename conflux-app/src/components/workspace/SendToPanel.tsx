@@ -306,7 +306,7 @@ const SendToPanel: FC<SendToPanelProps> = ({ visible, onClose }) => {
                         color: COLORS.textPrimary,
                       }}
                     >
-                      {agent.adapter_name}
+                      {agent.display_name ? `${agent.adapter_name} · ${agent.display_name}` : agent.adapter_name}
                     </span>
 
                     {/* Primary badge */}

@@ -68,6 +68,8 @@ pub struct AgentStateDetail {
     pub adapter_id: AdapterId,
     /// 适配器显示名称
     pub adapter_name: String,
+    /// 用户自定义别名（B4: 命名后缀）
+    pub display_name: Option<String>,
     /// 当前运行状态
     pub status: AgentStatus,
     /// 工作目录
@@ -570,6 +572,8 @@ pub struct AgentInstanceInfo {
     pub adapter_id: AdapterId,
     /// 适配器名称
     pub adapter_name: String,
+    /// 用户自定义别名（B4: 命名后缀）
+    pub display_name: Option<String>,
     /// 当前状态
     pub status: AgentStatus,
     /// 工作目录

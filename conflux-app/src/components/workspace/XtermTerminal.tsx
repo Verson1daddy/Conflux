@@ -130,10 +130,10 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
 
   // Adapter display name for the overlay title. Falls back to the raw
   // adapter_id from the exit payload (e.g. "Claude Code" vs "claude-code").
-  const adapterName =
-    instanceLookup.get(instanceId)?.adapter_name ??
-    exitState?.adapter_id ??
-    "Agent";
+  const inst = instanceLookup.get(instanceId);
+  const adapterName = inst
+    ? (inst.display_name ? `${inst.adapter_name} · ${inst.display_name}` : inst.adapter_name)
+    : (exitState?.adapter_id ?? "Agent");
 
   const handleExitAction = useCallback(
     async (action: "restart" | "shell" | "close") => {

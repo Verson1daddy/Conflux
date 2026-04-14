@@ -2,10 +2,11 @@
 // The main workspace canvas container.
 // Performance: zoom/pan use ref + direct DOM transform; store commits only on idle.
 
-import { useCallback, useRef, useEffect } from "react";
+import { useCallback, useRef, useEffect, useState } from "react";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useAgentStore } from "@/stores/agentStore";
 import { useWorkspaceLayout } from "@/hooks/useWorkspaceLayout";
+import { togglePinInstance } from "@/lib/tauri-bridge";
 import { AgentCard } from "./AgentCard";
 import { LayoutManager } from "./LayoutManager";
 import type { AgentStatus, AgentInstanceInfo } from "@/types";
@@ -39,6 +40,7 @@ function Canvas({ agents, agentStatuses, isFullscreen, onAddAgent }: CanvasProps
   const fitAll = useWorkspaceStore((s) => s.fitAll);
   const autoArrange = useWorkspaceStore((s) => s.autoArrange);
   const { triggerAutoPack } = useWorkspaceLayout();
+  const [pinnedFilter, setPinnedFilter] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const transformLayerRef = useRef<HTMLDivElement>(null);
@@ -275,8 +277,12 @@ function Canvas({ agents, agentStatuses, isFullscreen, onAddAgent }: CanvasProps
         >
           {cards.map((card) => {
             const agentInfo = agents.get(card.instance_id);
+            // Pinned filter: hide non-pinned cards when filter is active
+            if (pinnedFilter && !agentInfo?.is_pinned) return null;
             const agentStatus = agentStatuses.get(card.instance_id) ?? "idle";
-            const agentName = agentInfo?.adapter_name ?? "Unknown Agent";
+            const agentName = agentInfo
+              ? (agentInfo.display_name ? `${agentInfo.adapter_name} · ${agentInfo.display_name}` : agentInfo.adapter_name)
+              : "Unknown Agent";
             const adapterBadge = agentInfo?.adapter_id ?? "---";
 
             const isFlipped =
@@ -293,12 +299,17 @@ function Canvas({ agents, agentStatuses, isFullscreen, onAddAgent }: CanvasProps
                 adapterBadge={adapterBadge}
                 status={agentStatus}
                 isSelected={selectedCardId === card.instance_id}
+                isPinned={agentInfo?.is_pinned ?? false}
                 layoutMode={layoutMode}
                 zoom={liveZoom.current}
                 fileCount={0}
                 lastActivity={agentInfo?.created_at ?? 0}
                 isFlipped={isFlipped}
                 isDimmed={isDimmed}
+                onTogglePin={() => {
+                  useAgentStore.getState().togglePin(card.instance_id);
+                  togglePinInstance(card.instance_id).catch(() => {});
+                }}
               />
             );
           })}
@@ -334,6 +345,20 @@ function Canvas({ agents, agentStatuses, isFullscreen, onAddAgent }: CanvasProps
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
           </svg>
+        </button>
+        <button
+          className={`glass rounded-md px-2 py-1 text-[10px] font-mono transition-colors flex items-center gap-1 ${
+            pinnedFilter ? "text-accent bg-accent/15" : "text-white/40 hover:text-white/70"
+          }`}
+          style={{ cursor: "pointer", border: "none" }}
+          onClick={() => setPinnedFilter((v) => !v)}
+          title={pinnedFilter ? "Show all cards (currently filtering pinned only)" : "Filter: show only pinned cards"}
+        >
+          <svg width="11" height="11" viewBox="0 0 24 24" fill={pinnedFilter ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 17v5" />
+            <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" />
+          </svg>
+          {pinnedFilter && <span>Pinned</span>}
         </button>
         <span className="text-[10px] font-mono text-white/25 select-none">
           Ctrl+Scroll to zoom

@@ -27,7 +27,7 @@ const StatusBar: FC = () => {
 
   // 构建状态摘要文字
   const statusSummary = agents.length > 0
-    ? agents.map((a) => `${a.adapter_name}: ${a.status}`).join(" · ")
+    ? agents.map((a) => `${a.display_name ? `${a.adapter_name} · ${a.display_name}` : a.adapter_name}: ${a.status}`).join(" · ")
     : "No active agents";
 
   return (

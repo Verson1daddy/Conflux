@@ -60,6 +60,7 @@ function LayoutManager({ onAutoPack }: LayoutManagerProps) {
   } = useWorkspaceStore();
 
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   // ===== Close dropdown on outside click =====
@@ -130,44 +131,57 @@ function LayoutManager({ onAutoPack }: LayoutManagerProps) {
       className="absolute top-4 right-4 z-20 flex flex-col items-end gap-2"
       ref={dropdownRef}
     >
-      {/* ===== Mode toggle bar ===== */}
+      {/* ===== Collapse/Expand toggle + Mode toggle bar ===== */}
       <div className="glass rounded-lg flex items-center p-1 gap-0.5">
-        {LAYOUT_MODES.map((opt) => (
-          <button
-            key={opt.mode}
-            className={[
-              "px-3 py-1.5 rounded-md text-xs font-body transition-colors duration-150",
-              layoutMode === opt.mode
-                ? "bg-accent/20 text-accent"
-                : "text-white/50 hover:text-white/80 hover:bg-white/5",
-            ].join(" ")}
-            onClick={() => handleModeClick(opt.mode)}
-            title={opt.title}
-          >
-            <span className="mr-1">{opt.icon}</span>
-            {opt.label}
-          </button>
-        ))}
+        {/* Collapse toggle */}
+        <button
+          className="px-1.5 py-1.5 rounded-md text-xs text-white/40 hover:text-white/80 hover:bg-white/5 transition-colors duration-150"
+          onClick={() => setCollapsed((v) => !v)}
+          title={collapsed ? "Expand layout toolbar" : "Collapse layout toolbar"}
+        >
+          {collapsed ? "◂" : "▸"}
+        </button>
 
-        {/* AutoPack dropdown toggle (only visible in auto_pack mode) */}
-        {layoutMode === "auto_pack" && (
-          <button
-            className={[
-              "ml-1 px-2 py-1.5 rounded-md text-xs transition-colors duration-150",
-              dropdownOpen
-                ? "bg-accent/20 text-accent"
-                : "text-white/40 hover:text-white/70 hover:bg-white/5",
-            ].join(" ")}
-            onClick={toggleDropdown}
-            title="AutoPack settings"
-          >
-            ▾
-          </button>
+        {!collapsed && (
+          <>
+            {LAYOUT_MODES.map((opt) => (
+              <button
+                key={opt.mode}
+                className={[
+                  "px-3 py-1.5 rounded-md text-xs font-body transition-colors duration-150",
+                  layoutMode === opt.mode
+                    ? "bg-accent/20 text-accent"
+                    : "text-white/50 hover:text-white/80 hover:bg-white/5",
+                ].join(" ")}
+                onClick={() => handleModeClick(opt.mode)}
+                title={opt.title}
+              >
+                <span className="mr-1">{opt.icon}</span>
+                {opt.label}
+              </button>
+            ))}
+
+            {/* AutoPack dropdown toggle (only visible in auto_pack mode) */}
+            {layoutMode === "auto_pack" && (
+              <button
+                className={[
+                  "ml-1 px-2 py-1.5 rounded-md text-xs transition-colors duration-150",
+                  dropdownOpen
+                    ? "bg-accent/20 text-accent"
+                    : "text-white/40 hover:text-white/70 hover:bg-white/5",
+                ].join(" ")}
+                onClick={toggleDropdown}
+                title="AutoPack settings"
+              >
+                ▾
+              </button>
+            )}
+          </>
         )}
       </div>
 
       {/* ===== AutoPack dropdown ===== */}
-      {layoutMode === "auto_pack" && dropdownOpen && (
+      {!collapsed && layoutMode === "auto_pack" && dropdownOpen && (
         <div className="glass rounded-lg p-3 min-w-[220px] flex flex-col gap-3">
           {/* Sort strategy */}
           <label className="flex flex-col gap-1">

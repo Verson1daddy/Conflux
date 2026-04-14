@@ -138,7 +138,12 @@ interface AgentStoreState {
   updateStatus: (instanceId: string, status: AgentStatus) => void;
   updateTree: (instanceId: string, tree: AgentTree) => void;
   setExpandedCard: (id: string | null) => void;
-  setPrimary: (instanceId: string | null) => void;
+  /** Toggle pin for an instance (multi-select). Updates local state + backend. */
+  togglePin: (instanceId: string) => void;
+  /** Hydrate pin state from backend on startup */
+  hydratePins: (pinnedIds: string[]) => void;
+  /** Update display_name for an instance locally (after backend rename succeeds) */
+  setDisplayName: (instanceId: string, displayName: string | null) => void;
 
   // Discussion wizard
   openDiscussionWizard: (opts?: { sourceInstanceId?: string }) => void;
@@ -161,7 +166,7 @@ interface AgentStoreState {
 // ===== Helpers =====
 
 /** Look up the instance that should be primary for a freshly-opened wizard.
- *  Preference order: pinned instance → first instance in store → null. */
+ *  Preference order: first pinned instance → first instance in store → null. */
 function resolvePrimaryInstance(
   instances: Map<string, AgentInstanceInfo>
 ): AgentInstanceInfo | null {
@@ -170,6 +175,14 @@ function resolvePrimaryInstance(
   }
   const first = instances.values().next();
   return first.done ? null : first.value;
+}
+
+/** Helper: get display label for an agent instance.
+ *  Format: "adapter_name · display_name" if alias set, else just adapter_name. */
+export function agentDisplayLabel(info: AgentInstanceInfo): string {
+  return info.display_name
+    ? `${info.adapter_name} · ${info.display_name}`
+    : info.adapter_name;
 }
 
 /** Build opening demo messages so the chatroom isn't empty on entry. */
@@ -368,15 +381,33 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
 
   setExpandedCard: (id) => set({ expandedCardId: id }),
 
-  setPrimary: (instanceId) =>
+  togglePin: (instanceId) =>
     set((state) => {
+      const nextInstances = new Map(state.instances);
+      const info = nextInstances.get(instanceId);
+      if (info) {
+        nextInstances.set(instanceId, { ...info, is_pinned: !info.is_pinned });
+      }
+      return { instances: nextInstances };
+    }),
+
+  hydratePins: (pinnedIds) =>
+    set((state) => {
+      const pinnedSet = new Set(pinnedIds);
       const nextInstances = new Map<string, AgentInstanceInfo>();
       state.instances.forEach((info, id) => {
-        nextInstances.set(id, {
-          ...info,
-          is_pinned: instanceId !== null && id === instanceId,
-        });
+        nextInstances.set(id, { ...info, is_pinned: pinnedSet.has(id) });
       });
+      return { instances: nextInstances };
+    }),
+
+  setDisplayName: (instanceId, displayName) =>
+    set((state) => {
+      const nextInstances = new Map(state.instances);
+      const info = nextInstances.get(instanceId);
+      if (info) {
+        nextInstances.set(instanceId, { ...info, display_name: displayName });
+      }
       return { instances: nextInstances };
     }),
 

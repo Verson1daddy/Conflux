@@ -8,8 +8,8 @@
 
 import { type FC, useState, useCallback, useMemo } from "react";
 import { useIslandStore } from "@/stores/islandStore";
-import { useAgentStore } from "@/stores/agentStore";
-import { focusAgentCard, respondToPermission, setPinnedInstance } from "@/lib/tauri-bridge";
+import { useAgentStore, agentDisplayLabel } from "@/stores/agentStore";
+import { focusAgentCard, respondToPermission, togglePinInstance } from "@/lib/tauri-bridge";
 import type { AgentStatus, PermissionDecision } from "@/types";
 
 interface SidebarProps {
@@ -40,26 +40,33 @@ const Sidebar: FC<SidebarProps> = ({ visible, onCollapse }) => {
   const removePermissionRequest = useIslandStore((s) => s.removePermissionRequest);
   const clearNotification = useIslandStore((s) => s.clearNotification);
   const instances = useAgentStore((s) => s.instances);
-  const setPrimary = useAgentStore((s) => s.setPrimary);
+  const togglePin = useAgentStore((s) => s.togglePin);
   const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
 
   // 从 agentStore 读取 agents（保持和 canvas/TopBar 一致）
-  const agents = useMemo(() => Array.from(instances.values()), [instances]);
+  // Pinned agents 排在顶部
+  const agents = useMemo(() => {
+    const all = Array.from(instances.values());
+    return all.sort((a, b) => {
+      if (a.is_pinned && !b.is_pinned) return -1;
+      if (!a.is_pinned && b.is_pinned) return 1;
+      return 0;
+    });
+  }, [instances]);
 
   const handleAgentClick = useCallback(async (id: string) => {
     try { await focusAgentCard(id); } catch { /* ignore */ }
   }, []);
 
   const handleTogglePin = useCallback(
-    async (e: React.MouseEvent, instanceId: string, currentlyPinned: boolean) => {
+    async (e: React.MouseEvent, instanceId: string) => {
       e.stopPropagation();
-      const next = currentlyPinned ? null : instanceId;
       // 即时本地反馈
-      setPrimary(next);
-      // 后端同步（demo 期可能无效，忽略失败）
-      try { await setPinnedInstance(next ?? ""); } catch { /* ignore */ }
+      togglePin(instanceId);
+      // 后端同步
+      try { await togglePinInstance(instanceId); } catch { /* ignore */ }
     },
-    [setPrimary]
+    [togglePin]
   );
 
   const handlePermissionDecision = useCallback(
@@ -217,7 +224,7 @@ const Sidebar: FC<SidebarProps> = ({ visible, onCollapse }) => {
                         color: "#F2F2F2",
                       }}
                     >
-                      {agent.adapter_name}
+                      {agentDisplayLabel(agent)}
                     </span>
                     <span
                       className="truncate"
@@ -246,8 +253,8 @@ const Sidebar: FC<SidebarProps> = ({ visible, onCollapse }) => {
                   {/* Pin icon — hidden by default, only visible on row hover */}
                   <span
                     role="button"
-                    aria-label={agent.is_pinned ? "Unpin as primary" : "Pin as primary"}
-                    onClick={(e) => handleTogglePin(e, agent.instance_id, agent.is_pinned)}
+                    aria-label={agent.is_pinned ? "Unpin" : "Pin"}
+                    onClick={(e) => handleTogglePin(e, agent.instance_id)}
                     className={`shrink-0 flex items-center justify-center sidebar-pin ${agent.is_pinned ? "pinned" : ""}`}
                     style={{
                       width: 20,
@@ -255,7 +262,7 @@ const Sidebar: FC<SidebarProps> = ({ visible, onCollapse }) => {
                       color: agent.is_pinned ? "#B8D4E3" : "#6B7280",
                       cursor: "pointer",
                     }}
-                    title={agent.is_pinned ? "Pinned as primary (click to unpin)" : "Pin as primary"}
+                    title={agent.is_pinned ? "Pinned (click to unpin)" : "Pin"}
                   >
                     <svg
                       width="13"

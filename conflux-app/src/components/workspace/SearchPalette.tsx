@@ -125,7 +125,7 @@ const SearchPalette: FC<SearchPaletteProps> = ({
       result.push({
         id: `agent-${inst.instance_id}`,
         type: "agent",
-        title: inst.adapter_name,
+        title: inst.display_name ? `${inst.adapter_name} · ${inst.display_name}` : inst.adapter_name,
         subtitle: `${inst.instance_id.slice(0, 8)}… · ${inst.status}`,
         icon: ICON_TERMINAL,
         action: () => { onClose(); setExpandedCard(inst.instance_id); },

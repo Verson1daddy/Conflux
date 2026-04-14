@@ -49,6 +49,8 @@ export interface AgentStateDetail {
   adapter_id: AdapterId;
   /** 适配器显示名称 */
   adapter_name: string;
+  /** 用户自定义别名 */
+  display_name: string | null;
   /** 当前运行状态 */
   status: AgentStatus;
   /** 工作目录 */
@@ -197,6 +199,8 @@ export interface AgentInstanceInfo {
   adapter_id: AdapterId;
   /** 适配器名称 */
   adapter_name: string;
+  /** 用户自定义别名 */
+  display_name: string | null;
   /** 当前状态 */
   status: AgentStatus;
   /** 工作目录 */

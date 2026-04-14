@@ -60,6 +60,9 @@ fn test_spawn_returns_instance_id() {
         "Test Adapter",
         None,
         None,
+        conflux_app::core::AgentMode::Full,
+        false,
+        None,
     );
 
     assert!(result.is_ok(), "spawn 应该成功: {:?}", result.err());
@@ -447,6 +450,9 @@ fn test_spawn_invalid_command() {
         "test-adapter",
         "Test Adapter",
         None,
+        None,
+        conflux_app::core::AgentMode::Full,
+        false,
         None,
     );
 

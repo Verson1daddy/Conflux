@@ -8,11 +8,11 @@
 //   3. normal — 显示活跃 agent 数量
 // 胶囊 hover 时右侧出现 ✎ 铅笔（Send to... 主动发起入口）
 
-import { type FC, useMemo, useState } from "react";
+import { type FC, useEffect, useMemo, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useIslandStore } from "@/stores/islandStore";
-import { useAgentStore } from "@/stores/agentStore";
-import type { AgentStatus } from "@/types";
+import { useAgentStore, agentDisplayLabel } from "@/stores/agentStore";
+import type { AgentStatus, AgentInstanceInfo } from "@/types";
 
 interface TopBarProps {
   onIslandClick: () => void;
@@ -32,21 +32,34 @@ const TopBar: FC<TopBarProps> = ({ onIslandClick, onTrayOpen, onSendToOpen, onDi
   const instanceCount = instances.size;
   const [capsuleHover, setCapsuleHover] = useState(false);
 
-  // 从 agentStore 找到 pinned primary，没有则 fallback 到 "Conflux" 品牌名
-  const primaryLabel = useMemo(() => {
+  // 所有 pinned agents（多选）
+  const pinnedAgents: AgentInstanceInfo[] = useMemo(() => {
+    const pinned: AgentInstanceInfo[] = [];
     for (const inst of instances.values()) {
-      if (inst.is_pinned) return inst.adapter_name;
+      if (inst.is_pinned) pinned.push(inst);
     }
-    return "Conflux";
+    return pinned;
   }, [instances]);
 
-  // Primary agent status derived from store
-  const primaryStatus: AgentStatus = useMemo(() => {
-    for (const inst of instances.values()) {
-      if (inst.is_pinned) return inst.status;
-    }
-    return "idle";
-  }, [instances]);
+  // 轮播索引 — 多个 pinned 时每 3 秒切换
+  const [rotateIdx, setRotateIdx] = useState(0);
+  useEffect(() => {
+    if (pinnedAgents.length <= 1) return;
+    const timer = setInterval(() => setRotateIdx((i) => i + 1), 3000);
+    return () => clearInterval(timer);
+  }, [pinnedAgents.length]);
+
+  const currentPinned = pinnedAgents.length > 0
+    ? pinnedAgents[rotateIdx % pinnedAgents.length]
+    : null;
+
+  // 胶囊显示标签
+  const primaryLabel = currentPinned
+    ? agentDisplayLabel(currentPinned)
+    : "Conflux";
+
+  // Primary agent status derived from pinned
+  const primaryStatus: AgentStatus = currentPinned?.status ?? "idle";
 
   const isActive = primaryStatus === "thinking" || primaryStatus === "coding";
   const hasPermission = pendingPermissions.length > 0;
@@ -225,7 +238,8 @@ const TopBar: FC<TopBarProps> = ({ onIslandClick, onTrayOpen, onSendToOpen, onDi
         {/* Hover ✎ 铅笔 — 主动发起 Send to... */}
         <span
           role="button"
-          aria-label="Send to primary agent"
+          aria-label="Send to agent"
+          title="Send message to agent (Send To...)"
           onClick={handlePencilClick}
           className="shrink-0 flex items-center justify-center transition-opacity"
           style={{

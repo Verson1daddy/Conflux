@@ -824,7 +824,7 @@ const StepParticipants: FC = () => {
                   fontFamily: "'Geist Sans', sans-serif",
                   fontSize: 12, fontWeight: 700, color: "#FFFFFF",
                 }}>
-                  {initialsOf(info.adapter_name)}
+                  {initialsOf(info.display_name ?? info.adapter_name)}
                 </span>
               </div>
               <div className="flex flex-col flex-1 min-w-0" style={{ gap: 2 }}>
@@ -833,7 +833,7 @@ const StepParticipants: FC = () => {
                   fontSize: 13, fontWeight: 600,
                   color: isSelected ? COLORS.textPrimary : COLORS.textBody,
                 }}>
-                  {info.adapter_name}
+                  {info.display_name ? `${info.adapter_name} · ${info.display_name}` : info.adapter_name}
                 </span>
                 <span style={{
                   fontFamily: "'Geist Sans', sans-serif",
@@ -1167,7 +1167,9 @@ const DiscussionPanel: FC = () => {
     }
     return instances.values().next().value ?? null;
   }, [instances]);
-  const primaryName = primaryInstance?.adapter_name ?? "Primary agent";
+  const primaryName = primaryInstance
+    ? (primaryInstance.display_name ? `${primaryInstance.adapter_name} · ${primaryInstance.display_name}` : primaryInstance.adapter_name)
+    : "Primary agent";
 
   const directionFilled = direction.trim().length > 0;
   const participantCount = participantIds.size;

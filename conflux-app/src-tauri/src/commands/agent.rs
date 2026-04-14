@@ -35,6 +35,7 @@ pub async fn create_agent_instance(
     args: Option<Vec<String>>,
     mode: Option<AgentMode>,
     hidden: Option<bool>,
+    display_name: Option<String>,
 ) -> Result<AgentInstanceInfo, ConfluxError> {
     // 1. 查找适配器配置 + 获取 adapter trait 对象
     let (adapter_config, adapter_arc) = {
@@ -84,6 +85,9 @@ pub async fn create_agent_instance(
         });
 
     // 6. 通过 PtyManager 启动 PTY 进程（带事件流）
+    // Normalize: treat empty string as None
+    let normalized_name = display_name.filter(|s| !s.trim().is_empty());
+
     let instance_id_str = state.pty_manager.spawn(
         &adapter_config.command,
         &spawn_args,
@@ -94,6 +98,7 @@ pub async fn create_agent_instance(
         Some(dispatcher),
         agent_mode.clone(),
         is_hidden,
+        normalized_name.clone(),
     )?;
 
     let instance_id = InstanceId(instance_id_str);
@@ -114,6 +119,7 @@ pub async fn create_agent_instance(
         instance_id,
         adapter_id,
         adapter_name: adapter_config.name,
+        display_name: normalized_name,
         status: AgentStatus::Idle,
         working_dir: work_dir,
         is_pinned: false,
@@ -159,12 +165,10 @@ pub async fn destroy_agent_instance(
         map.remove(&instance_id.0);
     }
 
-    // 4. 如果是主框架实例，清除主框架引用
+    // 4. 从钉选集合中移除（如果存在）
     {
-        let mut primary = state.pinned_instance.write();
-        if primary.as_ref().map(|p| p == &instance_id).unwrap_or(false) {
-            *primary = None;
-        }
+        let mut pinned = state.pinned_instances.write();
+        pinned.remove(&instance_id.0);
     }
 
     Ok(())
@@ -181,12 +185,49 @@ pub async fn list_agent_instances(
     state: State<'_, AppState>,
     include_hidden: Option<bool>,
 ) -> Result<Vec<AgentInstanceInfo>, ConfluxError> {
-    let all = state.pty_manager.list_instances();
+    let mut all = state.pty_manager.list_instances();
+
+    // Merge pin state from AppState (PtyManager always returns is_pinned=false)
+    {
+        let pinned = state.pinned_instances.read();
+        for inst in &mut all {
+            inst.is_pinned = pinned.contains(&inst.instance_id.0);
+        }
+    }
+
     if include_hidden.unwrap_or(false) {
         Ok(all)
     } else {
         Ok(all.into_iter().filter(|inst| !inst.hidden).collect())
     }
+}
+
+/// 重命名 Agent 实例（设置用户自定义别名）
+///
+/// # 参数
+/// - `instance_id`: 实例 ID
+/// - `display_name`: 新别名，传 null 或空字符串清除别名
+#[tauri::command]
+pub async fn rename_agent_instance(
+    state: State<'_, AppState>,
+    instance_id: InstanceId,
+    display_name: Option<String>,
+) -> Result<(), ConfluxError> {
+    // 验证实例存在
+    {
+        let map = state.instance_adapter_map.read();
+        if !map.contains_key(&instance_id.0) {
+            return Err(ConfluxError::InstanceNotFound {
+                instance_id: instance_id.0.clone(),
+            });
+        }
+    }
+
+    let normalized = display_name.filter(|s| !s.trim().is_empty());
+    state.pty_manager.rename_instance(&instance_id.0, normalized)?;
+
+    log::debug!("Agent 实例重命名: {}", instance_id.0);
+    Ok(())
 }
 
 /// 查询单个 Agent 实例的详细状态
@@ -229,19 +270,20 @@ pub async fn get_agent_state(
     //   let agent_state = instance.get_state();
     let detail = state.pty_manager.get_instance_state(&instance_id.0)?;
 
-    // 4. 检查是否为主框架
-    let is_primary = {
-        let primary = state.pinned_instance.read();
-        primary.as_ref().map(|p| p == &instance_id).unwrap_or(false)
+    // 4. 检查是否为钉选
+    let is_pinned = {
+        let pinned = state.pinned_instances.read();
+        pinned.contains(&instance_id.0)
     };
 
     Ok(AgentStateDetail {
         instance_id,
         adapter_id: AdapterId(adapter_id),
         adapter_name,
+        display_name: detail.display_name,
         status: detail.status,
         working_dir: detail.working_dir,
-        is_pinned: is_primary,
+        is_pinned,
         created_at: detail.created_at,
         last_activity_at: detail.last_activity_at,
         mode: detail.mode,
@@ -336,6 +378,7 @@ pub async fn respawn_agent_instance(
     let preserved_work_dir = preserved_detail.as_ref().map(|d| d.working_dir.clone());
     let preserved_mode = preserved_detail.as_ref().map(|d| d.mode.clone()).unwrap_or(AgentMode::Full);
     let preserved_hidden = preserved_detail.as_ref().map(|d| d.hidden).unwrap_or(false);
+    let preserved_display_name = preserved_detail.as_ref().and_then(|d| d.display_name.clone());
 
     // 2. 根据模式确定 command / args / adapter_id / adapter_name / adapter_trait
     let (command, args, new_adapter_id, new_adapter_name, adapter_arc_opt) = match mode {
@@ -414,6 +457,7 @@ pub async fn respawn_agent_instance(
         Some(dispatcher),
         preserved_mode.clone(),
         preserved_hidden,
+        preserved_display_name.clone(),
     )?;
 
     // 6. 更新 instance_adapter_map —— shell 模式会写入 "__shell__"
@@ -432,6 +476,7 @@ pub async fn respawn_agent_instance(
         instance_id,
         adapter_id: AdapterId(new_adapter_id),
         adapter_name: new_adapter_name,
+        display_name: preserved_display_name,
         status: AgentStatus::Idle,
         working_dir: work_dir,
         is_pinned: false,
@@ -489,13 +534,14 @@ pub async fn set_agent_mode(
         (config, adapter)
     };
 
-    // 3. Read preserved working_dir and hidden BEFORE kill
+    // 3. Read preserved working_dir, hidden, display_name BEFORE kill
     let detail = state.pty_manager.get_instance_state(&instance_id.0).ok();
     let work_dir = detail
         .as_ref()
         .map(|d| d.working_dir.clone())
         .unwrap_or_else(|| ".".to_string());
     let is_hidden = detail.as_ref().map(|d| d.hidden).unwrap_or(false);
+    let preserved_name = detail.as_ref().and_then(|d| d.display_name.clone());
 
     // 4. Build args with new mode
     let mut spawn_args = adapter_config.default_args.clone();
@@ -523,6 +569,7 @@ pub async fn set_agent_mode(
         Some(dispatcher),
         mode.clone(),
         is_hidden,
+        preserved_name.clone(),
     )?;
 
     // 7. Build and return updated instance info
@@ -535,6 +582,7 @@ pub async fn set_agent_mode(
         instance_id,
         adapter_id: AdapterId(adapter_id),
         adapter_name: adapter_config.name,
+        display_name: preserved_name,
         status: AgentStatus::Idle,
         working_dir: work_dir,
         is_pinned: false,

@@ -261,7 +261,7 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
               letterSpacing: -0.2,
             }}
           >
-            {instance.adapter_name}
+            {instance.display_name ? `${instance.adapter_name} · ${instance.display_name}` : instance.adapter_name}
           </span>
           <span
             style={{

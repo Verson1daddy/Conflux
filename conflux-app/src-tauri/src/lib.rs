@@ -26,7 +26,7 @@ use std::sync::Arc;
 use tauri::Manager;
 
 use crate::adapter::registry::AdapterRegistry;
-use crate::core::{InstanceId, IslandMode, StdinInjectionPolicy};
+use crate::core::{IslandMode, StdinInjectionPolicy};
 use crate::orchestration::discussion::DiscussionEngine;
 use crate::pty::manager::PtyManager;
 
@@ -45,8 +45,8 @@ pub struct AppState {
     pub adapter_registry: Arc<RwLock<AdapterRegistry>>,
     /// 当前灵动岛模式
     pub island_mode: RwLock<IslandMode>,
-    /// 灵动岛钉选实例 instance_id
-    pub pinned_instance: RwLock<Option<InstanceId>>,
+    /// 钉选实例 ID 集合（多选）
+    pub pinned_instances: RwLock<std::collections::HashSet<String>>,
     /// 用户收藏的适配器 ID 列表
     pub favorite_adapters: RwLock<Vec<String>>,
     /// 主适配器
@@ -76,7 +76,7 @@ impl AppState {
             pty_manager: Arc::new(PtyManager::new()),
             adapter_registry: Arc::new(RwLock::new(AdapterRegistry::new())),
             island_mode: RwLock::new(IslandMode::TopIsland),
-            pinned_instance: RwLock::new(None),
+            pinned_instances: RwLock::new(std::collections::HashSet::new()),
             favorite_adapters: RwLock::new(Vec::new()),
             primary_adapter: RwLock::new(None),
             instance_adapter_map: RwLock::new(HashMap::new()),
@@ -136,6 +136,7 @@ pub fn run() {
             commands::agent::is_process_exited,
             commands::agent::respawn_agent_instance,
             commands::agent::set_agent_mode,
+            commands::agent::rename_agent_instance,
             // BE-1: 窗口管理
             commands::window::open_workspace_window,
             commands::window::focus_agent_card,
@@ -155,8 +156,8 @@ pub fn run() {
             commands::orchestration::start_discussion,
             commands::orchestration::send_discussion_message,
             commands::orchestration::end_discussion,
-            commands::orchestration::set_pinned_instance,
-            commands::orchestration::get_pinned_instance,
+            commands::orchestration::toggle_pin_instance,
+            commands::orchestration::get_pinned_instances,
             // BE-4: 持久化查询
             commands::persistence::list_sessions,
             commands::persistence::query_session_events,
