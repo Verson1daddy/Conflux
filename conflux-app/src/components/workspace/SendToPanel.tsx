@@ -16,6 +16,7 @@
 import { type FC, useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useAgentStore } from "@/stores/agentStore";
 import { injectStdin } from "@/lib/tauri-bridge";
+import { PTY_ENTER } from "@/lib/constants";
 import type { AgentInstanceInfo, AgentStatus } from "@/types";
 
 // ===== Palette =====
@@ -114,7 +115,7 @@ const SendToPanel: FC<SendToPanelProps> = ({ visible, onClose }) => {
     setFlash("none");
     setErrorMsg(null);
     try {
-      await injectStdin(selectedId, message + "\n", "user_direct");
+      await injectStdin(selectedId, message + PTY_ENTER, "user_direct");
       setFlash("success");
       setMessage("");
       setTimeout(() => {

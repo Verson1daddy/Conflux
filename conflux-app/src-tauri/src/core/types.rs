@@ -19,6 +19,24 @@ pub struct AdapterId(pub String);
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DiscussionId(pub String);
 
+// ===== Agent 运行模式 =====
+
+/// Agent 运行权限模式
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMode {
+    /// 完全权限：可读写文件、执行命令、自动操作
+    Full,
+    /// 沙箱权限：只读，受限工具集，不可写文件或执行危险命令
+    Sandbox,
+}
+
+impl Default for AgentMode {
+    fn default() -> Self {
+        AgentMode::Full
+    }
+}
+
 // ===== Agent 状态 =====
 
 /// Agent 运行状态枚举
@@ -60,6 +78,10 @@ pub struct AgentStateDetail {
     pub created_at: i64,
     /// 最后活动时间（Unix 时间戳 ms）
     pub last_activity_at: i64,
+    /// 运行模式（B3.1 Contract 3）
+    pub mode: AgentMode,
+    /// 是否为隐藏实例（B3.1 Contract 3）
+    pub hidden: bool,
 }
 
 /// Agent 状态（简化版，用于 AgentInstance trait）
@@ -118,6 +140,8 @@ pub struct DiscussionSession {
     pub topic: String,
     /// 参与者实例 ID 列表
     pub participant_ids: Vec<InstanceId>,
+    /// 讨论专用隐藏 sandbox 实例 ID（消息注入目标，B3.1 Contract 2）
+    pub sandbox_instance_ids: Vec<InstanceId>,
     /// 最大讨论轮次
     pub max_rounds: u32,
     /// 当前轮次
@@ -476,6 +500,10 @@ pub struct AdapterConfig {
     pub command: String,
     /// 命令默认参数
     pub default_args: Vec<String>,
+    /// sandbox 模式额外参数（追加在 default_args 之后，B3.1 Contract 1）
+    pub sandbox_args: Vec<String>,
+    /// full 模式额外参数（追加在 default_args 之后，B3.1 Contract 1）
+    pub full_args: Vec<String>,
     /// 状态检测正则模式
     pub status_patterns: StatusPatterns,
     /// 权限请求检测正则
@@ -550,6 +578,10 @@ pub struct AgentInstanceInfo {
     pub is_pinned: bool,
     /// 创建时间（Unix 时间戳 ms）
     pub created_at: i64,
+    /// 运行模式（B3.1 Contract 1）
+    pub mode: AgentMode,
+    /// 是否为隐藏实例（讨论 sandbox 创建的，B3.1 Contract 1）
+    pub hidden: bool,
 }
 
 // ===== 附录 B1: stdin 注入安全策略 =====

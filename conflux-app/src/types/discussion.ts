@@ -22,8 +22,10 @@ export interface DiscussionSession {
   id: DiscussionId;
   /** 讨论主题 */
   topic: string;
-  /** 参与者实例 ID 列表 */
+  /** 参与者实例 ID 列表（工作台实例，作为 adapter 参考源） */
   participant_ids: InstanceId[];
+  /** 讨论专用隐藏 sandbox 实例 ID（消息注入目标） */
+  sandbox_instance_ids: InstanceId[];
   /** 最大讨论轮次 */
   max_rounds: number;
   /** 当前轮次 */

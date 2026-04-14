@@ -22,6 +22,7 @@ pub use types::AdapterId;
 pub use types::DiscussionId;
 
 // Agent 状态相关
+pub use types::AgentMode;
 pub use types::AgentStatus;
 pub use types::AgentState;
 pub use types::AgentStateDetail;

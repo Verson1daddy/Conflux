@@ -35,6 +35,8 @@ impl CodexAdapter {
             name: "Codex".to_string(),
             command: "codex".to_string(),
             default_args: vec![],
+            sandbox_args: vec![],
+            full_args: vec![],
             status_patterns,
             permission_pattern: Some(r"approve|Allow|Deny".to_string()),
             sub_agent_spawn_pattern: None,

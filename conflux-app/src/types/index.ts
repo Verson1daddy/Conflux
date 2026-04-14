@@ -7,6 +7,8 @@ export type {
   InstanceId,
   AdapterId,
   DiscussionId,
+  // Agent 运行模式
+  AgentMode,
   // Agent 状态
   AgentStatus,
   AgentStateDetail,

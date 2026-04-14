@@ -32,8 +32,8 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
 use crate::adapter::traits::AgentAdapter;
 use crate::core::{
-    AdapterId, AgentInstanceInfo, AgentStateDetail, AgentStatus, ConfluxError, ConfluxEvent,
-    InstanceId,
+    AdapterId, AgentInstanceInfo, AgentMode, AgentStateDetail, AgentStatus, AgentTree, ConfluxError,
+    ConfluxEvent, InstanceId, SubAgentInfo,
 };
 use crate::pty::buffer::{OutputBuffer, DEFAULT_BUFFER_CAPACITY};
 use crate::pty::parser::PtyOutputParser;
@@ -170,6 +170,13 @@ struct PtyProcess {
     /// 用于 `is_process_exited` 命令做前端轮询——belt-and-suspenders,
     /// 因为 Windows ConPTY 的 reader 有时在 child exit 后不返回 EOF。
     reader_done: Arc<AtomicBool>,
+    /// B3 契约 2：共享 parser 引用（用于 get_agent_tree 查询 AgentTree）。
+    /// 当 adapter 存在且 dispatch 启用时创建，shell 模式下为 None。
+    parser: Option<Arc<parking_lot::Mutex<PtyOutputParser>>>,
+    /// 实例运行模式（sandbox / full）（B3.1 Contract 1）
+    mode: AgentMode,
+    /// 是否为隐藏实例（讨论 sandbox 创建的实例不在工作台显示）（B3.1 Contract 1）
+    hidden: bool,
 }
 
 /// 获取当前时间戳（Unix 毫秒）
@@ -225,6 +232,8 @@ impl PtyManager {
         adapter_name: &str,
         adapter: Option<Arc<dyn AgentAdapter>>,
         dispatch: Option<EventDispatcher>,
+        mode: AgentMode,
+        hidden: bool,
     ) -> Result<String, ConfluxError> {
         let instance_id = uuid::Uuid::new_v4().to_string();
         self.spawn_inner(
@@ -236,6 +245,8 @@ impl PtyManager {
             adapter_name,
             adapter,
             dispatch,
+            mode,
+            hidden,
         )
     }
 
@@ -255,6 +266,8 @@ impl PtyManager {
         adapter_name: &str,
         adapter: Option<Arc<dyn AgentAdapter>>,
         dispatch: Option<EventDispatcher>,
+        mode: AgentMode,
+        hidden: bool,
     ) -> Result<String, ConfluxError> {
         log::debug!(
             "PTY spawn 开始: instance_id={}, command={}, working_dir={}",
@@ -337,12 +350,26 @@ impl PtyManager {
         let reader_done = Arc::new(AtomicBool::new(false));
         let reader_done_clone = Arc::clone(&reader_done);
         let thread_instance_id = instance_id.clone();
-        let thread_adapter_name = adapter_name.to_string();
         let thread_adapter_id = adapter_id.to_string();
 
-        // 7. 启动后台线程持续读取 PTY 输出
+        // 7. 创建共享 parser（adapter + dispatch 都 Some 时才启用）
         //
-        // 生产路径：如果同时提供 adapter + dispatch，线程内初始化 PtyOutputParser，
+        // B3 契约 2：parser 需要在主线程和读取线程之间共享——
+        // 读取线程 feed 数据，主线程通过 get_agent_tree 查询 AgentTree。
+        let shared_parser: Option<Arc<parking_lot::Mutex<PtyOutputParser>>> = adapter.as_ref()
+            .filter(|_| dispatch.is_some())
+            .map(|adapter_arc| {
+                Arc::new(parking_lot::Mutex::new(PtyOutputParser::new(
+                    InstanceId(instance_id.clone()),
+                    Arc::clone(adapter_arc),
+                    adapter_name,
+                )))
+            });
+        let thread_parser = shared_parser.clone();
+
+        // 8. 启动后台线程持续读取 PTY 输出
+        //
+        // 生产路径：如果同时提供 adapter + dispatch，线程使用共享 PtyOutputParser，
         // 把每批原始字节 feed 进去 → 取出 ConfluxEvent → 通过 dispatch 回调推给
         // Tauri 前端；同时额外 emit 一条 PtyOutput 事件（base64 编码原始字节），
         // XtermTerminal 的 subscribeToPty 模式会订阅它逐块 write。
@@ -352,16 +379,6 @@ impl PtyManager {
                 "PTY 输出读取线程启动: instance_id={}",
                 thread_instance_id
             );
-
-            // 构造可选 parser（adapter + dispatch 都 Some 时才启用）
-            let mut parser: Option<PtyOutputParser> = match &adapter {
-                Some(adapter_arc) if dispatch.is_some() => Some(PtyOutputParser::new(
-                    InstanceId(thread_instance_id.clone()),
-                    Arc::clone(adapter_arc),
-                    &thread_adapter_name,
-                )),
-                _ => None,
-            };
 
             let mut chunk = vec![0u8; READ_CHUNK_SIZE];
             // Tracks the reason the reader loop finally exits so we can
@@ -397,9 +414,11 @@ impl PtyManager {
                             };
                             dispatch_ref(&pty_output_event);
 
-                            // 2. 结构化事件解析（仅当有 parser 时——shell 跳过）
-                            if let Some(parser_ref) = parser.as_mut() {
-                                let events = parser_ref.feed(&chunk[..n]);
+                            // 2. 结构化事件解析（仅当有共享 parser 时——shell 跳过）
+                            if let Some(parser_arc) = thread_parser.as_ref() {
+                                let mut parser_guard = parser_arc.lock();
+                                let events = parser_guard.feed(&chunk[..n]);
+                                drop(parser_guard); // 释放锁再 dispatch
                                 for event in &events {
                                     dispatch_ref(event);
                                 }
@@ -450,7 +469,7 @@ impl PtyManager {
             );
         });
 
-        // 8. 构建 PtyProcess 并存入映射表
+        // 9. 构建 PtyProcess 并存入映射表
         let process = PtyProcess {
             child,
             writer: parking_lot::Mutex::new(writer),
@@ -463,6 +482,9 @@ impl PtyManager {
             status: AgentStatus::Idle,
             pty_size: default_size,
             master_pty: parking_lot::Mutex::new(pair.master),
+            parser: shared_parser,
+            mode,
+            hidden,
         };
 
         {
@@ -569,6 +591,8 @@ impl PtyManager {
         adapter_name: &str,
         adapter: Option<Arc<dyn AgentAdapter>>,
         dispatch: Option<EventDispatcher>,
+        mode: AgentMode,
+        hidden: bool,
     ) -> Result<String, ConfluxError> {
         // 1. 如果 map 里还有旧 entry，先 kill。kill 失败不 fatal——child 可能
         //    已经自然退出或被前端先 close 过，此时直接 spawn 新的即可。
@@ -596,6 +620,8 @@ impl PtyManager {
             adapter_name,
             adapter,
             dispatch,
+            mode,
+            hidden,
         )
     }
 
@@ -648,6 +674,8 @@ impl PtyManager {
                 working_dir: proc.working_dir.clone(),
                 is_pinned: false, // 由 AppState 层管理
                 created_at: proc.created_at,
+                mode: proc.mode.clone(),
+                hidden: proc.hidden,
             })
             .collect()
     }
@@ -675,7 +703,38 @@ impl PtyManager {
             is_pinned: false, // 由 AppState 层管理
             created_at: process.created_at,
             last_activity_at: now_millis(), // 查询时刷新
+            mode: process.mode.clone(),
+            hidden: process.hidden,
         })
+    }
+
+    /// 获取 Agent 的 sub-agent 树结构
+    ///
+    /// B3 契约 2：从共享 parser 中读取 AgentTree。
+    /// 如果没有 parser（shell 模式），返回仅含 root 节点的单节点树。
+    pub fn get_agent_tree(&self, instance_id: &str) -> Result<AgentTree, ConfluxError> {
+        let processes = self.processes.read();
+        let process = processes.get(instance_id).ok_or_else(|| {
+            ConfluxError::InstanceNotFound {
+                instance_id: instance_id.to_string(),
+            }
+        })?;
+
+        match &process.parser {
+            Some(parser_arc) => {
+                let parser = parser_arc.lock();
+                Ok(parser.get_tree())
+            }
+            None => Ok(AgentTree {
+                root: SubAgentInfo {
+                    id: instance_id.to_string(),
+                    name: process.adapter_name.clone(),
+                    status: process.status.clone(),
+                    parent_id: None,
+                },
+                children: Vec::new(),
+            }),
+        }
     }
 
     /// 更新实例的 Agent 状态（由解析器调用）

@@ -2,10 +2,11 @@
 // 提供 stdin 注入和终端尺寸调整的 Tauri IPC 命令
 // 包含 StdinInjectionPolicy 安全检查（附录 B1）
 
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::AppState;
-use crate::core::{ConfluxError, InstanceId, InjectionSource, PermissionDecision};
+use crate::core::event_emit::emit_conflux_event;
+use crate::core::{ConfluxError, ConfluxEvent, InstanceId, InjectionSource, PermissionDecision};
 
 /// 向 Agent 实例的 stdin 注入内容
 ///
@@ -20,12 +21,13 @@ use crate::core::{ConfluxError, InstanceId, InjectionSource, PermissionDecision}
 /// - `source`: 注入来源分类（用于审计和策略判断）
 #[tauri::command]
 pub async fn inject_stdin(
+    app: AppHandle,
     state: State<'_, AppState>,
     instance_id: InstanceId,
     input: String,
     source: Option<InjectionSource>,
 ) -> Result<(), ConfluxError> {
-    let _source = source.unwrap_or(InjectionSource::UserDirect);
+    let source_resolved = source.unwrap_or(InjectionSource::UserDirect);
 
     // 1. 验证实例存在
     {
@@ -90,7 +92,32 @@ pub async fn inject_stdin(
     // 4. 执行注入
     state
         .pty_manager
-        .inject_stdin(&instance_id.0, &input)
+        .inject_stdin(&instance_id.0, &input)?;
+
+    // 5. B3 契约 1：emit StdinInjected 事件
+    // UTF-8 安全截断：避免在多字节字符中间切断导致 panic
+    let preview = if input.len() > 200 {
+        match input.char_indices().take_while(|(i, _)| *i < 200).last() {
+            Some((i, c)) => input[..i + c.len_utf8()].to_string(),
+            None => String::new(),
+        }
+    } else {
+        input.clone()
+    };
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let event = ConfluxEvent::StdinInjected {
+        instance_id: instance_id.clone(),
+        source: source_resolved,
+        content_preview: preview,
+        content_length: input.len(),
+        timestamp: now_ms,
+    };
+    emit_conflux_event(&app, &event);
+
+    Ok(())
 }
 
 /// 调整 Agent 实例的 PTY 终端尺寸
@@ -122,52 +149,65 @@ pub async fn resize_pty(
 
 /// 响应权限请求（F-02 修复：前端 PermissionDialog 调用此命令）
 ///
+/// B3 契约 2：按 instance_id 直接匹配，不再遍历所有实例。
 /// 根据用户决定（Approve/Deny）向 Agent 的 stdin 注入对应的响应。
 /// Approve → 注入 "Y\n"，Deny → 注入 "N\n"
 ///
 /// # 参数
+/// - `instance_id`: 目标实例标识
 /// - `permission_id`: 权限请求 ID（用于审计日志）
 /// - `decision`: 用户决定（approve 或 deny）
 #[tauri::command]
 pub async fn respond_to_permission(
+    app: AppHandle,
     state: State<'_, AppState>,
+    instance_id: InstanceId,
     permission_id: String,
     decision: PermissionDecision,
 ) -> Result<(), ConfluxError> {
-    // 权限 ID 前缀 = instance_id（约定格式）
-    // 但由于当前权限系统尚未实现完整的 ID→instance 映射，
-    // 这里通过遍历活跃实例查找处于 waiting_permission 状态的实例
-    let instances = state.pty_manager.list_instances();
-    let target = instances
-        .iter()
-        .find(|inst| {
-            inst.status == crate::core::AgentStatus::WaitingPermission
-        });
-
-    let instance_id = match target {
-        Some(inst) => inst.instance_id.0.clone(),
-        None => {
+    // 1. 验证实例存在且状态为 WaitingPermission
+    {
+        let detail = state.pty_manager.get_instance_state(&instance_id.0)?;
+        if detail.status != crate::core::AgentStatus::WaitingPermission {
             log::warn!(
-                "respond_to_permission: 未找到等待权限的实例, permission_id={}",
+                "respond_to_permission: 实例 {} 状态不是 WaitingPermission（当前: {:?}），permission_id={}",
+                instance_id.0,
+                detail.status,
                 permission_id
             );
-            return Err(ConfluxError::InstanceNotFound {
-                instance_id: format!("waiting_permission (permission_id={})", permission_id),
-            });
+            // 不阻止注入——Agent 可能已经超时自行切换状态，但用户的响应仍然有效
         }
-    };
+    }
 
     let input = match decision {
-        PermissionDecision::Approve => "Y\n",
-        PermissionDecision::Deny => "N\n",
+        PermissionDecision::Approve => "Y\r",
+        PermissionDecision::Deny => "N\r",
     };
 
     log::debug!(
         "respond_to_permission: instance={}, decision={:?}, permission_id={}",
-        instance_id,
+        instance_id.0,
         decision,
         permission_id
     );
 
-    state.pty_manager.inject_stdin(&instance_id, input)
+    // 安全说明：此处绕过 StdinInjectionPolicy，因为注入内容固定为 "Y\r"/"N\r"。
+    // 若未来扩展为接受用户自定义内容，必须引入 policy 检查。
+    state.pty_manager.inject_stdin(&instance_id.0, input)?;
+
+    // B3 契约 1：emit StdinInjected 事件（source = PermissionResponse）
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let event = ConfluxEvent::StdinInjected {
+        instance_id: instance_id.clone(),
+        source: InjectionSource::PermissionResponse,
+        content_preview: input.to_string(),
+        content_length: input.len(),
+        timestamp: now_ms,
+    };
+    emit_conflux_event(&app, &event);
+
+    Ok(())
 }

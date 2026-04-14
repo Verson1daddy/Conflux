@@ -6,6 +6,7 @@
 import { type FC, useEffect, useState, useCallback, useRef } from "react";
 import { useIslandStore } from "@/stores/islandStore";
 import { injectStdin } from "@/lib/tauri-bridge";
+import { PTY_ENTER } from "@/lib/constants";
 import type { NotificationItem, NotificationLevel } from "@/types";
 
 interface NotificationTrayProps {
@@ -265,7 +266,7 @@ const NotificationTray: FC<NotificationTrayProps> = ({ visible, onClose }) => {
     async (notif: NotificationItem, replyText: string) => {
       // Try backend; ignore failure so demo still works
       try {
-        await injectStdin(notif.source_instance_id, replyText + "\n", "user_direct");
+        await injectStdin(notif.source_instance_id, replyText + PTY_ENTER, "user_direct");
       } catch { /* no PTY yet — demo mode */ }
       await animateRemoval(notif.id, "success");
     },

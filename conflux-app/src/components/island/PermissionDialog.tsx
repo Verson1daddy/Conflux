@@ -71,7 +71,7 @@ const PermissionDialog: FC<PermissionDialogProps> = ({ request, onClose }) => {
       if (submitting) return;
       setSubmitting(true);
       try {
-        await respondToPermission(request.id, decision);
+        await respondToPermission(request.instance_id, request.id, decision);
       } catch {
         // 即使后端调用失败也移除请求，避免卡住
       }

@@ -15,6 +15,14 @@ export type AdapterId = string;
 /** 讨论会话唯一标识 — 对应 Rust DiscussionId(String) */
 export type DiscussionId = string;
 
+// ===== Agent 运行权限模式 =====
+
+/**
+ * Agent 运行权限模式
+ * 对应 Rust AgentMode，serde rename_all = "snake_case"
+ */
+export type AgentMode = "full" | "sandbox";
+
 // ===== Agent 状态 =====
 
 /**
@@ -197,6 +205,10 @@ export interface AgentInstanceInfo {
   is_pinned: boolean;
   /** 创建时间（Unix 时间戳 ms） */
   created_at: number;
+  /** 运行模式 */
+  mode: AgentMode;
+  /** 是否为隐藏实例（讨论 sandbox 创建的） */
+  hidden: boolean;
 }
 
 // ===== 会话记录 =====

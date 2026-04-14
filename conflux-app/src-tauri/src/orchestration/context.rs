@@ -92,6 +92,8 @@ mod tests {
             is_pinned: true,
             created_at: 1000,
             last_activity_at: 2000,
+            mode: crate::core::AgentMode::Full,
+            hidden: false,
         }];
 
         let result = ContextAggregator::aggregate(&instances);
@@ -114,6 +116,8 @@ mod tests {
                 is_pinned: false,
                 created_at: 1000,
                 last_activity_at: 1500,
+                mode: crate::core::AgentMode::Full,
+                hidden: false,
             },
             AgentStateDetail {
                 instance_id: InstanceId("b".to_string()),
@@ -124,6 +128,8 @@ mod tests {
                 is_pinned: true,
                 created_at: 2000,
                 last_activity_at: 2500,
+                mode: crate::core::AgentMode::Full,
+                hidden: false,
             },
         ];
 

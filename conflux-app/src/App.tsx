@@ -198,6 +198,7 @@ export default function App() {
           agents={agentMap}
           agentStatuses={statusMap}
           isFullscreen={isFullscreen}
+          onAddAgent={handleAddAgentOpen}
         />
         {/* Non-fullscreen: show overlay panel.
             Fullscreen: each card flips in place via AgentCard's isFlipped. */}

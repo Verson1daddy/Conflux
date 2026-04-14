@@ -9,11 +9,14 @@
 //   pub db: parking_lot::Mutex<rusqlite::Connection>
 //   pub discussion_engine: parking_lot::RwLock<DiscussionEngine>
 
-use tauri::State;
+use std::sync::Arc;
 
+use tauri::{AppHandle, State};
+
+use crate::core::event_emit::emit_conflux_event;
 use crate::core::{
-    ConfluxError, DiscussionId, DiscussionMessage, DiscussionSession, DiscussionSummary,
-    InstanceId,
+    AgentMode, ConfluxError, ConfluxEvent, DiscussionId, DiscussionMessage, DiscussionSession,
+    DiscussionSummary, InstanceId, MessageSender,
 };
 use crate::AppState;
 use crate::persistence::query as db_query;
@@ -37,6 +40,7 @@ const MAX_CONTENT_LENGTH: usize = 50_000;
 
 #[tauri::command]
 pub async fn start_discussion(
+    app: AppHandle,
     state: State<'_, AppState>,
     topic: String,
     participant_ids: Vec<InstanceId>,
@@ -50,10 +54,87 @@ pub async fn start_discussion(
     }
     let rounds = max_rounds.unwrap_or(5);
 
-    // 1. 在内存中创建讨论
+    // B3.1 Contract 2: For each participant, spawn a hidden sandbox instance
+    let mut sandbox_instance_ids: Vec<InstanceId> = Vec::new();
+
+    for participant_id in &participant_ids {
+        // Look up the adapter_id from the workspace instance
+        let adapter_id = {
+            let map = state.instance_adapter_map.read();
+            map.get(&participant_id.0).cloned().ok_or_else(|| {
+                ConfluxError::InstanceNotFound {
+                    instance_id: participant_id.0.clone(),
+                }
+            })?
+        };
+
+        // Get adapter config + trait object
+        let (adapter_config, adapter_arc) = {
+            let registry = state.adapter_registry.read();
+            let config = registry.get_config(&adapter_id).cloned().ok_or_else(|| {
+                ConfluxError::AdapterNotFound {
+                    adapter_id: adapter_id.clone(),
+                }
+            })?;
+            let adapter = registry.get(&adapter_id).ok_or_else(|| {
+                ConfluxError::AdapterNotFound {
+                    adapter_id: adapter_id.clone(),
+                }
+            })?;
+            (config, adapter)
+        };
+
+        // Get the workspace instance's working_dir to reuse
+        let work_dir = state
+            .pty_manager
+            .get_instance_state(&participant_id.0)
+            .map(|detail| detail.working_dir)
+            .unwrap_or_else(|_| ".".to_string());
+
+        // Build sandbox args: default_args + sandbox_args
+        let mut spawn_args = adapter_config.default_args.clone();
+        spawn_args.extend(adapter_config.sandbox_args.clone());
+
+        // Build event dispatcher
+        let app_handle = app.clone();
+        let dispatcher: crate::pty::manager::EventDispatcher =
+            Arc::new(move |event: &ConfluxEvent| {
+                emit_conflux_event(&app_handle, event);
+            });
+
+        // Spawn hidden sandbox instance
+        let sandbox_id_str = state.pty_manager.spawn(
+            &adapter_config.command,
+            &spawn_args,
+            &work_dir,
+            &adapter_id,
+            &adapter_config.name,
+            Some(adapter_arc),
+            Some(dispatcher),
+            AgentMode::Sandbox,
+            true, // hidden = true
+        )?;
+
+        let sandbox_id = InstanceId(sandbox_id_str);
+
+        // Record instance_id -> adapter_id mapping
+        {
+            let mut map = state.instance_adapter_map.write();
+            map.insert(sandbox_id.0.clone(), adapter_id.clone());
+        }
+
+        sandbox_instance_ids.push(sandbox_id);
+    }
+
+    // 1. 在内存中创建讨论（带 sandbox_instance_ids）
     let (session, system_msg) = {
         let mut engine = state.discussion_engine.write();
-        let session = engine.start(topic, participant_ids, rounds);
+        let session = engine.start(
+            topic,
+            participant_ids,
+            sandbox_instance_ids,
+            rounds,
+        );
         // 获取系统开场消息用于写入数据库
         let msgs = engine
             .get_messages(&session.id.0)
@@ -75,9 +156,10 @@ pub async fn start_discussion(
     }
 
     log::debug!(
-        "讨论已创建: id={}, topic={}",
+        "讨论已创建: id={}, topic={}, sandbox_instances={}",
         session.id.0,
-        session.topic
+        session.topic,
+        session.sandbox_instance_ids.len()
     );
     Ok(session)
 }
@@ -94,6 +176,7 @@ pub async fn start_discussion(
 /// 创建的 DiscussionMessage
 #[tauri::command]
 pub async fn send_discussion_message(
+    app: AppHandle,
     state: State<'_, AppState>,
     discussion_id: DiscussionId,
     content: String,
@@ -107,7 +190,7 @@ pub async fn send_discussion_message(
     // 1. 在内存中发送消息
     let (msg, current_round) = {
         let mut engine = state.discussion_engine.write();
-        let msg = engine.send_message(&discussion_id.0, content)?;
+        let msg = engine.send_message(&discussion_id.0, content, MessageSender::User)?;
         let round = engine
             .get_session(&discussion_id.0)
             .map(|s| s.current_round)
@@ -122,6 +205,14 @@ pub async fn send_discussion_message(
         // 同步更新轮次
         db_query::update_discussion_round(&db, &discussion_id.0, current_round)?;
     }
+
+    // 3. Emit DiscussionMessage 事件到前端
+    let event = ConfluxEvent::DiscussionMessage {
+        discussion_id: discussion_id.clone(),
+        message: msg.clone(),
+        timestamp: msg.created_at,
+    };
+    emit_conflux_event(&app, &event);
 
     Ok(msg)
 }
@@ -140,13 +231,36 @@ pub async fn end_discussion(
     state: State<'_, AppState>,
     discussion_id: DiscussionId,
 ) -> Result<DiscussionSummary, ConfluxError> {
-    // 1. 在内存中结束讨论
-    let summary = {
+    // B3.1 Contract 2: Get sandbox_instance_ids BEFORE ending
+    // (ending removes the session from memory)
+    let (summary, sandbox_ids) = {
         let mut engine = state.discussion_engine.write();
-        engine.end(&discussion_id.0)?
+        let sandbox_ids = engine
+            .get_session(&discussion_id.0)
+            .map(|s| s.sandbox_instance_ids.clone())
+            .unwrap_or_default();
+        let summary = engine.end(&discussion_id.0)?;
+        (summary, sandbox_ids)
     };
 
-    // 2. 更新数据库状态
+    // 2. Destroy all sandbox instances
+    for sandbox_id in &sandbox_ids {
+        if let Err(e) = state.pty_manager.kill(&sandbox_id.0) {
+            log::warn!(
+                "end_discussion: failed to kill sandbox instance {}: {:?}",
+                sandbox_id.0,
+                e
+            );
+            // Non-fatal: instance may have already exited
+        }
+        // Clean up instance_adapter_map
+        {
+            let mut map = state.instance_adapter_map.write();
+            map.remove(&sandbox_id.0);
+        }
+    }
+
+    // 3. 更新数据库状态
     {
         let db = state.db.lock();
         db_query::update_discussion_status(
@@ -158,9 +272,10 @@ pub async fn end_discussion(
     }
 
     log::debug!(
-        "讨论已结束: id={}, rounds={}",
+        "讨论已结束: id={}, rounds={}, sandbox instances destroyed: {}",
         discussion_id.0,
-        summary.total_rounds
+        summary.total_rounds,
+        sandbox_ids.len()
     );
     Ok(summary)
 }

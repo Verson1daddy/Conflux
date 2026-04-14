@@ -49,6 +49,7 @@ impl DiscussionEngine {
         &mut self,
         topic: String,
         participant_ids: Vec<InstanceId>,
+        sandbox_instance_ids: Vec<InstanceId>,
         max_rounds: u32,
     ) -> DiscussionSession {
         let discussion_id = uuid::Uuid::new_v4().to_string();
@@ -58,6 +59,7 @@ impl DiscussionEngine {
             id: DiscussionId(discussion_id.clone()),
             topic: topic.clone(),
             participant_ids: participant_ids.clone(),
+            sandbox_instance_ids,
             max_rounds,
             current_round: 0,
             status: DiscussionStatus::Active,
@@ -108,6 +110,7 @@ impl DiscussionEngine {
         &mut self,
         discussion_id: &str,
         content: String,
+        sender: MessageSender,
     ) -> Result<DiscussionMessage, ConfluxError> {
         let session = self
             .sessions
@@ -136,7 +139,7 @@ impl DiscussionEngine {
         let msg = DiscussionMessageData {
             id: uuid::Uuid::new_v4().to_string(),
             discussion_id: DiscussionId(discussion_id.to_string()),
-            sender: MessageSender::User,
+            sender,
             content,
             round: session.current_round,
             created_at: now,
@@ -286,6 +289,7 @@ mod tests {
                 InstanceId("a".to_string()),
                 InstanceId("b".to_string()),
             ],
+            vec![],
             5,
         );
 
@@ -311,19 +315,20 @@ mod tests {
                 InstanceId("a".to_string()),
                 InstanceId("b".to_string()),
             ],
+            vec![],
             3,
         );
         let disc_id = session.id.0.clone();
 
         // 发送第一条消息：轮次应从 0 推进到 1
         let msg1 = engine
-            .send_message(&disc_id, "消息1".to_string())
+            .send_message(&disc_id, "消息1".to_string(), MessageSender::User)
             .expect("发送应成功");
         assert_eq!(msg1.round, 1);
 
         // 发送第二条消息：参与者数=2，两条非系统消息后应推进到 round 2
         let msg2 = engine
-            .send_message(&disc_id, "消息2".to_string())
+            .send_message(&disc_id, "消息2".to_string(), MessageSender::User)
             .expect("发送应成功");
         assert_eq!(msg2.round, 1);
 
@@ -334,11 +339,11 @@ mod tests {
     #[test]
     fn test_end_discussion() {
         let mut engine = DiscussionEngine::new();
-        let session = engine.start("结束测试".to_string(), vec![], 3);
+        let session = engine.start("结束测试".to_string(), vec![], vec![], 3);
         let disc_id = session.id.0.clone();
 
         engine
-            .send_message(&disc_id, "消息".to_string())
+            .send_message(&disc_id, "消息".to_string(), MessageSender::User)
             .expect("发送应成功");
 
         let summary = engine.end(&disc_id).expect("结束应成功");
@@ -353,19 +358,19 @@ mod tests {
     #[test]
     fn test_send_message_to_ended_discussion() {
         let mut engine = DiscussionEngine::new();
-        let session = engine.start("已结束测试".to_string(), vec![], 3);
+        let session = engine.start("已结束测试".to_string(), vec![], vec![], 3);
         let disc_id = session.id.0.clone();
 
         engine.end(&disc_id).expect("结束应成功");
 
-        let result = engine.send_message(&disc_id, "不应成功".to_string());
+        let result = engine.send_message(&disc_id, "不应成功".to_string(), MessageSender::User);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_nonexistent_discussion() {
         let mut engine = DiscussionEngine::new();
-        let result = engine.send_message("nonexistent", "test".to_string());
+        let result = engine.send_message("nonexistent", "test".to_string(), MessageSender::User);
         assert!(result.is_err());
 
         let result = engine.end("nonexistent");

@@ -17,6 +17,7 @@ import type {
   InstanceId,
   AdapterId,
   DiscussionId,
+  AgentMode,
   AgentInstanceInfo,
   AgentStateDetail,
   AgentTree,
@@ -148,6 +149,21 @@ export async function respawnAgentInstance(
   mode: RespawnMode
 ): Promise<AgentInstanceInfo> {
   return invoke<AgentInstanceInfo>("respawn_agent_instance", {
+    instanceId,
+    mode,
+  });
+}
+
+/**
+ * 切换运行中 Agent 实例的权限模式
+ * WARNING: 这会 kill 并重启 agent 进程，当前会话上下文将丢失。
+ * 对应 Rust: set_agent_mode(instance_id, mode) -> AgentInstanceInfo
+ */
+export async function setAgentMode(
+  instanceId: InstanceId,
+  mode: AgentMode
+): Promise<AgentInstanceInfo> {
+  return invoke<AgentInstanceInfo>("set_agent_mode", {
     instanceId,
     mode,
   });
@@ -472,13 +488,19 @@ export async function getIslandMode(): Promise<IslandMode> {
 
 /**
  * 响应权限请求（附录 B3——修复 HIGH-04）
- * 对应 Rust: respond_to_permission(permission_id, decision)
+ * 对应 Rust: respond_to_permission(instance_id, permission_id, decision)
+ *
+ * B3 修复：新增 instanceId 参数，显式指定目标实例，
+ * 避免后端通过遍历 waiting_permission 状态来猜测目标。
+ * 当多个 agent 同时等待权限时，不传 instanceId 会导致审批错乱。
  */
 export async function respondToPermission(
+  instanceId: InstanceId,
   permissionId: string,
   decision: PermissionDecision
 ): Promise<void> {
   return invoke<void>("respond_to_permission", {
+    instanceId,
     permissionId,
     decision,
   });

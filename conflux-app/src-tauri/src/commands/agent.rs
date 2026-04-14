@@ -10,8 +10,8 @@ use tauri::State;
 use crate::AppState;
 use crate::core::event_emit::emit_conflux_event;
 use crate::core::{
-    AdapterId, AgentInstanceInfo, AgentStateDetail, AgentStatus, AgentTree, ConfluxError,
-    InstanceId,
+    AdapterId, AgentInstanceInfo, AgentMode, AgentStateDetail, AgentStatus, AgentTree,
+    ConfluxError, ConfluxEvent, InstanceId,
 };
 
 /// 创建 Agent 实例
@@ -33,6 +33,8 @@ pub async fn create_agent_instance(
     adapter_id: AdapterId,
     working_dir: Option<String>,
     args: Option<Vec<String>>,
+    mode: Option<AgentMode>,
+    hidden: Option<bool>,
 ) -> Result<AgentInstanceInfo, ConfluxError> {
     // 1. 查找适配器配置 + 获取 adapter trait 对象
     let (adapter_config, adapter_arc) = {
@@ -58,22 +60,30 @@ pub async fn create_agent_instance(
             .unwrap_or_else(|_| ".".to_string())
     });
 
-    // 3. 合并启动参数
+    // 3. 确定运行模式（B3.1 Contract 1）
+    let agent_mode = mode.unwrap_or(AgentMode::Full);
+    let is_hidden = hidden.unwrap_or(false);
+
+    // 4. 合并启动参数：default_args + mode-specific args + extra args
     let mut spawn_args = adapter_config.default_args.clone();
+    match agent_mode {
+        AgentMode::Sandbox => spawn_args.extend(adapter_config.sandbox_args.clone()),
+        AgentMode::Full => spawn_args.extend(adapter_config.full_args.clone()),
+    }
     if let Some(extra_args) = args {
         spawn_args.extend(extra_args);
     }
 
-    // 4. 构造事件派发器——PTY 读取线程内的 parser 会通过它把解析出的
+    // 5. 构造事件派发器——PTY 读取线程内的 parser 会通过它把解析出的
     //    ConfluxEvent 路由到 Tauri 前端。AppHandle clone 进闭包，让线程可以
     //    在 command 函数返回后继续使用。
     let app_handle = app.clone();
     let dispatcher: crate::pty::manager::EventDispatcher =
-        Arc::new(move |event: &crate::core::ConfluxEvent| {
+        Arc::new(move |event: &ConfluxEvent| {
             emit_conflux_event(&app_handle, event);
         });
 
-    // 5. 通过 PtyManager 启动 PTY 进程（带事件流）
+    // 6. 通过 PtyManager 启动 PTY 进程（带事件流）
     let instance_id_str = state.pty_manager.spawn(
         &adapter_config.command,
         &spawn_args,
@@ -82,17 +92,19 @@ pub async fn create_agent_instance(
         &adapter_config.name,
         Some(adapter_arc),
         Some(dispatcher),
+        agent_mode.clone(),
+        is_hidden,
     )?;
 
     let instance_id = InstanceId(instance_id_str);
 
-    // 5. 记录 instance_id -> adapter_id 映射
+    // 7. 记录 instance_id -> adapter_id 映射
     {
         let mut map = state.instance_adapter_map.write();
         map.insert(instance_id.0.clone(), adapter_id.0.clone());
     }
 
-    // 6. 构建并返回实例信息
+    // 8. 构建并返回实例信息
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -106,6 +118,8 @@ pub async fn create_agent_instance(
         working_dir: work_dir,
         is_pinned: false,
         created_at: now_ms,
+        mode: agent_mode,
+        hidden: is_hidden,
     })
 }
 
@@ -165,15 +179,14 @@ pub async fn destroy_agent_instance(
 #[tauri::command]
 pub async fn list_agent_instances(
     state: State<'_, AppState>,
+    include_hidden: Option<bool>,
 ) -> Result<Vec<AgentInstanceInfo>, ConfluxError> {
-    // TODO(BE-2/BE-3): 遍历 pty_manager 中的所有实例
-    // 预期调用:
-    //   let instances = state.pty_manager.list_instances();
-    //   for instance in instances {
-    //       let adapter_id = map.get(&instance.id().0);
-    //       ...构建 AgentInstanceInfo...
-    //   }
-    Ok(state.pty_manager.list_instances())
+    let all = state.pty_manager.list_instances();
+    if include_hidden.unwrap_or(false) {
+        Ok(all)
+    } else {
+        Ok(all.into_iter().filter(|inst| !inst.hidden).collect())
+    }
 }
 
 /// 查询单个 Agent 实例的详细状态
@@ -231,12 +244,15 @@ pub async fn get_agent_state(
         is_pinned: is_primary,
         created_at: detail.created_at,
         last_activity_at: detail.last_activity_at,
+        mode: detail.mode,
+        hidden: detail.hidden,
     })
 }
 
 /// 获取 Agent 的 sub-agent 树结构
 ///
-/// 查询指定实例的子代理层级关系，用于前端展示代理树视图。
+/// B3 契约 2：委托给 PtyManager::get_agent_tree，从共享 parser 中读取
+/// 实时的 AgentTree（包含 sub-agent 层级）。
 ///
 /// # 参数
 /// - `instance_id`: 要查询的实例标识
@@ -258,19 +274,8 @@ pub async fn get_agent_tree(
         }
     }
 
-    // sub-agent 树尚未集成——PtyManager 管理进程级别，
-    // 树结构由 CC-1 解析器从 PTY 输出中提取（后续实现）
-    // 当前返回单节点树（仅根节点，无子节点）
-    let detail = state.pty_manager.get_instance_state(&instance_id.0)?;
-    Ok(AgentTree {
-        root: crate::core::SubAgentInfo {
-            id: instance_id.0.clone(),
-            name: detail.adapter_name,
-            status: detail.status,
-            parent_id: None,
-        },
-        children: Vec::new(),
-    })
+    // 2. 委托给 PtyManager，从共享 parser 中读取 AgentTree
+    state.pty_manager.get_agent_tree(&instance_id.0)
 }
 
 /// C2-T1 Exit Overlay · respawn 模式——restart 原 agent 或切换到 shell
@@ -321,14 +326,16 @@ pub async fn respawn_agent_instance(
         map.get(&instance_id.0).cloned()
     };
 
-    // 1b. 先读取旧实例的 working_dir —— 必须在 pty_manager.respawn 之前读，
+    // 1b. 先读取旧实例的 working_dir / mode / hidden —— 必须在 pty_manager.respawn 之前读，
     //     因为 respawn 内部会先 kill 旧实例，之后 get_instance_state 就查
     //     不到原 cwd 了。C2-T1 review 发现的 bug（先拿再删）。
-    let preserved_work_dir = state
+    let preserved_detail = state
         .pty_manager
         .get_instance_state(&instance_id.0)
-        .ok()
-        .map(|detail| detail.working_dir);
+        .ok();
+    let preserved_work_dir = preserved_detail.as_ref().map(|d| d.working_dir.clone());
+    let preserved_mode = preserved_detail.as_ref().map(|d| d.mode.clone()).unwrap_or(AgentMode::Full);
+    let preserved_hidden = preserved_detail.as_ref().map(|d| d.hidden).unwrap_or(false);
 
     // 2. 根据模式确定 command / args / adapter_id / adapter_name / adapter_trait
     let (command, args, new_adapter_id, new_adapter_name, adapter_arc_opt) = match mode {
@@ -405,6 +412,8 @@ pub async fn respawn_agent_instance(
         &new_adapter_name,
         adapter_arc_opt,
         Some(dispatcher),
+        preserved_mode.clone(),
+        preserved_hidden,
     )?;
 
     // 6. 更新 instance_adapter_map —— shell 模式会写入 "__shell__"
@@ -427,6 +436,111 @@ pub async fn respawn_agent_instance(
         working_dir: work_dir,
         is_pinned: false,
         created_at: now_ms,
+        mode: preserved_mode,
+        hidden: preserved_hidden,
+    })
+}
+
+/// 切换运行中 Agent 实例的权限模式（B3.1 Contract 3）
+///
+/// 实现方式：kill 当前进程 -> 用新 mode 的参数 respawn -> 保留原 instance_id。
+/// 这复用了 respawn_agent_instance 的 Restart 路径，但切换 args。
+///
+/// # 参数
+/// - `instance_id`: 目标实例
+/// - `mode`: 新的运行模式 (full / sandbox)
+///
+/// # 返回
+/// 更新后的 AgentInstanceInfo（instance_id 不变，mode 已更新）
+///
+/// # 注意
+/// 切换模式会重启进程，当前会话上下文会丢失。
+/// 前端应在切换前警告用户。
+#[tauri::command]
+pub async fn set_agent_mode(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    instance_id: InstanceId,
+    mode: AgentMode,
+) -> Result<AgentInstanceInfo, ConfluxError> {
+    // 1. Look up adapter_id from instance_adapter_map
+    let adapter_id = {
+        let map = state.instance_adapter_map.read();
+        map.get(&instance_id.0).cloned().ok_or_else(|| {
+            ConfluxError::InstanceNotFound {
+                instance_id: instance_id.0.clone(),
+            }
+        })?
+    };
+
+    // 2. Get adapter config + trait object
+    let (adapter_config, adapter_arc) = {
+        let registry = state.adapter_registry.read();
+        let config = registry.get_config(&adapter_id).cloned().ok_or_else(|| {
+            ConfluxError::AdapterNotFound {
+                adapter_id: adapter_id.clone(),
+            }
+        })?;
+        let adapter = registry.get(&adapter_id).ok_or_else(|| {
+            ConfluxError::AdapterNotFound {
+                adapter_id: adapter_id.clone(),
+            }
+        })?;
+        (config, adapter)
+    };
+
+    // 3. Read preserved working_dir and hidden BEFORE kill
+    let detail = state.pty_manager.get_instance_state(&instance_id.0).ok();
+    let work_dir = detail
+        .as_ref()
+        .map(|d| d.working_dir.clone())
+        .unwrap_or_else(|| ".".to_string());
+    let is_hidden = detail.as_ref().map(|d| d.hidden).unwrap_or(false);
+
+    // 4. Build args with new mode
+    let mut spawn_args = adapter_config.default_args.clone();
+    match mode {
+        AgentMode::Sandbox => spawn_args.extend(adapter_config.sandbox_args.clone()),
+        AgentMode::Full => spawn_args.extend(adapter_config.full_args.clone()),
+    }
+
+    // 5. Build dispatcher
+    let app_handle = app.clone();
+    let dispatcher: crate::pty::manager::EventDispatcher =
+        Arc::new(move |event: &ConfluxEvent| {
+            emit_conflux_event(&app_handle, event);
+        });
+
+    // 6. Respawn with same instance_id but new args
+    state.pty_manager.respawn(
+        &instance_id.0,
+        &adapter_config.command,
+        &spawn_args,
+        &work_dir,
+        &adapter_id,
+        &adapter_config.name,
+        Some(adapter_arc),
+        Some(dispatcher),
+        mode.clone(),
+        is_hidden,
+    )?;
+
+    // 7. Build and return updated instance info
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    Ok(AgentInstanceInfo {
+        instance_id,
+        adapter_id: AdapterId(adapter_id),
+        adapter_name: adapter_config.name,
+        status: AgentStatus::Idle,
+        working_dir: work_dir,
+        is_pinned: false,
+        created_at: now_ms,
+        mode,
+        hidden: is_hidden,
     })
 }
 

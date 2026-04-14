@@ -63,11 +63,11 @@ const Sidebar: FC<SidebarProps> = ({ visible, onCollapse }) => {
   );
 
   const handlePermissionDecision = useCallback(
-    async (permissionId: string, decision: PermissionDecision) => {
+    async (instanceId: string, permissionId: string, decision: PermissionDecision) => {
       if (pendingIds.has(permissionId)) return;
       setPendingIds((prev) => new Set(prev).add(permissionId));
       try {
-        await respondToPermission(permissionId, decision);
+        await respondToPermission(instanceId, permissionId, decision);
       } catch { /* 即使失败也清理 UI */ }
       removePermissionRequest(permissionId);
       clearNotification(permissionId);
@@ -377,7 +377,7 @@ const Sidebar: FC<SidebarProps> = ({ visible, onCollapse }) => {
                       {isPermission && (
                         <div className="flex items-center" style={{ gap: 8, marginTop: 4 }}>
                           <button
-                            onClick={() => handlePermissionDecision(notif.id, "approve")}
+                            onClick={() => handlePermissionDecision(notif.source_instance_id, notif.id, "approve")}
                             disabled={pendingIds.has(notif.id)}
                             style={{
                               fontFamily: "'Geist Sans', sans-serif",
@@ -394,7 +394,7 @@ const Sidebar: FC<SidebarProps> = ({ visible, onCollapse }) => {
                             Allow
                           </button>
                           <button
-                            onClick={() => handlePermissionDecision(notif.id, "deny")}
+                            onClick={() => handlePermissionDecision(notif.source_instance_id, notif.id, "deny")}
                             disabled={pendingIds.has(notif.id)}
                             style={{
                               fontFamily: "'Geist Sans', sans-serif",

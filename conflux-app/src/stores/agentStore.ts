@@ -9,6 +9,12 @@ import type {
   AgentTree,
   ProcessExitedPayload,
 } from "@/types";
+import {
+  startBackendDiscussion,
+  sendMessageWithInjection,
+  endBackendDiscussion,
+} from "@/lib/discussion-ipc";
+import { toFrontendMessage } from "@/lib/discussion-utils";
 
 // ===== Discussion wizard types =====
 
@@ -56,6 +62,10 @@ export interface DiscussionWizardState {
   paused: boolean;
   /** Optional source instance when launched from ExpandedAgentCard */
   sourceInstanceId: string | null;
+  /** B3: Backend discussion session ID (null before startDiscussion succeeds) */
+  discussionId: string | null;
+  /** B3.1: Sandbox instance IDs for message injection (from backend start_discussion response) */
+  sandboxInstanceIds: string[];
 }
 
 // maxRounds: 0 means unlimited
@@ -80,6 +90,8 @@ const EMPTY_WIZARD: DiscussionWizardState = {
   currentRound: 0,
   paused: false,
   sourceInstanceId: null,
+  discussionId: null,
+  sandboxInstanceIds: [],
 };
 
 // ===== State Interface =====
@@ -141,6 +153,9 @@ interface AgentStoreState {
   resumeDiscussion: () => void;
   endDiscussion: () => void;
   interjectDiscussion: (text: string) => void;
+  /** B3: Append a backend-sourced message (e.g. from event subscription).
+   *  Deduplicates by message id — safe to call multiple times for the same msg. */
+  appendDiscussionMessage: (msg: DiscussionMessage) => void;
 }
 
 // ===== Helpers =====
@@ -232,7 +247,7 @@ function loadPrimaryAdapter(): string | null {
   return localStorage.getItem("conflux.primaryAdapter") || null;
 }
 
-export const useAgentStore = create<AgentStoreState>((set) => ({
+export const useAgentStore = create<AgentStoreState>((set, get) => ({
   instances: new Map(),
   statuses: new Map(),
   trees: new Map(),
@@ -422,30 +437,56 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
       return { discussion: { ...state.discussion, participantIds: next } };
     }),
 
-  startDiscussion: () =>
-    set((state) => {
-      const participants: AgentInstanceInfo[] = [];
-      // Primary always comes first
-      const primary = resolvePrimaryInstance(state.instances);
-      if (primary && state.discussion.participantIds.has(primary.instance_id)) {
-        participants.push(primary);
-      }
-      state.discussion.participantIds.forEach((id) => {
-        if (id === primary?.instance_id) return;
-        const info = state.instances.get(id);
-        if (info) participants.push(info);
+  startDiscussion: () => {
+    const state = get();
+    const participants: AgentInstanceInfo[] = [];
+    const primary = resolvePrimaryInstance(state.instances);
+    if (primary && state.discussion.participantIds.has(primary.instance_id)) {
+      participants.push(primary);
+    }
+    state.discussion.participantIds.forEach((id) => {
+      if (id === primary?.instance_id) return;
+      const info = state.instances.get(id);
+      if (info) participants.push(info);
+    });
+    const openers = buildOpeningMessages(state.discussion.direction, participants);
+    const participantIds = [...state.discussion.participantIds];
+    const topic = state.discussion.direction;
+    const maxRounds = state.discussion.rules.maxRounds;
+
+    // Optimistic UI: switch to chatroom immediately
+    set((s) => ({
+      discussion: {
+        ...s.discussion,
+        step: 4,
+        messages: openers,
+        currentRound: 1,
+        paused: false,
+      },
+    }));
+
+    // B3: Fire-and-forget backend call; store discussionId + sandboxInstanceIds on success
+    startBackendDiscussion(topic, participantIds, maxRounds)
+      .then((session) => {
+        // B3.1: Extract sandbox instance IDs from backend response
+        // Backend InstanceId is newtype { "0": "uuid" }, but Tauri may serialize as string
+        const sandboxIds = (session.sandbox_instance_ids ?? []).map((id: string | { "0": string }) =>
+          typeof id === "string" ? id : id["0"]
+        );
+        set((s) => ({
+          discussion: {
+            ...s.discussion,
+            discussionId: typeof session.id === "string" ? session.id : (session.id as unknown as { "0": string })["0"],
+            sandboxInstanceIds: sandboxIds,
+          },
+        }));
+      })
+      .catch((err) => {
+        console.error("[agentStore] startBackendDiscussion failed:", err);
+        // Discussion continues in UI-only mode; backend will be unavailable
+        // but user can still interject locally.
       });
-      const openers = buildOpeningMessages(state.discussion.direction, participants);
-      return {
-        discussion: {
-          ...state.discussion,
-          step: 4,
-          messages: openers,
-          currentRound: 1,
-          paused: false,
-        },
-      };
-    }),
+  },
 
   pauseDiscussion: () =>
     set((state) => ({ discussion: { ...state.discussion, paused: true } })),
@@ -453,26 +494,79 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
   resumeDiscussion: () =>
     set((state) => ({ discussion: { ...state.discussion, paused: false } })),
 
-  endDiscussion: () =>
+  endDiscussion: () => {
+    const { discussion } = get();
+    const discussionId = discussion.discussionId;
+
+    // Reset UI immediately
     set(() => ({
       discussion: { ...EMPTY_WIZARD, participantIds: new Set() },
-    })),
+    }));
 
-  interjectDiscussion: (text) =>
+    // B3: Notify backend (fire-and-forget)
+    if (discussionId) {
+      endBackendDiscussion(discussionId).catch((err) => {
+        console.warn("[agentStore] endBackendDiscussion failed:", err);
+      });
+    }
+  },
+
+  interjectDiscussion: (text) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const state = get();
+    const optimisticMsg: DiscussionMessage = {
+      id: `m-${Date.now()}-u`,
+      authorInstanceId: "user",
+      authorName: "You",
+      initials: "U",
+      avatarBg: "#1A1A1A",
+      round: state.discussion.currentRound || 1,
+      interject: true,
+      time: Date.now(),
+      body: trimmed,
+    };
+
+    // Optimistic UI: show message immediately
+    set((s) => ({
+      discussion: {
+        ...s.discussion,
+        messages: [...s.discussion.messages, optimisticMsg],
+      },
+    }));
+
+    // B3/B3.1: Send to backend + inject into sandbox PTYs (not workspace instances)
+    const discussionId = state.discussion.discussionId;
+    if (discussionId) {
+      const targetIds = state.discussion.sandboxInstanceIds.length > 0
+        ? state.discussion.sandboxInstanceIds
+        : [...state.discussion.participantIds];
+      sendMessageWithInjection(discussionId, trimmed, targetIds)
+        .then((backendMsg) => {
+          // Replace the optimistic message with the backend-confirmed one
+          const confirmed = toFrontendMessage(backendMsg, get().instances);
+          set((s) => ({
+            discussion: {
+              ...s.discussion,
+              messages: s.discussion.messages.map((m) =>
+                m.id === optimisticMsg.id ? { ...confirmed, interject: true } : m,
+              ),
+            },
+          }));
+        })
+        .catch((err) => {
+          console.warn("[agentStore] sendMessageWithInjection failed:", err);
+          // Optimistic message stays in UI; user sees it even if backend failed
+        });
+    }
+  },
+
+  appendDiscussionMessage: (msg) =>
     set((state) => {
-      const trimmed = text.trim();
-      if (!trimmed) return state;
-      const msg: DiscussionMessage = {
-        id: `m-${Date.now()}-u`,
-        authorInstanceId: "user",
-        authorName: "You",
-        initials: "U",
-        avatarBg: "#1A1A1A",
-        round: state.discussion.currentRound || 1,
-        interject: true,
-        time: Date.now(),
-        body: trimmed,
-      };
+      // Deduplicate by message id
+      if (state.discussion.messages.some((m) => m.id === msg.id)) {
+        return state;
+      }
       return {
         discussion: {
           ...state.discussion,

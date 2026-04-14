@@ -35,6 +35,8 @@ impl AiderAdapter {
             name: "Aider".to_string(),
             command: "aider".to_string(),
             default_args: vec![],
+            sandbox_args: vec![],
+            full_args: vec![],
             status_patterns,
             permission_pattern: None,
             sub_agent_spawn_pattern: None,

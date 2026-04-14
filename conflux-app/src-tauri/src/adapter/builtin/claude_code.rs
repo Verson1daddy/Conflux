@@ -75,6 +75,8 @@ impl ClaudeCodeAdapter {
             // shows up unchanged in the Conflux card terminal, which matches
             // the "user runs the real CLI" contract.
             default_args: vec![],
+            sandbox_args: vec![],
+            full_args: vec![],
             status_patterns,
             permission_pattern: Some(r"Allow|Deny|Do you want to".to_string()),
             sub_agent_spawn_pattern: Some(r"Spawning agent|Agent\(".to_string()),

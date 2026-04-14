@@ -135,6 +135,7 @@ pub fn run() {
             commands::agent::get_pty_history,
             commands::agent::is_process_exited,
             commands::agent::respawn_agent_instance,
+            commands::agent::set_agent_mode,
             // BE-1: 窗口管理
             commands::window::open_workspace_window,
             commands::window::focus_agent_card,

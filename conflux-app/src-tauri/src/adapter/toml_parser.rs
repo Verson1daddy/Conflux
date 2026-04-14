@@ -43,6 +43,10 @@ struct TomlRoot {
     command: Option<String>,
     /// 默认参数（可选）
     default_args: Option<Vec<String>>,
+    /// sandbox 模式额外参数（可选，B3.1 Contract 1）
+    sandbox_args: Option<Vec<String>>,
+    /// full 模式额外参数（可选，B3.1 Contract 1）
+    full_args: Option<Vec<String>>,
     /// 状态检测模式（可选）
     status_patterns: Option<TomlStatusPatterns>,
     /// 能力声明（可选）
@@ -158,6 +162,8 @@ pub fn parse_adapter_toml(content: &str) -> Result<AdapterConfig, ConfluxError> 
         name,
         command,
         default_args: root.default_args.unwrap_or_default(),
+        sandbox_args: root.sandbox_args.unwrap_or_default(),
+        full_args: root.full_args.unwrap_or_default(),
         status_patterns,
         permission_pattern: root.permission_pattern,
         sub_agent_spawn_pattern: root.sub_agent_spawn_pattern,

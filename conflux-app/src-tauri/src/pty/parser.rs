@@ -16,12 +16,14 @@
 //   adapter 字段使用 Arc<dyn AgentAdapter>，满足跨线程共享要求。
 
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
 
 use crate::adapter::traits::AgentAdapter;
 use crate::core::{
-    AgentStatus, AgentTree, ConfluxEvent, InstanceId, PermissionRequest, SubAgentInfo,
+    AgentStatus, AgentTree, ConfluxEvent, ErrorSeverity, InstanceId, PermissionRequest,
+    SubAgentInfo,
 };
 
 /// ANSI 转义序列匹配正则（预编译，线程局部缓存）
@@ -173,10 +175,9 @@ impl PtyOutputParser {
                 // 替换 placeholder instance_id
                 let patched = self.patch_instance_id(event);
 
-                // 处理事件——状态去重、树维护
-                if let Some(final_event) = self.process_event(patched) {
-                    events.push(final_event);
-                }
+                // 处理事件——状态去重、树维护、合成衍生事件
+                let processed = self.process_event(patched);
+                events.extend(processed);
             }
         }
 
@@ -339,10 +340,12 @@ impl PtyOutputParser {
         }
     }
 
-    /// 处理事件——状态去重和树维护
+    /// 处理事件——状态去重、树维护和合成衍生事件
     ///
-    /// 返回 `Some(event)` 表示事件应被发出，`None` 表示被去重过滤。
-    fn process_event(&mut self, event: ConfluxEvent) -> Option<ConfluxEvent> {
+    /// 返回需要发出的事件列表（可能为空表示被去重过滤，可能多于一个表示合成了衍生事件）。
+    /// 当 Agent 状态变为 Done 时，额外合成 TaskCompleted 事件。
+    /// 当 Agent 状态变为 Error 时，额外合成 ErrorOccurred 事件。
+    fn process_event(&mut self, event: ConfluxEvent) -> Vec<ConfluxEvent> {
         match &event {
             ConfluxEvent::AgentStatusChanged {
                 new_status,
@@ -350,7 +353,7 @@ impl PtyOutputParser {
             } => {
                 // 状态去重：仅在状态真正变化时发出事件
                 if *new_status == self.current_status {
-                    return None;
+                    return Vec::new();
                 }
 
                 let old_status = self.current_status.clone();
@@ -367,15 +370,41 @@ impl PtyOutputParser {
                     ..
                 } = event
                 {
-                    Some(ConfluxEvent::AgentStatusChanged {
-                        instance_id,
+                    let mut events_out = Vec::new();
+
+                    // 主事件：状态变化
+                    events_out.push(ConfluxEvent::AgentStatusChanged {
+                        instance_id: instance_id.clone(),
                         old_status,
-                        new_status,
+                        new_status: new_status.clone(),
                         timestamp,
-                    })
+                    });
+
+                    // 合成衍生事件：Done → TaskCompleted
+                    if new_status == AgentStatus::Done {
+                        events_out.push(ConfluxEvent::TaskCompleted {
+                            instance_id: instance_id.clone(),
+                            summary: "Agent completed task".to_string(),
+                            timestamp: now_millis(),
+                        });
+                    }
+
+                    // 合成衍生事件：Error → ErrorOccurred
+                    if new_status == AgentStatus::Error {
+                        events_out.push(ConfluxEvent::ErrorOccurred {
+                            instance_id: instance_id.clone(),
+                            error_message: self.recent_lines.last()
+                                .cloned()
+                                .unwrap_or_else(|| "Unknown error".to_string()),
+                            severity: ErrorSeverity::Error,
+                            timestamp: now_millis(),
+                        });
+                    }
+
+                    events_out
                 } else {
                     // 不可达，但为 match 完备性保留
-                    Some(event)
+                    vec![event]
                 }
             }
 
@@ -386,7 +415,7 @@ impl PtyOutputParser {
                     children: Vec::new(),
                 };
                 self.agent_tree.children.push(child_tree);
-                Some(event)
+                vec![event]
             }
 
             ConfluxEvent::SubAgentCompleted {
@@ -398,11 +427,11 @@ impl PtyOutputParser {
                     sub_agent_id,
                     &AgentStatus::Done,
                 );
-                Some(event)
+                vec![event]
             }
 
             // 其他事件直接透传
-            _ => Some(event),
+            _ => vec![event],
         }
     }
 
@@ -415,6 +444,14 @@ impl PtyOutputParser {
         }
         self.recent_lines.push(line.to_string());
     }
+}
+
+/// 获取当前时间戳（Unix 毫秒）
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }
 
 /// 剥离 ANSI 转义序列
@@ -529,6 +566,15 @@ mod tests {
                 });
             }
 
+            if raw_line.contains("Error") {
+                return Some(ConfluxEvent::AgentStatusChanged {
+                    instance_id: placeholder_id,
+                    old_status: AgentStatus::Idle,
+                    new_status: AgentStatus::Error,
+                    timestamp: now,
+                });
+            }
+
             if raw_line.contains("Permission") {
                 return Some(ConfluxEvent::PermissionRequested {
                     instance_id: placeholder_id.clone(),
@@ -638,8 +684,9 @@ mod tests {
         assert_eq!(events.len(), 0);
 
         // 验证去重后的事件 old_status 正确
+        // Done 状态变化会额外合成 TaskCompleted 事件，所以期望 2 个事件
         let events = parser.feed(b"Done with task\n");
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         match &events[0] {
             ConfluxEvent::AgentStatusChanged {
                 old_status,
@@ -650,6 +697,18 @@ mod tests {
                 assert_eq!(*new_status, AgentStatus::Done);
             }
             other => panic!("期望 AgentStatusChanged，实际得到 {:?}", other),
+        }
+        // 验证合成的 TaskCompleted 事件
+        match &events[1] {
+            ConfluxEvent::TaskCompleted {
+                instance_id,
+                summary,
+                ..
+            } => {
+                assert_eq!(*instance_id, InstanceId("test-instance-001".to_string()));
+                assert_eq!(summary, "Agent completed task");
+            }
+            other => panic!("期望 TaskCompleted，实际得到 {:?}", other),
         }
     }
 
@@ -729,7 +788,7 @@ mod tests {
         let events = parser.feed(b"ing the");
         assert_eq!(events.len(), 0);
         let events = parser.feed(b" code\nDone!\n");
-        assert_eq!(events.len(), 2, "应该产生 Coding 和 Done 两个事件");
+        assert_eq!(events.len(), 3, "应该产生 Coding、Done 和 TaskCompleted 三个事件");
     }
 
     // ----- test_agent_tree_tracking -----
@@ -896,9 +955,9 @@ mod tests {
             other => panic!("期望 AgentStatusChanged，实际得到 {:?}", other),
         }
 
-        // Coding -> Done
+        // Coding -> Done（合成 TaskCompleted，共 2 个事件）
         let events = parser.feed(b"Done\n");
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         match &events[0] {
             ConfluxEvent::AgentStatusChanged {
                 old_status,
@@ -909,6 +968,80 @@ mod tests {
                 assert_eq!(*new_status, AgentStatus::Done);
             }
             other => panic!("期望 AgentStatusChanged，实际得到 {:?}", other),
+        }
+        match &events[1] {
+            ConfluxEvent::TaskCompleted { .. } => {}
+            other => panic!("期望 TaskCompleted，实际得到 {:?}", other),
+        }
+    }
+
+    // ----- test_done_synthesizes_task_completed -----
+    // 验证 Done 状态变化会合成 TaskCompleted 事件
+    #[test]
+    fn test_done_synthesizes_task_completed() {
+        let mut parser = make_parser();
+
+        let events = parser.feed(b"Thinking about it\n");
+        assert_eq!(events.len(), 1);
+
+        let events = parser.feed(b"Done with everything\n");
+        assert_eq!(events.len(), 2, "Done 应产生 AgentStatusChanged + TaskCompleted");
+
+        match &events[0] {
+            ConfluxEvent::AgentStatusChanged { new_status, .. } => {
+                assert_eq!(*new_status, AgentStatus::Done);
+            }
+            other => panic!("期望 AgentStatusChanged，实际得到 {:?}", other),
+        }
+
+        match &events[1] {
+            ConfluxEvent::TaskCompleted {
+                instance_id,
+                summary,
+                ..
+            } => {
+                assert_eq!(*instance_id, InstanceId("test-instance-001".to_string()));
+                assert_eq!(summary, "Agent completed task");
+            }
+            other => panic!("期望 TaskCompleted，实际得到 {:?}", other),
+        }
+    }
+
+    // ----- test_error_synthesizes_error_occurred -----
+    // 验证 Error 状态变化会合成 ErrorOccurred 事件
+    #[test]
+    fn test_error_synthesizes_error_occurred() {
+        use crate::core::ErrorSeverity;
+
+        let mut parser = make_parser();
+
+        // 先输入一些上下文
+        parser.feed(b"some context line\n");
+        parser.feed(b"the actual error message\n");
+
+        let events = parser.feed(b"Error occurred\n");
+        assert_eq!(events.len(), 2, "Error 应产生 AgentStatusChanged + ErrorOccurred");
+
+        match &events[0] {
+            ConfluxEvent::AgentStatusChanged { new_status, .. } => {
+                assert_eq!(*new_status, AgentStatus::Error);
+            }
+            other => panic!("期望 AgentStatusChanged，实际得到 {:?}", other),
+        }
+
+        match &events[1] {
+            ConfluxEvent::ErrorOccurred {
+                instance_id,
+                error_message,
+                severity,
+                ..
+            } => {
+                assert_eq!(*instance_id, InstanceId("test-instance-001".to_string()));
+                // recent_lines 的最后一行是 "Error occurred"（当前行已被 push 进去）
+                assert_eq!(error_message, "Error occurred");
+                assert_eq!(*severity, ErrorSeverity::Error);
+            }
+            other => panic!("期望 ErrorOccurred，实际得到 {:?}", other),
         }
     }
 }
