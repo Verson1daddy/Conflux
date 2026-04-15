@@ -31,6 +31,13 @@ export interface DiscussionRules {
   messageStyle: MessageStyle;
 }
 
+export interface CodeBlock {
+  lang: string;
+  content: string;
+  startOffset: number;
+  endOffset: number;
+}
+
 export interface DiscussionMessage {
   id: string;
   authorInstanceId: string | "user";
@@ -43,6 +50,8 @@ export interface DiscussionMessage {
   /** Epoch ms */
   time: number;
   body: string;
+  /** Extracted code blocks from body (null means no code blocks) */
+  codeBlocks: CodeBlock[] | null;
 }
 
 export interface DiscussionWizardState {
@@ -209,6 +218,7 @@ function buildOpeningMessages(
       body: `Kicking off the discussion. Goal: ${topic}. ${
         second ? `${second.adapter_name}, want to share your angle first?` : "Who's first?"
       }`,
+      codeBlocks: null,
     },
   ];
 
@@ -223,6 +233,7 @@ function buildOpeningMessages(
       interject: false,
       time: now + 1,
       body: `Sure. From my analysis, the main tradeoff here is between correctness and speed — I'd lean toward the safer path first and optimize once we have a baseline.`,
+      codeBlocks: null,
     });
   }
 
@@ -556,6 +567,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       interject: true,
       time: Date.now(),
       body: trimmed,
+      codeBlocks: null,
     };
 
     // Optimistic UI: show message immediately
