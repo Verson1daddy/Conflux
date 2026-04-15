@@ -27,6 +27,7 @@ use tauri::Manager;
 
 use crate::adapter::registry::AdapterRegistry;
 use crate::core::{IslandMode, StdinInjectionPolicy};
+use crate::orchestration::coordinator::Coordinator;
 use crate::orchestration::discussion::DiscussionEngine;
 use crate::pty::manager::PtyManager;
 
@@ -61,6 +62,10 @@ pub struct AppState {
     pub db: parking_lot::Mutex<rusqlite::Connection>,
     /// 讨论引擎（BE-4 编排层）
     pub discussion_engine: RwLock<DiscussionEngine>,
+    /// 协调器（C-Δ1 激活）
+    pub coordinator: Coordinator,
+    /// Coordinator 事件缓冲：最近 5 分钟内的事件（timestamp, event）
+    pub recent_events: RwLock<Vec<(u64, crate::core::ConfluxEvent)>>,
 }
 
 impl AppState {
@@ -84,7 +89,33 @@ impl AppState {
             injection_rate_counter: RwLock::new(Vec::new()),
             db: parking_lot::Mutex::new(db_conn),
             discussion_engine: RwLock::new(DiscussionEngine::new()),
+            coordinator: Coordinator,
+            recent_events: RwLock::new(Vec::new()),
         }
+    }
+
+    /// 查找适合接收协调指令的 PTY 实例 ID
+    ///
+    /// 优先级：primary_adapter > 第一个非隐藏实例 > None
+    /// 如果目标进程已退出，返回 None。
+    pub fn find_coordination_target(&self) -> Option<String> {
+        // 优先：primary adapter 对应的实例
+        if let Some(primary) = self.primary_adapter.read().clone() {
+            let map = self.instance_adapter_map.read();
+            if let Some(instance_id) = map.get(&primary) {
+                if !self.pty_manager.is_process_exited(instance_id).unwrap_or(true) {
+                    return Some(instance_id.clone());
+                }
+            }
+        }
+        // 兜底：第一个非隐藏、非退出的实例
+        let instances = self.pty_manager.list_instances();
+        for info in instances {
+            if !info.hidden && !self.pty_manager.is_process_exited(&info.instance_id.0).unwrap_or(true) {
+                return Some(info.instance_id.0.clone());
+            }
+        }
+        None
     }
 }
 
@@ -94,6 +125,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
             // CRIT-01 修复：使用 Tauri app_data_dir 解析安全的数据库路径
             let app_data_dir = app

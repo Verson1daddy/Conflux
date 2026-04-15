@@ -22,6 +22,18 @@
         "decorations": false,
         "resizable": true,
         "center": true
+      },
+      {
+        "label": "island",
+        "url": "/island",
+        "visible": false,
+        "decorations": false,
+        "resizable": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "width": 400,
+        "height": 48,
+        "center": true
       }
     ],
     "security": {

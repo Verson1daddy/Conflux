@@ -5,10 +5,18 @@
 // 每个事件会发到两个通道：
 //   1. 统一通道 `conflux://event`（包含完整 ConfluxEvent，便于审计/录制）
 //   2. 分类型通道（只包含内部 payload 字段），前端的 on* hooks 使用
+//
+// C-Δ1 Coordinator 激活：
+//   每次 emit 后，将事件缓冲到 AppState.recent_events，
+//   超过 5 分钟的事件自动淘汰；
+//   若 Coordinator::should_coordinate() 返回 true，
+//   则从 ContextAggregator 聚合上下文，构建协调指令，
+//   通过 inject_stdin 注入到目标 PTY，并发出 CoordinationCommand 事件。
 
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::event::ConfluxEvent;
+use crate::orchestration::coordinator::Coordinator;
 
 pub mod channels {
     pub const UNIFIED: &str = "conflux://event";
@@ -199,4 +207,128 @@ pub fn emit_conflux_event(app: &AppHandle, event: &ConfluxEvent) {
             }
         }
     }
+
+    // C-Δ1 Coordinator 激活：事件缓冲 + 协调检测 + 指令注入
+    if let Some(state) = app.try_state::<crate::AppState>() {
+        trigger_coordinator(app, &state, event);
+    }
+}
+
+/// 从 ConfluxEvent 中提取时间戳（秒级，UNIX epoch）
+fn extract_event_timestamp(event: &ConfluxEvent) -> u64 {
+    let ms = match event {
+        ConfluxEvent::AgentStatusChanged { timestamp, .. } => *timestamp,
+        ConfluxEvent::PermissionRequested { timestamp, .. } => *timestamp,
+        ConfluxEvent::SubAgentSpawned { timestamp, .. } => *timestamp,
+        ConfluxEvent::SubAgentCompleted { timestamp, .. } => *timestamp,
+        ConfluxEvent::TaskCompleted { timestamp, .. } => *timestamp,
+        ConfluxEvent::ErrorOccurred { timestamp, .. } => *timestamp,
+        ConfluxEvent::DiscussionMessage { timestamp, .. } => *timestamp,
+        ConfluxEvent::CoordinationCommand { timestamp, .. } => *timestamp,
+        ConfluxEvent::PtyOutput { timestamp, .. } => *timestamp,
+        ConfluxEvent::StdinInjected { timestamp, .. } => *timestamp,
+        ConfluxEvent::ProcessExited { timestamp, .. } => *timestamp,
+    };
+    ms as u64 / 1000
+}
+
+/// 获取当前 UNIX 时间戳（秒级）
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 将 AgentInstanceInfo 转换为 AgentStateDetail（用于 ContextAggregator）
+fn to_agent_state_detail(info: &crate::core::types::AgentInstanceInfo) -> crate::core::AgentStateDetail {
+    crate::core::AgentStateDetail {
+        instance_id: info.instance_id.clone(),
+        adapter_id: info.adapter_id.clone(),
+        adapter_name: info.adapter_name.clone(),
+        display_name: info.display_name.clone(),
+        status: info.status.clone(),
+        working_dir: info.working_dir.clone(),
+        is_pinned: info.is_pinned,
+        created_at: info.created_at,
+        last_activity_at: info.created_at, // AgentInstanceInfo 无 last_activity_at，用 created_at 近似
+        mode: info.mode.clone(),
+        hidden: info.hidden,
+    }
+}
+
+/// C-Δ1: 协调器触发主函数
+///
+/// 在每个事件 emit 后调用：
+/// 1. 缓冲事件（每 5 分钟窗口，超过则淘汰）
+/// 2. 检查是否满足协调条件（Coordinator::should_coordinate）
+/// 3. 若满足，聚合上下文并构建调度指令
+/// 4. 通过 inject_stdin 注入到目标 PTY
+/// 5. 发出 CoordinationCommand 事件
+fn trigger_coordinator(app: &AppHandle, state: &crate::AppState, event: &ConfluxEvent) {
+    let now = now_secs();
+    let window_secs = 5 * 60; // 5 分钟窗口
+
+    // 1. 缓冲 + 淘汰旧事件（HIGH-04 修复：只持有 RwLock，锁粒度最小）
+    {
+        let mut buf = state.recent_events.write();
+        // 淘汰超过 5 分钟的事件
+        buf.retain(|(ts, _)| now.saturating_sub(*ts) < window_secs);
+        // 追加当前事件
+        let ts = extract_event_timestamp(event);
+        buf.push((ts, event.clone()));
+    }
+
+    // 2. 检查协调条件（复制 buffer 避免长持锁）
+    let events_to_check = {
+        let buf = state.recent_events.read();
+        buf.iter().map(|(_, e)| e.clone()).collect::<Vec<_>>()
+    };
+
+    if !Coordinator::should_coordinate(&events_to_check) {
+        return;
+    }
+
+    // 3. 找到协调目标 PTY
+    let target_instance = match state.find_coordination_target() {
+        Some(id) => id,
+        None => {
+            log::debug!("Coordinator: 无可用 PTY 实例作为协调目标");
+            return;
+        }
+    };
+
+    // 4. 聚合上下文
+    let instances = state.pty_manager.list_instances();
+    let details: Vec<_> = instances.iter().map(to_agent_state_detail).collect();
+    let context = crate::orchestration::context::ContextAggregator::aggregate(&details);
+
+    // 5. 构建调度指令提示词（使用默认模板，包含 {context} 占位符）
+    let template = "请根据以下状态安排任务：\n{context}\n请输出调度计划。";
+    let command_text = Coordinator::build_coordination_prompt(&context, template);
+
+    // 6. 通过 inject_stdin 注入（使用 OrchestrationAuto 源）
+    let input = format!("{command_text}\n");
+    if let Err(e) = state.pty_manager.inject_stdin(&target_instance, &input) {
+        log::warn!("Coordinator: inject_stdin 到 {} 失败: {e}", target_instance);
+        return;
+    }
+
+    // 7. 发出 CoordinationCommand 事件（用于前端监听和 UI 展示）
+    let ts_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    let coord_event = ConfluxEvent::CoordinationCommand {
+        target_instance_id: crate::core::InstanceId(target_instance),
+        command_text,
+        source_discussion_id: None,
+        timestamp: ts_ms,
+    };
+
+    // 递归调用 emit_conflux_event 发出事件（会再次触发 trigger_coordinator，
+    // 但由于 events_to_check 中已有 CoordinationCommand，should_coordinate 在
+    // 此轮已经返回 true，递归到此即止——避免无限循环的关键：此轮已处理完）
+    emit_conflux_event(app, &coord_event);
 }
