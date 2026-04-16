@@ -7,7 +7,11 @@ import { listAgentInstances } from "@/lib/tauri-bridge";
 import { onAgentStatusChanged } from "@/lib/event-listener";
 import type { AgentInstanceInfo } from "@/types";
 
-const StatusBar: FC = () => {
+interface StatusBarProps {
+  onOpenSession?: () => void;
+}
+
+const StatusBar: FC<StatusBarProps> = ({ onOpenSession }) => {
   const [agents, setAgents] = useState<AgentInstanceInfo[]>([]);
 
   const fetchAgents = async () => {
@@ -49,6 +53,22 @@ const StatusBar: FC = () => {
       <span className="text-[#6B7280] text-[10px] font-body truncate">
         {statusSummary}
       </span>
+
+      {/* Session 回放按钮 */}
+      {onOpenSession && (
+        <button
+          onClick={onOpenSession}
+          className="flex items-center gap-1 px-2 py-0.5 rounded text-[#6B7280] hover:text-[#B8D4E3] hover:bg-[#2A2A2A] transition-colors shrink-0"
+          title="Session playback"
+          aria-label="Open session playback"
+        >
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="10"/>
+            <polyline points="12 6 12 12 16 14"/>
+          </svg>
+          <span className="text-[10px] font-body">Session</span>
+        </button>
+      )}
 
       {/* Spacer */}
       <div className="flex-1" />

@@ -502,4 +502,3 @@ const ArtifactsDrawer: FC<ArtifactsDrawerProps> = ({ messages, onClose }) => {
 };
 
 export { ArtifactsDrawer };
-export type { Artifact };

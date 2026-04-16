@@ -8,6 +8,7 @@ import type {
   AgentStatus,
   AgentTree,
   ProcessExitedPayload,
+  CodeBlock,
 } from "@/types";
 import {
   startBackendDiscussion,
@@ -31,13 +32,6 @@ export interface DiscussionRules {
   messageStyle: MessageStyle;
 }
 
-export interface CodeBlock {
-  lang: string;
-  content: string;
-  startOffset: number;
-  endOffset: number;
-}
-
 export interface DiscussionMessage {
   id: string;
   authorInstanceId: string | "user";
@@ -50,7 +44,7 @@ export interface DiscussionMessage {
   /** Epoch ms */
   time: number;
   body: string;
-  /** Extracted code blocks from body (null means no code blocks) */
+  /** Extracted code blocks from body (from backend or parsed locally) */
   codeBlocks: CodeBlock[] | null;
 }
 

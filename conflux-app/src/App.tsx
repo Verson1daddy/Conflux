@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
+import "@/lib/i18n"; // Initialize i18next
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { CloseConfirmModal } from "./components/workspace/CloseConfirmModal";
 import { Canvas } from "./components/workspace/Canvas";
@@ -9,6 +10,7 @@ import { SearchPalette } from "./components/workspace/SearchPalette";
 import { SettingsPanel } from "./components/workspace/SettingsPanel";
 import { ExpandedAgentCard } from "./components/workspace/ExpandedAgentCard";
 import { DiscussionPanel } from "./components/workspace/DiscussionPanel";
+import { SessionPlayback } from "./components/session/SessionPlayback";
 import { SendToPanel } from "./components/workspace/SendToPanel";
 import { OnboardingWizard } from "./components/workspace/OnboardingWizard";
 import { QuickTour } from "./components/workspace/QuickTour";
@@ -54,6 +56,7 @@ export default function App() {
   const [addAgentOpen, setAddAgentOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [sessionVisible, setSessionVisible] = useState(false);
   const [closeModalVisible, setCloseModalVisible] = useState(false);
 
   // F11 — toggle OS fullscreen via Tauri window API.
@@ -206,7 +209,7 @@ export default function App() {
           <ExpandedAgentCard instanceId={expandedCardId} />
         )}
       </div>
-      <StatusBar />
+      <StatusBar onOpenSession={() => setSessionVisible(true)} />
       <Sidebar visible={sidebarVisible} onCollapse={handleSidebarCollapse} />
       <NotificationTray visible={trayVisible} onClose={handleTrayClose} />
       <SendToPanel visible={sendToVisible} onClose={handleSendToClose} />
@@ -232,6 +235,38 @@ export default function App() {
         onDismiss={() => {}}
         onStart={() => {}}
       />
+      {/* C2-Δ2b Session Playback overlay */}
+      {sessionVisible && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center"
+          style={{ background: "rgba(26,26,26,0.82)", backdropFilter: "blur(6px)" }}
+        >
+          <div
+            className="relative flex flex-col"
+            style={{
+              width: "92vw",
+              height: "88vh",
+              borderRadius: 16,
+              overflow: "hidden",
+              border: "1px solid #3A3A3A",
+              boxShadow: "0 24px 64px rgba(0,0,0,0.6)",
+              background: "#1A1A1A",
+            }}
+          >
+            {/* Close button */}
+            <button
+              onClick={() => setSessionVisible(false)}
+              className="absolute top-4 right-4 z-10 flex items-center justify-center w-8 h-8 rounded-lg hover:bg-[#3A3A3A] text-[#B8B3B0] hover:text-[#F2F2F2] transition-colors"
+              aria-label="Close session playback"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 6 6 18M6 6l12 12"/>
+              </svg>
+            </button>
+            <SessionPlayback />
+          </div>
+        </div>
+      )}
       <CloseConfirmModal
         visible={closeModalVisible}
         onConfirm={handleCloseConfirm}
