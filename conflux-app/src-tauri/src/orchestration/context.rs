@@ -95,6 +95,7 @@ mod tests {
             last_activity_at: 2000,
             mode: crate::core::AgentMode::Full,
             hidden: false,
+            sub_agents: vec![],
         }];
 
         let result = ContextAggregator::aggregate(&instances);
@@ -120,6 +121,7 @@ mod tests {
                 last_activity_at: 1500,
                 mode: crate::core::AgentMode::Full,
                 hidden: false,
+                sub_agents: vec![],
             },
             AgentStateDetail {
                 instance_id: InstanceId("b".to_string()),
@@ -133,6 +135,7 @@ mod tests {
                 last_activity_at: 2500,
                 mode: crate::core::AgentMode::Full,
                 hidden: false,
+                sub_agents: vec![],
             },
         ];
 

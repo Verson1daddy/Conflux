@@ -248,6 +248,19 @@ pub async fn rename_agent_instance(
     Ok(())
 }
 
+/// 将递归 AgentTree 扁平化为 Vec<SubAgentInfo>（不包含根节点）
+fn flatten_agent_tree(tree: crate::core::types::AgentTree) -> Vec<crate::core::SubAgentInfo> {
+    fn recurse(node: &crate::core::types::AgentTree, out: &mut Vec<crate::core::SubAgentInfo>) {
+        for child in &node.children {
+            out.push(child.root.clone());
+            recurse(child, out);
+        }
+    }
+    let mut result = Vec::new();
+    recurse(&tree, &mut result);
+    result
+}
+
 /// 查询单个 Agent 实例的详细状态
 ///
 /// 获取指定实例的完整状态信息，包括运行状态、工作目录、创建时间等。
@@ -294,6 +307,13 @@ pub async fn get_agent_state(
         pinned.contains(&instance_id.0)
     };
 
+    // 5. 获取 sub-agents（从 parser tree 扁平化）
+    let sub_agents = state
+        .pty_manager
+        .get_agent_tree(&instance_id.0)
+        .map(|tree| flatten_agent_tree(tree))
+        .unwrap_or_default();
+
     Ok(AgentStateDetail {
         instance_id,
         adapter_id: AdapterId(adapter_id),
@@ -306,6 +326,7 @@ pub async fn get_agent_state(
         last_activity_at: detail.last_activity_at,
         mode: detail.mode,
         hidden: detail.hidden,
+        sub_agents,
     })
 }
 

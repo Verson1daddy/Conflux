@@ -81,56 +81,56 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   pan: { x: 0, y: 0 },
   selectedCardId: null,
 
-  setCards: (cards) => set({ cards }),
+  setCards: (cards: CardLayout[]) => set({ cards }),
 
-  addCard: (card) =>
-    set((state) => {
-      const maxZ = state.cards.reduce((m, c) => Math.max(m, c.z_index), 0);
+  addCard: (card: CardLayout) =>
+    set((state: WorkspaceState) => {
+      const maxZ = state.cards.reduce((m: number, c: CardLayout) => Math.max(m, c.z_index), 0);
       return {
         cards: [...state.cards, { ...card, z_index: maxZ + 1 }],
       };
     }),
 
-  removeCard: (instanceId) =>
-    set((state) => ({
-      cards: state.cards.filter((c) => c.instance_id !== instanceId),
+  removeCard: (instanceId: string) =>
+    set((state: WorkspaceState) => ({
+      cards: state.cards.filter((c: CardLayout) => c.instance_id !== instanceId),
       selectedCardId:
         state.selectedCardId === instanceId ? null : state.selectedCardId,
     })),
 
-  updateCardPosition: (instanceId, position) =>
-    set((state) => ({
-      cards: state.cards.map((card) =>
+  updateCardPosition: (instanceId: string, position: Position) =>
+    set((state: WorkspaceState) => ({
+      cards: state.cards.map((card: CardLayout) =>
         card.instance_id === instanceId ? { ...card, position } : card
       ),
     })),
 
-  updateCardSize: (instanceId, size) =>
-    set((state) => ({
-      cards: state.cards.map((card) =>
+  updateCardSize: (instanceId: string, size: Size) =>
+    set((state: WorkspaceState) => ({
+      cards: state.cards.map((card: CardLayout) =>
         card.instance_id === instanceId ? { ...card, size } : card
       ),
     })),
 
-  setLayoutMode: (mode) => set({ layoutMode: mode }),
+  setLayoutMode: (mode: LayoutMode) => set({ layoutMode: mode }),
 
-  setAutoPackConfig: (config) => set({ autoPackConfig: config }),
+  setAutoPackConfig: (config: AutoPackConfig) => set({ autoPackConfig: config }),
 
-  setZoom: (zoom) =>
+  setZoom: (zoom: number) =>
     set({ zoom: Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom)) }),
 
-  setPan: (pan) => set({ pan }),
+  setPan: (pan: { x: number; y: number }) => set({ pan }),
 
-  selectCard: (id) => set({ selectedCardId: id }),
+  selectCard: (id: string | null) => set({ selectedCardId: id }),
 
   bringToFront: (instanceId) =>
-    set((state) => {
+    set((state: WorkspaceState) => {
       const maxZ = state.cards.reduce(
-        (max, card) => Math.max(max, card.z_index),
+        (max: number, card: CardLayout) => Math.max(max, card.z_index),
         0
       );
       return {
-        cards: state.cards.map((card) =>
+        cards: state.cards.map((card: CardLayout) =>
           card.instance_id === instanceId
             ? { ...card, z_index: maxZ + 1 }
             : card
@@ -139,7 +139,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     }),
 
   resolveOverlaps: (anchorCardId) =>
-    set((state) => {
+    set((state: WorkspaceState) => {
       const GAP = 16;
       const GRID = 8;
       const MAX_ITER = 20;
@@ -236,7 +236,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       }
 
       // Build updated cards
-      const cards = state.cards.map((c) => {
+      const cards = state.cards.map((c: CardLayout) => {
         const np = pos.get(c.instance_id)!;
         if (np.x === c.position.x && np.y === c.position.y) return c;
         return { ...c, position: { x: np.x, y: np.y } };
@@ -244,8 +244,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       return { cards };
     }),
 
-  fitAll: (viewportWidth, viewportHeight) =>
-    set((state) => {
+  fitAll: (viewportWidth: number, viewportHeight: number) =>
+    set((state: WorkspaceState) => {
       if (state.cards.length === 0) return state;
       const PAD = 60;
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -269,14 +269,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     }),
 
   autoArrange: () =>
-    set((state) => {
+    set((state: WorkspaceState) => {
       if (state.cards.length === 0) return state;
       const GAP = 16;
       const START = 24;
 
       // Sort: pinned first, then wider cards for better packing
       const agentInstances = useAgentStore.getState().instances;
-      const sorted = [...state.cards].sort((a, b) => {
+      const sorted = [...state.cards].sort((a: CardLayout, b: CardLayout) => {
         const aPinned = agentInstances.get(a.instance_id)?.is_pinned ? 1 : 0;
         const bPinned = agentInstances.get(b.instance_id)?.is_pinned ? 1 : 0;
         if (aPinned !== bPinned) return bPinned - aPinned;
@@ -287,7 +287,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       // a reasonable max width (~3 cards wide or 2000px, whichever is smaller).
       const maxRowW = Math.max(
         1400,
-        sorted.reduce((sum, c) => sum + c.size.width, 0) / Math.ceil(Math.sqrt(sorted.length)) + GAP * 4
+        sorted.reduce((sum: number, c: CardLayout) => sum + c.size.width, 0) / Math.ceil(Math.sqrt(sorted.length)) + GAP * 4
       );
 
       const placed: { id: string; x: number; y: number }[] = [];
@@ -308,7 +308,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       }
 
       const posMap = new Map(placed.map((p) => [p.id, { x: p.x, y: p.y }]));
-      const cards = state.cards.map((c) => {
+      const cards = state.cards.map((c: CardLayout) => {
         const np = posMap.get(c.instance_id);
         if (!np) return c;
         return { ...c, position: { x: np.x, y: np.y } };

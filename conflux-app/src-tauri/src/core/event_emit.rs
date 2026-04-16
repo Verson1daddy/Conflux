@@ -254,6 +254,7 @@ fn to_agent_state_detail(info: &crate::core::types::AgentInstanceInfo) -> crate:
         last_activity_at: info.created_at, // AgentInstanceInfo 无 last_activity_at，用 created_at 近似
         mode: info.mode.clone(),
         hidden: info.hidden,
+        sub_agents: vec![],
     }
 }
 

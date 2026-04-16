@@ -731,6 +731,17 @@ impl PtyManager {
             last_activity_at: now_millis(), // 查询时刷新
             mode: process.mode.clone(),
             hidden: process.hidden,
+            sub_agents: self.get_agent_tree(instance_id).map(|tree| {
+                fn recurse(node: &crate::core::types::AgentTree, out: &mut Vec<crate::core::SubAgentInfo>) {
+                    for child in &node.children {
+                        out.push(child.root.clone());
+                        recurse(child, out);
+                    }
+                }
+                let mut result = Vec::new();
+                recurse(&tree, &mut result);
+                result
+            }).unwrap_or_default(),
         })
     }
 

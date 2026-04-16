@@ -84,6 +84,8 @@ pub struct AgentStateDetail {
     pub mode: AgentMode,
     /// 是否为隐藏实例（B3.1 Contract 3）
     pub hidden: bool,
+    /// Sub-agent 列表（扁平化，不含根节点）
+    pub sub_agents: Vec<SubAgentInfo>,
 }
 
 /// Agent 状态（简化版，用于 AgentInstance trait）

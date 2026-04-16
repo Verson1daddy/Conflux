@@ -1005,7 +1005,6 @@ const ChatroomBody: FC<{ messages: DiscussionMessage[] }> = ({ messages }) => {
         {messages.map((msg) => {
           const isUser = msg.authorInstanceId === "user";
           const headerColor = isUser || msg.interject ? COLORS.accent : COLORS.textPrimary;
-          const bodyColor = isUser ? COLORS.textPrimary : COLORS.textBody;
           return (
             <div key={msg.id} className="flex items-start" style={{ gap: 10 }}>
               <div
