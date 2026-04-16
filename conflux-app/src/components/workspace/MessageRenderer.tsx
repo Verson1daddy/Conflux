@@ -280,7 +280,7 @@ function MessageBody({ body, codeBlocks }: { body: string; codeBlocks: CodeBlock
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
-          code({ className, children, ...props }) {
+          code({ className, children }) {
             const match = /language-(\w+)/.exec(className || "");
             const lang = match ? match[1] : "";
             const code = String(children).replace(/\n$/, "");
@@ -333,7 +333,7 @@ function MessageBody({ body, codeBlocks }: { body: string; codeBlocks: CodeBlock
             key={i}
             remarkPlugins={[remarkGfm]}
             components={{
-              code({ className, children, ...props }) {
+              code({ className, children }) {
                 const match = /language-(\w+)/.exec(className || "");
                 if (match) {
                   const code = String(children).replace(/\n$/, "");
