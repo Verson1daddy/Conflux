@@ -899,12 +899,11 @@ const ChatroomHeader: FC<{
   maxRounds: number;
   turnOrder: TurnOrder;
   paused: boolean;
-  artifactsOpen: boolean;
-  artifactCount: number;
   onPauseToggle: () => void;
   onEnd: () => void;
-  onArtifactsToggle: () => void;
-}> = ({ title, round, maxRounds, turnOrder, paused, artifactsOpen, artifactCount, onPauseToggle, onEnd, onArtifactsToggle }) => {
+  onToggleArtifacts: () => void;
+  artifactsVisible: boolean;
+}> = ({ title, round, maxRounds, turnOrder, paused, artifactsVisible, onPauseToggle, onEnd, onToggleArtifacts }) => {
   const orderLabel =
     turnOrder === "primary_moderates" ? "Primary moderates" :
     turnOrder === "round_robin"       ? "Round-robin"       : "Free-form";
@@ -955,21 +954,21 @@ const ChatroomHeader: FC<{
         </span>
       </button>
       <button
-        onClick={onArtifactsToggle}
+        onClick={onToggleArtifacts}
         className="shrink-0 flex items-center"
         style={{
           height: 32, padding: "0 12px", gap: 6,
           borderRadius: 9999,
-          background: artifactsOpen ? COLORS.accent : "transparent",
-          border: `1px solid ${artifactsOpen ? COLORS.accent : COLORS.border}`,
-          color: artifactsOpen ? COLORS.textPrimary : COLORS.textMuted,
+          background: artifactsVisible ? COLORS.accent : "transparent",
+          border: `1px solid ${artifactsVisible ? COLORS.accent : COLORS.border}`,
+          color: artifactsVisible ? COLORS.textPrimary : COLORS.textMuted,
           cursor: "pointer",
         }}
-        title={artifactsOpen ? "Hide artifacts" : "Show artifacts"}
+        title={artifactsVisible ? "Hide artifacts" : "Show artifacts"}
       >
         <IconCode size={13} />
         <span style={{ fontFamily: "'Geist Sans', sans-serif", fontSize: 12, fontWeight: 600 }}>
-          {artifactCount > 0 ? `${artifactCount}` : ""} Artifacts
+          Artifacts
         </span>
       </button>
       <button
@@ -1170,7 +1169,8 @@ const DiscussionPanel: FC = () => {
   const interject = useAgentStore((s) => s.interjectDiscussion);
 
   const [showEndConfirm, setShowEndConfirm] = useState(false);
-  const [showArtifactsDrawer, setShowArtifactsDrawer] = useState(false);
+  const [artifactsDrawerVisible, setArtifactsDrawerVisible] = useState(false);
+  const toggleArtifacts = useCallback(() => setArtifactsDrawerVisible((v) => !v), []);
 
   // Capture-phase ESC handler so the wizard beats ExpandedAgentCard underneath.
   // On step 4 (chatroom), ESC surfaces the End confirmation instead of closing.
@@ -1201,13 +1201,6 @@ const DiscussionPanel: FC = () => {
 
   const directionFilled = direction.trim().length > 0;
   const participantCount = participantIds.size;
-  const artifactCount = useMemo(() => {
-    let count = 0;
-    for (const msg of messages) {
-      if (msg.codeBlocks) count += msg.codeBlocks.length;
-    }
-    return count;
-  }, [messages]);
 
   const handleNext = useCallback(() => {
     if (step === 1 && directionFilled) setStep(2);
@@ -1222,7 +1215,7 @@ const DiscussionPanel: FC = () => {
 
   const confirmEnd = () => {
     setShowEndConfirm(false);
-    setShowArtifactsDrawer(false);
+    setArtifactsDrawerVisible(false);
     endAction();
   };
   const cancelEnd = () => setShowEndConfirm(false);
@@ -1270,15 +1263,14 @@ const DiscussionPanel: FC = () => {
               maxRounds={rules.maxRounds}
               turnOrder={rules.turnOrder}
               paused={paused}
-              artifactsOpen={showArtifactsDrawer}
-              artifactCount={artifactCount}
               onPauseToggle={paused ? resume : pauseAction}
               onEnd={() => setShowEndConfirm(true)}
-              onArtifactsToggle={() => setShowArtifactsDrawer((v) => !v)}
+              onToggleArtifacts={toggleArtifacts}
+              artifactsVisible={artifactsDrawerVisible}
             />
             <ChatroomBody messages={messages} />
-            {showArtifactsDrawer && (
-              <ArtifactsDrawer messages={messages} onClose={() => setShowArtifactsDrawer(false)} />
+            {artifactsDrawerVisible && (
+              <ArtifactsDrawer messages={messages} onClose={() => setArtifactsDrawerVisible(false)} />
             )}
             <ChatroomFooter
               paused={paused}
