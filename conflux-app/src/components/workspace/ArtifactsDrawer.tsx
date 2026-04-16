@@ -391,7 +391,9 @@ const ArtifactsDrawer: FC<ArtifactsDrawerProps> = ({ messages, onClose }) => {
           flexShrink: 0,
         }}
       >
-        <IconChevronUp size={14} style={{ color: COLORS.textMuted }} />
+        <span style={{ color: COLORS.textMuted }}>
+          <IconChevronUp size={14} />
+        </span>
         <span
           style={{
             fontFamily: "'Fraunces Variable', Georgia, serif",

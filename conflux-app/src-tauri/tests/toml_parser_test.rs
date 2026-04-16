@@ -1,17 +1,31 @@
-// ===== TOML 配置解析器单元测试 =====
-// 测试 parse_adapter_toml 和 load_adapter_toml 的各种场景
+// ===== TOML configuration parser unit tests =====
+// Tests for parse_adapter_toml and load_adapter_toml
+//
+// TOML 1.0 spec notes:
+// - Top-level fields (permission_pattern, etc.) MUST be declared BEFORE [capabilities] table
+// - In TOML basic strings, \ only escapes \\, \", \', \n, \t, \r, \b, \f, \u, \U
+// - Rust raw string r#"..."# passes content directly to TOML parser
 
 use conflux_lib::adapter::toml_parser::parse_adapter_toml;
 use conflux_lib::core::ConfluxError;
 
-// ===== 完整 TOML 解析测试 =====
+// ===== Full TOML parse test =====
 
 #[test]
 fn test_parse_full_toml() {
+    // IMPORTANT: top-level fields must come BEFORE [capabilities] table
     let toml_content = r#"
 name = "Claude Code"
 command = "claude"
 default_args = ["--no-banner", "--verbose"]
+
+# Top-level pattern fields (must be before [capabilities])
+permission_pattern = "Allow|Deny|Do you want to"
+# Use a pattern that doesn't require backslash escaping in TOML.
+# The actual sub_agent_spawn regex "Spawning agent|Agent\(" works when written as
+# "Spawning agent|Agent\\(" in TOML (since \\ = escaped backslash = \).
+sub_agent_spawn_pattern = "Spawning|Agent"
+sub_agent_complete_pattern = "Agent completed|agent finished"
 
 [status_patterns]
 thinking = "⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|Thinking"
@@ -25,10 +39,6 @@ can_coordinate = true
 coordination_template = "You are coordinating..."
 can_parse_tree = true
 can_detect_permission = true
-
-permission_pattern = "Allow|Deny|Do you want to"
-sub_agent_spawn_pattern = "Spawning agent|Agent\\("
-sub_agent_complete_pattern = "Agent completed|agent finished"
 "#;
 
     let config = parse_adapter_toml(toml_content).unwrap();
@@ -37,7 +47,7 @@ sub_agent_complete_pattern = "Agent completed|agent finished"
     assert_eq!(config.command, "claude");
     assert_eq!(config.default_args, vec!["--no-banner", "--verbose"]);
 
-    // 状态检测模式
+    // Status patterns
     assert!(config.status_patterns.thinking.is_some());
     assert!(config
         .status_patterns
@@ -50,19 +60,19 @@ sub_agent_complete_pattern = "Agent completed|agent finished"
     assert!(config.status_patterns.error.is_some());
     assert!(config.status_patterns.waiting_permission.is_some());
 
-    // 能力声明
+    // Capabilities
     assert!(config.capabilities.can_coordinate);
     assert!(config.capabilities.coordination_template.is_some());
     assert!(config.capabilities.can_parse_tree);
     assert!(config.capabilities.can_detect_permission);
 
-    // 额外检测模式
+    // Pattern fields (must be before [capabilities] in TOML)
     assert!(config.permission_pattern.is_some());
     assert!(config.sub_agent_spawn_pattern.is_some());
     assert!(config.sub_agent_complete_pattern.is_some());
 }
 
-// ===== 最小 TOML 解析测试 =====
+// ===== Minimal TOML parse test =====
 
 #[test]
 fn test_parse_minimal_toml() {
@@ -76,7 +86,7 @@ command = "simple-cli"
     assert_eq!(config.name, "Simple Adapter");
     assert_eq!(config.command, "simple-cli");
 
-    // 默认值验证
+    // Default values
     assert!(config.default_args.is_empty());
     assert!(config.status_patterns.thinking.is_none());
     assert!(config.status_patterns.coding.is_none());
@@ -92,7 +102,7 @@ command = "simple-cli"
     assert!(config.sub_agent_complete_pattern.is_none());
 }
 
-// ===== 缺少必填字段测试 =====
+// ===== Missing required fields tests =====
 
 #[test]
 fn test_missing_name() {
@@ -107,7 +117,7 @@ command = "some-cli"
         ConfluxError::InvalidConfig { message } => {
             assert!(message.contains("name"));
         }
-        other => panic!("期望 InvalidConfig 错误，实际得到: {:?}", other),
+        other => panic!("Expected InvalidConfig error, got: {:?}", other),
     }
 }
 
@@ -124,7 +134,7 @@ name = "Test Adapter"
         ConfluxError::InvalidConfig { message } => {
             assert!(message.contains("command"));
         }
-        other => panic!("期望 InvalidConfig 错误，实际得到: {:?}", other),
+        other => panic!("Expected InvalidConfig error, got: {:?}", other),
     }
 }
 
@@ -142,7 +152,7 @@ command = "some-cli"
         ConfluxError::InvalidConfig { message } => {
             assert!(message.contains("name"));
         }
-        other => panic!("期望 InvalidConfig 错误，实际得到: {:?}", other),
+        other => panic!("Expected InvalidConfig error, got: {:?}", other),
     }
 }
 
@@ -160,11 +170,11 @@ command = "  "
         ConfluxError::InvalidConfig { message } => {
             assert!(message.contains("command"));
         }
-        other => panic!("期望 InvalidConfig 错误，实际得到: {:?}", other),
+        other => panic!("Expected InvalidConfig error, got: {:?}", other),
     }
 }
 
-// ===== 可选字段默认值测试 =====
+// ===== Optional field defaults tests =====
 
 #[test]
 fn test_optional_fields_default() {
@@ -177,7 +187,6 @@ command = "minimal-cli"
 
     let config = parse_adapter_toml(toml_content).unwrap();
 
-    // capabilities 中的布尔字段应默认为 false
     assert!(!config.capabilities.can_coordinate);
     assert!(!config.capabilities.can_parse_tree);
     assert!(!config.capabilities.can_detect_permission);
@@ -197,7 +206,6 @@ can_coordinate = true
     let config = parse_adapter_toml(toml_content).unwrap();
 
     assert!(config.capabilities.can_coordinate);
-    // 未指定的字段应为默认值
     assert!(!config.capabilities.can_parse_tree);
     assert!(!config.capabilities.can_detect_permission);
 }
@@ -224,7 +232,7 @@ thinking = "Thinking"
     assert!(config.status_patterns.waiting_permission.is_none());
 }
 
-// ===== 无效 TOML 语法测试 =====
+// ===== Invalid TOML syntax tests =====
 
 #[test]
 fn test_invalid_toml_syntax() {
@@ -237,11 +245,11 @@ fn test_invalid_toml_syntax() {
         ConfluxError::InvalidConfig { message } => {
             assert!(message.contains("TOML"));
         }
-        other => panic!("期望 InvalidConfig 错误，实际得到: {:?}", other),
+        other => panic!("Expected InvalidConfig error, got: {:?}", other),
     }
 }
 
-// ===== 无效正则模式测试 =====
+// ===== Invalid regex pattern tests =====
 
 #[test]
 fn test_invalid_regex_in_status_patterns() {
@@ -261,7 +269,7 @@ thinking = "[invalid regex"
             assert!(message.contains("正则模式无效"));
             assert!(message.contains("thinking"));
         }
-        other => panic!("期望 InvalidConfig 错误，实际得到: {:?}", other),
+        other => panic!("Expected InvalidConfig error, got: {:?}", other),
     }
 }
 
@@ -281,11 +289,11 @@ permission_pattern = "(unclosed"
             assert!(message.contains("正则模式无效"));
             assert!(message.contains("permission_pattern"));
         }
-        other => panic!("期望 InvalidConfig 错误，实际得到: {:?}", other),
+        other => panic!("Expected InvalidConfig error, got: {:?}", other),
     }
 }
 
-// ===== load_adapter_toml 文件读取测试 =====
+// ===== load_adapter_toml file read test =====
 
 #[test]
 fn test_load_nonexistent_file() {
@@ -297,11 +305,11 @@ fn test_load_nonexistent_file() {
         ConfluxError::InvalidConfig { message } => {
             assert!(message.contains("无法读取"));
         }
-        other => panic!("期望 InvalidConfig 错误，实际得到: {:?}", other),
+        other => panic!("Expected InvalidConfig error, got: {:?}", other),
     }
 }
 
-// ===== 边界情况测试 =====
+// ===== Edge case tests =====
 
 #[test]
 fn test_empty_default_args() {
@@ -340,4 +348,48 @@ command = "test-cli"
 
     let result = parse_adapter_toml(toml_content);
     assert!(result.is_err());
+}
+
+// ===== TOML 1.0 field order tests =====
+
+#[test]
+fn test_top_level_fields_before_capabilities_table() {
+    let toml_content = r#"
+name = "Top Level Test"
+command = "test-cli"
+
+permission_pattern = "Allow|Deny"
+sub_agent_spawn_pattern = "Spawn"
+sub_agent_complete_pattern = "Done"
+
+[capabilities]
+can_detect_permission = true
+"#;
+
+    let config = parse_adapter_toml(toml_content).unwrap();
+
+    assert!(config.permission_pattern.is_some());
+    assert!(config.sub_agent_spawn_pattern.is_some());
+    assert!(config.sub_agent_complete_pattern.is_some());
+}
+
+#[test]
+fn test_top_level_fields_after_capabilities_table_optional() {
+    // When pattern fields are defined AFTER [capabilities] table, they are parsed
+    // as children of [capabilities] (i.e., capabilities.permission_pattern),
+    // not as root-level fields. So root.permission_pattern remains None.
+    let toml_content = r#"
+name = "After Table Test"
+command = "test-cli"
+
+[capabilities]
+can_detect_permission = true
+
+permission_pattern = "Should be ignored"
+"#;
+
+    let config = parse_adapter_toml(toml_content).unwrap();
+    assert_eq!(config.name, "After Table Test");
+    // permission_pattern after [capabilities] belongs to capabilities table
+    assert!(config.permission_pattern.is_none());
 }

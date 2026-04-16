@@ -28,7 +28,7 @@ i18n
   });
 
 // Persist language preference
-i18n.on("languageChanged", (lng) => {
+i18n.on("languageChanged", (lng: string) => {
   localStorage.setItem("conflux.lang", lng);
 });
 

@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use conflux_lib::adapter::registry::AdapterRegistry;
 use conflux_lib::adapter::traits::{AgentAdapter, AgentInstance};
 use conflux_lib::core::{
-    AdapterCapabilities, AdapterConfig, ConfluxError, ConfluxEvent, InstanceId, StatusPatterns,
+    AdapterCapabilities, AdapterConfig, ConfluxError, ConfluxEvent, StatusPatterns,
 };
 
 /// 测试用 mock 适配器
@@ -60,6 +60,8 @@ fn make_config(name: &str) -> AdapterConfig {
         name: name.to_string(),
         command: "test-cmd".to_string(),
         default_args: vec![],
+        sandbox_args: vec![],
+        full_args: vec![],
         status_patterns: StatusPatterns {
             thinking: None,
             coding: None,

@@ -87,11 +87,12 @@ impl OutputBuffer {
             return Vec::new();
         }
 
-        if self.total_written <= self.capacity as u64 {
+        if self.total_written < self.capacity as u64 {
             // 未发生环绕——data[0..write_pos] 就是全部有效数据
             self.data[..self.write_pos].to_vec()
         } else {
-            // 已发生环绕——从 write_pos 开始读到末尾，再从 0 读到 write_pos
+            // 已发生环绕（total_written == capacity 或 > capacity）
+            // write_pos 指向最旧数据起始位置（环绕后第一字节），需要从该位置开始读
             let mut result = Vec::with_capacity(self.capacity);
             result.extend_from_slice(&self.data[self.write_pos..]);
             result.extend_from_slice(&self.data[..self.write_pos]);
@@ -110,11 +111,12 @@ impl OutputBuffer {
 
         let n = n.min(valid_len);
 
-        if self.total_written <= self.capacity as u64 {
-            // 未环绕——从 write_pos 往前取 n 字节
+        if self.total_written < self.capacity as u64 {
+            // 未发生环绕——最新数据在 write_pos 之前
             self.data[self.write_pos - n..self.write_pos].to_vec()
         } else {
-            // 已环绕——最新数据在 write_pos 之前
+            // 已环绕（total_written == capacity 或 > capacity）
+            // 最新数据在 write_pos 之前
             if n <= self.write_pos {
                 // 最后 n 字节全在 [0..write_pos] 范围内
                 self.data[self.write_pos - n..self.write_pos].to_vec()

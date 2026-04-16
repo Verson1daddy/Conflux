@@ -66,6 +66,7 @@ export type {
   DiscussionMessageData,
   DiscussionMessage,
   DiscussionSummary,
+  CodeBlock,
 } from "./discussion";
 
 // 布局相关类型

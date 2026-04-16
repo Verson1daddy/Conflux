@@ -5,7 +5,7 @@
 // Uses a single-column layout: plain text as prose, code blocks as standalone
 // blocks with a header row (language label + copy button) and highlighted code.
 
-import { type FC, useState } from "react";
+import { type FC, type ComponentPropsWithoutRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
@@ -280,7 +280,7 @@ function MessageBody({ body, codeBlocks }: { body: string; codeBlocks: CodeBlock
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
-          code({ className, children, ...props }) {
+          code({ className, children }: ComponentPropsWithoutRef<'code'>) {
             const match = /language-(\w+)/.exec(className || "");
             const lang = match ? match[1] : "";
             const code = String(children).replace(/\n$/, "");
@@ -293,7 +293,7 @@ function MessageBody({ body, codeBlocks }: { body: string; codeBlocks: CodeBlock
             }
             return <InlineCode>{children}</InlineCode>;
           },
-          pre({ children }) {
+          pre({ children }: ComponentPropsWithoutRef<'pre'>) {
             // Let the code component handle it
             return <>{children}</>;
           },
@@ -333,7 +333,7 @@ function MessageBody({ body, codeBlocks }: { body: string; codeBlocks: CodeBlock
             key={i}
             remarkPlugins={[remarkGfm]}
             components={{
-              code({ className, children, ...props }) {
+              code({ className, children }: ComponentPropsWithoutRef<'code'>) {
                 const match = /language-(\w+)/.exec(className || "");
                 if (match) {
                   const code = String(children).replace(/\n$/, "");
@@ -345,7 +345,7 @@ function MessageBody({ body, codeBlocks }: { body: string; codeBlocks: CodeBlock
                 }
                 return <InlineCode>{children}</InlineCode>;
               },
-              pre({ children }) {
+              pre({ children }: ComponentPropsWithoutRef<'pre'>) {
                 return <>{children}</>;
               },
             }}

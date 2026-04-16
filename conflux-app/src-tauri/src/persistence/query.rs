@@ -411,7 +411,7 @@ fn deserialize_discussion_status(status_str: &str) -> DiscussionStatus {
 mod tests {
     use super::*;
     use crate::core::types::{
-        CardLayout, LayoutMode, Position, Size, AutoPackConfig,
+        CardLayout, LayoutMode, Position, Size,
     };
     use crate::persistence::schema::init_database;
 

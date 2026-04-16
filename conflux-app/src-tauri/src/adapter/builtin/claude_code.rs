@@ -228,7 +228,17 @@ impl AgentAdapter for ClaudeCodeAdapter {
             });
         }
 
-        // 3. Sub-agent 生成检测（在状态检测之前，因为 "Agent(" 不应被误判为状态变更）
+        // 3. 等待权限状态检测
+        if self.patterns.waiting_permission.is_match(raw_line) {
+            return Some(ConfluxEvent::AgentStatusChanged {
+                instance_id: placeholder_id,
+                old_status: AgentStatus::Idle,
+                new_status: AgentStatus::WaitingPermission,
+                timestamp: now,
+            });
+        }
+
+        // 4. Sub-agent 生成检测（在状态检测之前，因为 "Agent(" 不应被误判为状态变更）
         if self.patterns.sub_agent_spawn.is_match(raw_line) {
             return Some(ConfluxEvent::SubAgentSpawned {
                 instance_id: placeholder_id,
