@@ -15,6 +15,8 @@ import type {
   TurnOrder,
 } from "@/stores/agentStore";
 import type { AgentInstanceInfo } from "@/types";
+import { MessageRenderer } from "./MessageRenderer";
+import { ArtifactsDrawer } from "./ArtifactsDrawer";
 
 // ===== Palette (light theme — intentionally contrasts the dark workspace) =====
 
@@ -893,7 +895,9 @@ const ChatroomHeader: FC<{
   paused: boolean;
   onPauseToggle: () => void;
   onEnd: () => void;
-}> = ({ title, round, maxRounds, turnOrder, paused, onPauseToggle, onEnd }) => {
+  onToggleArtifacts: () => void;
+  artifactsVisible: boolean;
+}> = ({ title, round, maxRounds, turnOrder, paused, onPauseToggle, onEnd, onToggleArtifacts, artifactsVisible }) => {
   const orderLabel =
     turnOrder === "primary_moderates" ? "Primary moderates" :
     turnOrder === "round_robin"       ? "Round-robin"       : "Free-form";
@@ -941,6 +945,27 @@ const ChatroomHeader: FC<{
         {paused ? <IconPlay /> : <IconPause />}
         <span style={{ fontFamily: "'Geist Sans', sans-serif", fontSize: 12, fontWeight: 600 }}>
           {paused ? "Resume" : "Pause"}
+        </span>
+      </button>
+      <button
+        onClick={onToggleArtifacts}
+        className="shrink-0 flex items-center"
+        style={{
+          height: 32, padding: "0 12px", gap: 6,
+          borderRadius: 9999,
+          background: artifactsVisible ? COLORS.accentSoft : COLORS.surfaceInputBg,
+          border: `1px solid ${artifactsVisible ? COLORS.accent : COLORS.border}`,
+          color: artifactsVisible ? COLORS.textPrimary : COLORS.textBody,
+          cursor: "pointer",
+        }}
+        title={artifactsVisible ? "Hide artifacts" : "Show artifacts"}
+      >
+        <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="16 18 22 12 16 6"/>
+          <polyline points="8 6 2 12 8 18"/>
+        </svg>
+        <span style={{ fontFamily: "'Geist Sans', sans-serif", fontSize: 12, fontWeight: 600 }}>
+          Artifacts
         </span>
       </button>
       <button
@@ -1004,14 +1029,7 @@ const ChatroomBody: FC<{ messages: DiscussionMessage[] }> = ({ messages }) => {
                 }}>
                   {msg.authorName}  ·  {msg.interject ? `Interjected during Round ${msg.round}` : `Round ${msg.round}`}  ·  {relativeTime(msg.time)}
                 </span>
-                <p style={{
-                  fontFamily: "'Geist Sans', sans-serif",
-                  fontSize: 13, lineHeight: 1.55,
-                  color: bodyColor,
-                  margin: 0, wordBreak: "break-word",
-                }}>
-                  {msg.body}
-                </p>
+                <MessageRenderer body={msg.body} codeBlocks={msg.codeBlocks} />
               </div>
             </div>
           );
@@ -1149,6 +1167,8 @@ const DiscussionPanel: FC = () => {
   const interject = useAgentStore((s) => s.interjectDiscussion);
 
   const [showEndConfirm, setShowEndConfirm] = useState(false);
+  const [artifactsDrawerVisible, setArtifactsDrawerVisible] = useState(false);
+  const toggleArtifacts = useCallback(() => setArtifactsDrawerVisible((v) => !v), []);
 
   // Capture-phase ESC handler so the wizard beats ExpandedAgentCard underneath.
   // On step 4 (chatroom), ESC surfaces the End confirmation instead of closing.
@@ -1242,8 +1262,16 @@ const DiscussionPanel: FC = () => {
               paused={paused}
               onPauseToggle={paused ? resume : pauseAction}
               onEnd={() => setShowEndConfirm(true)}
+              onToggleArtifacts={toggleArtifacts}
+              artifactsVisible={artifactsDrawerVisible}
             />
             <ChatroomBody messages={messages} />
+            {artifactsDrawerVisible && (
+              <ArtifactsDrawer
+                messages={messages}
+                onClose={() => setArtifactsDrawerVisible(false)}
+              />
+            )}
             <ChatroomFooter
               paused={paused}
               primaryName={primaryName}

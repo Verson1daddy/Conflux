@@ -1,0 +1,115 @@
+{
+  // ===== i18n — English Translations (Framework) =====
+  // C3: Fill in complete English text for all keys.
+  // Pattern: namespace.key = "English text"
+
+  // App-level
+  "app.name": "Conflux",
+  "app.version": "v0.1.0-alpha",
+  "app.windows": "Windows 11",
+
+  // StatusBar
+  "statusBar.noActiveAgents": "No active agents",
+  "statusBar.session": "Session",
+
+  // Discussion Wizard
+  "discussion.title.new": "New Discussion",
+  "discussion.title.rules": "Discussion Rules",
+  "discussion.title.participants": "Pick Participants",
+  "discussion.title.live": "Discussion",
+  "discussion.step.direction": "Direction",
+  "discussion.step.rules": "Rules",
+  "discussion.step.participants": "Participants",
+  "discussion.step.live": "Live",
+  "discussion.start": "Start Discussion",
+  "discussion.end.title": "End this discussion?",
+  "discussion.end.body": "All agents will stop speaking and the chatroom will close. You can always start a new discussion from the top bar.",
+  "discussion.end.keepGoing": "Keep going",
+  "discussion.end.confirm": "End discussion",
+  "discussion.pause": "Pause",
+  "discussion.resume": "Resume",
+  "discussion.artifacts": "Artifacts",
+  "discussion.hideArtifacts": "Hide artifacts",
+  "discussion.showArtifacts": "Show artifacts",
+  "discussion.round": "Round",
+  "discussion.interjected": "Interjected during Round",
+
+  // Artifacts Drawer
+  "artifacts.title": "Artifacts",
+  "artifacts.codeBlock": "code block",
+  "artifacts.codeBlocks": "code blocks",
+  "artifacts.pinned": "pinned",
+  "artifacts.noArtifacts": "No code blocks yet — agents will generate artifacts as they discuss.",
+  "artifacts.copy": "Copy",
+  "artifacts.copied": "Copied!",
+  "artifacts.pin": "Pin",
+  "artifacts.unpin": "Unpin",
+  "artifacts.selectToPreview": "Select an artifact to preview",
+
+  // Session Playback
+  "session.title": "Session Playback",
+  "session.selectSession": "Select a session to view its playback",
+  "session.noEvents": "No events recorded for this session",
+  "session.event": "Event",
+  "session.speed": "{{speed}}x",
+  "session.eventType.status": "Status",
+  "session.eventType.permission": "Permission",
+  "session.eventType.spawn": "Spawn",
+  "session.eventType.complete": "Complete",
+  "session.eventType.taskDone": "Task Done",
+  "session.eventType.error": "Error",
+  "session.eventType.message": "Message",
+  "session.eventType.command": "Command",
+  "session.eventType.output": "Output",
+  "session.eventType.stdin": "Stdin",
+
+  // Onboarding
+  "onboarding.title": "Welcome to Conflux",
+  "onboarding.next": "Next",
+  "onboarding.skip": "Skip",
+  "onboarding.done": "Done",
+  "onboarding.startTour": "Start Tour",
+
+  // Canvas
+  "canvas.addAgent": "Add Agent",
+  "canvas.fitAll": "Fit All",
+  "canvas.autoArrange": "Auto Arrange",
+
+  // Agent Card
+  "agentCard.pin": "Pin",
+  "agentCard.unpin": "Unpin",
+  "agentCard.settings": "Settings",
+  "agentCard.discussion": "Discussion",
+  "agentCard.remove": "Remove Agent",
+
+  // Session
+  "session.history": "History",
+  "session.noSessions": "No sessions recorded",
+
+  // Settings
+  "settings.title": "Settings",
+  "settings.close": "Close",
+  "settings.language": "Language",
+  "settings.theme": "Theme",
+  "settings.about": "About",
+
+  // Close confirm
+  "close.title": "Close Conflux?",
+  "close.tray": "Minimize to tray",
+  "close.quit": "Quit",
+  "close.cancel": "Cancel",
+  "close.remember": "Remember my choice",
+
+  // Common
+  "common.cancel": "Cancel",
+  "common.confirm": "Confirm",
+  "common.save": "Save",
+  "common.delete": "Delete",
+  "common.edit": "Edit",
+  "common.close": "Close",
+  "common.back": "Back",
+  "common.next": "Next",
+  "common.loading": "Loading…",
+  "common.error": "Error",
+  "common.success": "Success"
+}

@@ -2,7 +2,7 @@
 // Converts backend DiscussionMessage (Rust struct) to frontend DiscussionMessage
 // (agentStore format) for rendering in the chatroom.
 
-import type { AgentInstanceInfo, DiscussionMessage as BackendDiscussionMessage } from "@/types";
+import type { AgentInstanceInfo, DiscussionMessage as BackendDiscussionMessage, CodeBlock } from "@/types";
 import type { DiscussionMessage as FrontendDiscussionMessage } from "@/stores/agentStore";
 
 // ===== Adapter avatar colors =====
@@ -15,6 +15,32 @@ const AVATAR_COLORS: Record<string, string> = {
 };
 
 const DEFAULT_AVATAR_COLOR = "#8A8A8A";
+
+// ===== Code block extraction =====
+
+/**
+ * Parse code blocks from message content using regex.
+ * Matches triple-backtick fences with optional language tag.
+ *
+ * Examples:
+ *   ```python\nprint("hi")\n```   → lang="python", content="print(\"hi\")"
+ *   ```\nsome code\n```          → lang="", content="some code"
+ *   `inline` (single backtick) → NOT matched
+ */
+export function parseCodeBlocks(text: string): CodeBlock[] | null {
+  const blocks: CodeBlock[] = [];
+  const fenceRe = /```(\w*)\n([\s\S]*?)```/g;
+  let match: RegExpExecArray | null;
+  while ((match = fenceRe.exec(text)) !== null) {
+    blocks.push({
+      lang: match[1] ?? "",
+      content: match[2],
+      startOffset: match.index,
+      endOffset: match.index + match[0].length,
+    });
+  }
+  return blocks.length > 0 ? blocks : null;
+}
 
 // ===== Helpers =====
 
@@ -69,6 +95,11 @@ export function toFrontendMessage(
     avatarBg = "#4A4A4A";
   }
 
+  // Use backend-extracted code_blocks if available; otherwise parse from content.
+  // Frontend parsing is the fallback until backend populates code_blocks.
+  const codeBlocks: CodeBlock[] | null =
+    backend.code_blocks?.length ? backend.code_blocks : parseCodeBlocks(backend.content);
+
   return {
     id: backend.id,
     authorInstanceId,
@@ -79,5 +110,6 @@ export function toFrontendMessage(
     interject: isInterject,
     time: backend.created_at,
     body: backend.content,
+    codeBlocks,
   };
 }
