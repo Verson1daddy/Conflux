@@ -897,7 +897,7 @@ const ChatroomHeader: FC<{
   onEnd: () => void;
   onToggleArtifacts: () => void;
   artifactsVisible: boolean;
-}> = ({ title, round, maxRounds, turnOrder, paused, onPauseToggle, onEnd, onToggleArtifacts, artifactsVisible }) => {
+}> = ({ title, round, maxRounds, turnOrder, paused, artifactsVisible, onPauseToggle, onEnd, onToggleArtifacts }) => {
   const orderLabel =
     turnOrder === "primary_moderates" ? "Primary moderates" :
     turnOrder === "round_robin"       ? "Round-robin"       : "Free-form";
@@ -953,9 +953,9 @@ const ChatroomHeader: FC<{
         style={{
           height: 32, padding: "0 12px", gap: 6,
           borderRadius: 9999,
-          background: artifactsVisible ? COLORS.accentSoft : COLORS.surfaceInputBg,
+          background: artifactsVisible ? COLORS.accent : "transparent",
           border: `1px solid ${artifactsVisible ? COLORS.accent : COLORS.border}`,
-          color: artifactsVisible ? COLORS.textPrimary : COLORS.textBody,
+          color: artifactsVisible ? COLORS.textPrimary : COLORS.textMuted,
           cursor: "pointer",
         }}
         title={artifactsVisible ? "Hide artifacts" : "Show artifacts"}
@@ -1212,6 +1212,7 @@ const DiscussionPanel: FC = () => {
 
   const confirmEnd = () => {
     setShowEndConfirm(false);
+setArtifactsDrawerVisible(false);
     endAction();
   };
   const cancelEnd = () => setShowEndConfirm(false);
@@ -1266,10 +1267,7 @@ const DiscussionPanel: FC = () => {
             />
             <ChatroomBody messages={messages} />
             {artifactsDrawerVisible && (
-              <ArtifactsDrawer
-                messages={messages}
-                onClose={() => setArtifactsDrawerVisible(false)}
-              />
+              <ArtifactsDrawer messages={messages} onClose={() => setArtifactsDrawerVisible(false)} />
             )}
             <ChatroomFooter
               paused={paused}

@@ -60,7 +60,7 @@ function langLabel(raw: string): string {
 // ===== Artifact types =====
 
 /** A flattened code artifact for display in the drawer */
-export interface Artifact {
+export interface ArtifactData {
   id: string;           // unique within discussion: "${msgId}-${blockIdx}"
   msgId: string;
   authorName: string;
@@ -73,8 +73,8 @@ export interface Artifact {
 }
 
 // Extract all artifacts from discussion messages
-export function extractArtifacts(messages: DiscussionMessage[]): Artifact[] {
-  const artifacts: Artifact[] = [];
+export function extractArtifacts(messages: DiscussionMessage[]): ArtifactData[] {
+  const artifacts: ArtifactData[] = [];
   for (const msg of messages) {
     if (!msg.codeBlocks) continue;
     msg.codeBlocks.forEach((block, blockIdx) => {
@@ -100,8 +100,8 @@ const IconX: FC<{ size?: number }> = ({ size = 16 }) => (
     <path d="M18 6 6 18M6 6l12 12"/>
   </svg>
 );
-const IconChevronUp: FC<{ size?: number }> = ({ size = 14 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+const IconChevronUp: FC<{ size?: number; style?: React.CSSProperties }> = ({ size = 14, style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={style}>
     <path d="m18 15-6-6-6 6"/>
   </svg>
 );
@@ -126,7 +126,7 @@ const IconCheck: FC<{ size?: number }> = ({ size = 14 }) => (
 // ===== ArtifactListItem =====
 
 interface ArtifactListItemProps {
-  artifact: Artifact;
+  artifact: ArtifactData;
   selected: boolean;
   onClick: () => void;
   onTogglePin: () => void;
@@ -230,7 +230,7 @@ const ArtifactListItem: FC<ArtifactListItemProps> = ({ artifact, selected, onCli
 
 // ===== Preview pane =====
 
-const PreviewPane: FC<{ artifact: Artifact; onCopy: () => void; copied: boolean }> = ({ artifact, onCopy, copied }) => (
+const PreviewPane: FC<{ artifact: ArtifactData; onCopy: () => void; copied: boolean }> = ({ artifact, onCopy, copied }) => (
   <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
     {/* Preview header */}
     <div
