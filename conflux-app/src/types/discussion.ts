@@ -50,6 +50,21 @@ export type MessageSender =
   | { type: "System" };
 
 /**
+ * 代码块
+ * 从消息内容中通过正则提取，用于 artifacts 抽屉展示
+ */
+export interface CodeBlock {
+  /** 语言标签，如 "python", "typescript", "rust"，空字符串表示未标注 */
+  lang: string;
+  /** 代码内容（不含 fence 标记） */
+  content: string;
+  /** 在原消息中的起始位置 */
+  startOffset: number;
+  /** 在原消息中的结束位置 */
+  endOffset: number;
+}
+
+/**
  * 讨论消息数据
  * 对应 Rust DiscussionMessageData
  */
@@ -66,6 +81,8 @@ export interface DiscussionMessageData {
   round: number;
   /** 创建时间（Unix 时间戳 ms） */
   created_at: number;
+  /** 提取的代码块（从 content 中正则解析，为 null 表示无代码块） */
+  code_blocks: CodeBlock[] | null;
 }
 
 /**
