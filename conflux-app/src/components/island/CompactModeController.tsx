@@ -86,12 +86,13 @@ function reduceSidebarState(state: SidebarState, action: SidebarAction): Sidebar
         collapseArmed: false,
       };
     case "collapse_from_timeout":
-      if (!state.collapseArmed || state.hotzoneHovered || state.panelHovered) {
+      if (!state.collapseArmed || state.panelHovered) {
         return state;
       }
       return {
-        ...state,
         expanded: false,
+        hotzoneHovered: false,
+        panelHovered: false,
         collapseArmed: false,
       };
     default:

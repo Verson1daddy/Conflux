@@ -362,10 +362,23 @@ describe("compact-mode", () => {
   it("does not double count pending permissions already represented by unread permission notifications", async () => {
     const html = await renderFloatBallWithIslandState({
       notifications: [
-        { id: "notif-1", level: "permission_required", read: false },
-        { id: "notif-2", level: "permission_required", read: false },
+        { id: "perm-1", level: "permission_required", read: false },
+        { id: "perm-2", level: "permission_required", read: false },
       ],
       pendingPermissions: [{ id: "perm-1" }, { id: "perm-2" }],
+      unreadCount: 0,
+    });
+
+    expect(html).toContain('aria-label="Float ball activity count 2"');
+    expect(html).toMatch(/<span[^>]*aria-label="Float ball activity count 2"[^>]*>2<\/span>/);
+  });
+
+  it("keeps stale permission notification ids separate from unmatched pending permissions", async () => {
+    const html = await renderFloatBallWithIslandState({
+      notifications: [
+        { id: "notif-stale", level: "permission_required", read: false },
+      ],
+      pendingPermissions: [{ id: "perm-1" }],
       unreadCount: 0,
     });
 
@@ -453,6 +466,43 @@ describe("compact-mode", () => {
       await act(async () => {
         panelSensor.props.onMouseLeave();
       });
+      await act(async () => {
+        vi.advanceTimersByTime(159);
+      });
+
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(1);
+
+      await act(async () => {
+        vi.advanceTimersByTime(1);
+      });
+
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(0);
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerSidebarMocks();
+    }
+  });
+
+  it("auto-collapses after hotzone-only hover without entering the panel", async () => {
+    const renderer = await renderCompactModeControllerForSidebarFlow();
+
+    try {
+      const sidebarPanel = renderer.root.findByType(SidebarPanelMock);
+      await act(async () => {
+        sidebarPanel.props.onCollapse();
+      });
+
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(0);
+
+      const hotzone = renderer.root.findByType(SidebarHotzoneMock);
+      await act(async () => {
+        hotzone.props.onHoverChange(true);
+      });
+
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(1);
+
       await act(async () => {
         vi.advanceTimersByTime(159);
       });

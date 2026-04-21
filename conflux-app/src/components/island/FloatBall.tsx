@@ -80,16 +80,18 @@ export const FloatBall: FC<FloatBallProps> = ({ onExpand }) => {
   const pendingPermissions = useIslandStore((s) => s.pendingPermissions);
 
   const derivedState = useMemo(() => {
-    const unreadNotificationCount = notifications.filter((notification) => !notification.read).length;
-    const unreadPermissionNotificationCount = notifications.filter(
-      (notification) =>
-        !notification.read && notification.level === "permission_required"
-    ).length;
-    const unmatchedPendingPermissions = Math.max(
-      0,
-      pendingPermissions.length - unreadPermissionNotificationCount
+    const unreadNotifications = notifications.filter((notification) => !notification.read);
+    const unreadNotificationCount = unreadNotifications.length;
+    // Contract: permission_required notification ids mirror permission request ids.
+    const unreadPermissionNotificationIds = new Set(
+      unreadNotifications
+        .filter((notification) => notification.level === "permission_required")
+        .map((notification) => notification.id)
     );
-    const hasError = notifications.some((n) => !n.read && n.level === "error");
+    const unmatchedPendingPermissions = pendingPermissions.filter(
+      (permission) => !unreadPermissionNotificationIds.has(permission.id)
+    ).length;
+    const hasError = unreadNotifications.some((notification) => notification.level === "error");
     const badgeCount = unreadNotificationCount + unmatchedPendingPermissions;
 
     return {
