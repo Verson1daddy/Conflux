@@ -100,26 +100,10 @@ function reduceSidebarState(state: SidebarState, action: SidebarAction): Sidebar
   }
 }
 
-function anchorFromSurface(
-  surface: HTMLDivElement | null,
-  fallback: { x: number; y: number },
-) {
-  if (!surface) {
-    return fallback;
-  }
-
-  const rect = surface.getBoundingClientRect();
-  return {
-    x: rect.left + rect.width / 2,
-    y: rect.top + Math.min(rect.height, 52),
-  };
-}
-
 export const CompactModeController: FC = () => {
   const mode = useIslandStore((state) => state.mode) as IslandMode;
   const [detail, setDetail] = useState<CompactDetailState>({ kind: "none" });
   const [sidebar, dispatchSidebar] = useReducer(reduceSidebarState, mode, createSidebarState);
-  const surfaceRef = useRef<HTMLDivElement | null>(null);
   const collapseTimeoutRef = useRef<number | null>(null);
 
   const clearSidebarCollapseTimeout = useCallback(() => {
@@ -146,8 +130,7 @@ export const CompactModeController: FC = () => {
     void showWorkspaceOnly();
   }, [clearSidebarCollapseTimeout, closeDetail]);
 
-  const toggleTopIslandPopover = useCallback(() => {
-    const anchor = anchorFromSurface(surfaceRef.current, { x: 420, y: 48 });
+  const toggleTopIslandPopover = useCallback((anchor: { x: number; y: number }) => {
     setDetail((currentDetail) =>
       nextDetailState({
         currentMode: mode,
@@ -219,7 +202,7 @@ export const CompactModeController: FC = () => {
               dispatchSidebar({ type: "set_panel_hovered", hovered: false })
             }
           >
-            <IslandSurface ref={surfaceRef} mode={mode}>
+            <IslandSurface mode={mode}>
               <Sidebar onCollapse={() => dispatchSidebar({ type: "collapse" })} />
             </IslandSurface>
           </div>
@@ -231,7 +214,7 @@ export const CompactModeController: FC = () => {
   if (mode === "float_ball") {
     return (
       <>
-        <IslandSurface ref={surfaceRef} mode={mode}>
+        <IslandSurface mode={mode}>
           <FloatBall onExpand={toggleFloatBallPanel} />
         </IslandSurface>
         {detail.kind === "float_ball_panel" && (
@@ -246,7 +229,7 @@ export const CompactModeController: FC = () => {
 
   return (
     <>
-      <IslandSurface ref={surfaceRef} mode={mode}>
+      <IslandSurface mode={mode}>
         <TopIsland onExpand={toggleTopIslandPopover} />
       </IslandSurface>
       {detail.kind === "top_island_popover" && (

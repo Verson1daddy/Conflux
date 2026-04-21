@@ -13,6 +13,287 @@
   --duration-exit: 0.22s;
 }
 
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: #050507;
+  color: #f2f2f2;
+}
+
+html[data-window-label="island"],
+html[data-window-label="island"] body,
+html[data-window-label="island"] #root {
+  background: transparent !important;
+}
+
+@keyframes island-capsule-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes island-float-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.88);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes island-sidebar-enter {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.island-shell {
+  width: 100%;
+  height: 100%;
+  will-change: transform, opacity;
+}
+
+.island-shell[data-mode="top_island"] {
+  animation: island-capsule-enter var(--duration-normal) var(--ease-apple);
+}
+
+.island-shell[data-mode="float_ball"] {
+  animation: island-float-enter var(--duration-normal) var(--ease-apple);
+}
+
+.island-shell[data-mode="sidebar"] {
+  animation: island-sidebar-enter 0.32s var(--ease-apple);
+}
+
+.island-pressable {
+  transition:
+    transform var(--duration-fast) var(--ease-apple),
+    box-shadow var(--duration-normal) var(--ease-apple),
+    border-color var(--duration-normal) var(--ease-apple),
+    background-color var(--duration-normal) var(--ease-apple);
+}
+
+.island-pressable:hover {
+  transform: translateY(-1px) scale(1.01);
+}
+
+.island-pressable:active {
+  transform: translateY(0) scale(0.98);
+}
+
+.top-island-capsule {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background:
+    linear-gradient(180deg, rgba(19, 24, 31, 0.92), rgba(8, 11, 16, 0.96));
+  box-shadow:
+    0 14px 34px rgba(0, 0, 0, 0.38),
+    0 0 18px rgba(184, 212, 227, 0.16);
+  cursor: pointer;
+  text-align: left;
+}
+
+.top-island-capsule[data-visual-state="permission"] {
+  border-color: rgba(255, 184, 0, 0.22);
+  box-shadow:
+    0 16px 36px rgba(0, 0, 0, 0.4),
+    0 0 22px rgba(255, 184, 0, 0.18);
+}
+
+.top-island-capsule[data-visual-state="active"] {
+  border-color: rgba(184, 212, 227, 0.12);
+  box-shadow:
+    0 16px 36px rgba(0, 0, 0, 0.4),
+    0 0 22px rgba(184, 212, 227, 0.16);
+}
+
+.top-island-capsule__icon {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
+.top-island-capsule__copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+}
+
+.top-island-capsule__eyebrow {
+  color: rgba(255, 255, 255, 0.48);
+  font-family: "Geist Sans", sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+.top-island-capsule__title {
+  color: #f7fbff;
+  font-family: "Geist Sans", sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.top-island-capsule__meta {
+  color: rgba(255, 255, 255, 0.56);
+  font-family: "Geist Sans", sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.compact-detail {
+  animation: popover-enter var(--duration-fast) var(--ease-apple);
+}
+
+.top-island-popover {
+  width: 272px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background:
+    linear-gradient(180deg, rgba(17, 21, 27, 0.94), rgba(8, 11, 16, 0.98));
+  box-shadow:
+    0 18px 48px rgba(0, 0, 0, 0.48),
+    0 0 22px rgba(184, 212, 227, 0.12);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+}
+
+.top-island-popover__header,
+.top-island-popover__section,
+.top-island-popover__footer,
+.top-island-popover__permission-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.top-island-popover__header {
+  justify-content: space-between;
+}
+
+.top-island-popover__badge,
+.top-island-popover__status,
+.top-island-popover__label,
+.top-island-popover__value,
+.top-island-popover__button {
+  font-family: "Geist Sans", sans-serif;
+}
+
+.top-island-popover__badge {
+  color: #f7fbff;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.top-island-popover__status {
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.top-island-popover__status[data-visual-state="permission"] {
+  background: rgba(255, 184, 0, 0.16);
+  color: #ffcf66;
+}
+
+.top-island-popover__status[data-visual-state="active"] {
+  background: rgba(184, 212, 227, 0.12);
+  color: #d5ecf7;
+}
+
+.top-island-popover__section {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.top-island-popover__label {
+  color: rgba(255, 255, 255, 0.48);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+.top-island-popover__value {
+  color: rgba(247, 251, 255, 0.88);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.top-island-popover__permission-actions,
+.top-island-popover__footer {
+  justify-content: flex-end;
+}
+
+.top-island-popover__button {
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.top-island-popover__button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.top-island-popover__button--primary {
+  background: rgba(184, 212, 227, 0.16);
+  color: #f7fbff;
+}
+
+.top-island-popover__button--secondary {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.76);
+}
+
 /* ===== Modal system: scrim + panel enter/exit ===== */
 @keyframes modal-scrim-fade-in {
   from { opacity: 0; }

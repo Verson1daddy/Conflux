@@ -3,6 +3,7 @@ import {
   forwardRef,
   type ForwardedRef,
   type ReactNode,
+  useImperativeHandle,
 } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import TestRenderer, { act } from "react-test-renderer";
@@ -24,6 +25,14 @@ function SidebarHotzoneMock(props: {
 
 function SidebarPanelMock(props: { onCollapse: () => void }) {
   return createElement("sidebar-panel", props);
+}
+
+function TopIslandPopoverMock(props: {
+  anchor: { x: number; y: number };
+  onClose: () => void;
+  onRestoreWorkspace: () => void;
+}) {
+  return createElement("top-island-popover", props);
 }
 
 async function renderFloatBallWithIslandState(input: {
@@ -141,12 +150,135 @@ function cleanupCompactModeControllerSidebarMocks() {
   vi.resetModules();
 }
 
-async function renderTopIslandWithRejectingPermission() {
+async function renderCompactModeControllerForTopIslandFlow() {
+  vi.resetModules();
+
+  const setMode = vi.fn();
+
+  vi.doMock("@/stores/islandStore", () => ({
+    useIslandStore: (
+      selector: (state: {
+        mode: string;
+        setMode: typeof setMode;
+        pendingPermissions: [];
+        notifications: [];
+        unreadCount: number;
+        removePermissionRequest: ReturnType<typeof vi.fn>;
+        clearNotification: ReturnType<typeof vi.fn>;
+      }) => unknown
+    ) =>
+      selector({
+        mode: "top_island",
+        setMode,
+        pendingPermissions: [],
+        notifications: [],
+        unreadCount: 0,
+        removePermissionRequest: vi.fn(),
+        clearNotification: vi.fn(),
+      }),
+  }));
+  vi.doMock("@/stores/agentStore", () => ({
+    useAgentStore: (selector: (state: { instances: Map<string, unknown> }) => unknown) =>
+      selector({ instances: new Map() }),
+  }));
+  vi.doMock("@/lib/tauri-bridge", () => ({
+    respondToPermission: vi.fn(),
+    showWorkspaceOnly: vi.fn(),
+  }));
+  vi.doMock("@/components/island/IslandSurface", () => ({
+    IslandSurface: forwardRef(function IslandSurfaceMock(
+      props: { children: ReactNode; mode: string },
+      ref: ForwardedRef<unknown>,
+    ) {
+      useImperativeHandle(ref, () => ({
+        getBoundingClientRect: () => ({
+          left: 100,
+          top: 20,
+          width: 400,
+          height: 40,
+        }),
+      }));
+
+      return createElement("island-surface", { mode: props.mode }, props.children);
+    }),
+  }));
+  vi.doMock("@/components/island/FloatBall", () => ({
+    FloatBall: () => createElement("float-ball"),
+  }));
+  vi.doMock("@/components/island/FloatBallPanel", () => ({
+    FloatBallPanel: () => createElement("float-ball-panel"),
+  }));
+  vi.doMock("@/components/island/SidebarHotzone", () => ({
+    SidebarHotzone: SidebarHotzoneMock,
+  }));
+  vi.doMock("@/components/island/Sidebar", () => ({
+    Sidebar: SidebarPanelMock,
+  }));
+  vi.doMock("@/components/island/TopIslandPopover", () => ({
+    TopIslandPopover: TopIslandPopoverMock,
+  }));
+
+  try {
+    const { CompactModeController } = await import("@/components/island/CompactModeController");
+    let renderer!: TestRenderer.ReactTestRenderer;
+
+    await act(async () => {
+      renderer = TestRenderer.create(createElement(CompactModeController));
+    });
+
+    return { renderer, setMode };
+  } catch (error) {
+    vi.doUnmock("@/stores/islandStore");
+    vi.doUnmock("@/stores/agentStore");
+    vi.doUnmock("@/lib/tauri-bridge");
+    vi.doUnmock("@/components/island/IslandSurface");
+    vi.doUnmock("@/components/island/FloatBall");
+    vi.doUnmock("@/components/island/FloatBallPanel");
+    vi.doUnmock("@/components/island/SidebarHotzone");
+    vi.doUnmock("@/components/island/Sidebar");
+    vi.doUnmock("@/components/island/TopIslandPopover");
+    vi.resetModules();
+    throw error;
+  }
+}
+
+function cleanupCompactModeControllerTopIslandMocks() {
+  vi.doUnmock("@/stores/islandStore");
+  vi.doUnmock("@/stores/agentStore");
+  vi.doUnmock("@/lib/tauri-bridge");
+  vi.doUnmock("@/components/island/IslandSurface");
+  vi.doUnmock("@/components/island/FloatBall");
+  vi.doUnmock("@/components/island/FloatBallPanel");
+  vi.doUnmock("@/components/island/SidebarHotzone");
+  vi.doUnmock("@/components/island/Sidebar");
+  vi.doUnmock("@/components/island/TopIslandPopover");
+  vi.resetModules();
+}
+
+async function renderTopIslandPopoverWithIslandState(input: {
+  pendingPermissions: Array<{
+    id: string;
+    instance_id: string;
+    action: string;
+    description: string;
+  }>;
+  notifications: Array<{
+    id: string;
+    level: string;
+    read: boolean;
+    source_adapter_name: string;
+    content?: string;
+  }>;
+  unreadCount: number;
+  activeStatuses?: Array<"thinking" | "coding" | "waiting_permission" | "idle">;
+  respondToPermissionMock?: ReturnType<typeof vi.fn>;
+}) {
   vi.resetModules();
 
   const removePermissionRequest = vi.fn();
   const clearNotification = vi.fn();
-  const respondToPermissionMock = vi.fn().mockRejectedValue(new Error("permission failed"));
+  const respondToPermissionMock =
+    input.respondToPermissionMock ?? vi.fn().mockResolvedValue(undefined);
 
   vi.doMock("@/stores/islandStore", () => ({
     useIslandStore: (
@@ -162,6 +294,7 @@ async function renderTopIslandWithRejectingPermission() {
           level: string;
           read: boolean;
           source_adapter_name: string;
+          content?: string;
         }>;
         unreadCount: number;
         removePermissionRequest: typeof removePermissionRequest;
@@ -169,42 +302,39 @@ async function renderTopIslandWithRejectingPermission() {
       }) => unknown
     ) =>
       selector({
-        pendingPermissions: [
-          {
-            id: "perm-1",
-            instance_id: "agent-1",
-            action: "shell",
-            description: "Need approval",
-          },
-        ],
-        notifications: [
-          {
-            id: "perm-1",
-            level: "permission_required",
-            read: false,
-            source_adapter_name: "Conflux",
-          },
-        ],
-        unreadCount: 1,
+        pendingPermissions: input.pendingPermissions,
+        notifications: input.notifications,
+        unreadCount: input.unreadCount,
         removePermissionRequest,
         clearNotification,
       }),
   }));
   vi.doMock("@/stores/agentStore", () => ({
     useAgentStore: (selector: (state: { instances: Map<string, unknown> }) => unknown) =>
-      selector({ instances: new Map() }),
+      selector({
+        instances: new Map(
+          (input.activeStatuses ?? []).map((status, index) => [
+            `agent-${index}`,
+            { status },
+          ])
+        ),
+      }),
   }));
   vi.doMock("@/lib/tauri-bridge", () => ({
     respondToPermission: respondToPermissionMock,
   }));
 
   try {
-    const { TopIsland } = await import("@/components/island/TopIsland");
+    const { TopIslandPopover } = await import("@/components/island/TopIslandPopover");
     let renderer!: TestRenderer.ReactTestRenderer;
 
     await act(async () => {
       renderer = TestRenderer.create(
-        createElement(TopIsland, { onExpand: () => undefined })
+        createElement(TopIslandPopover, {
+          anchor: { x: 320, y: 180 },
+          onClose: () => undefined,
+          onRestoreWorkspace: () => undefined,
+        })
       );
     });
 
@@ -267,6 +397,25 @@ describe("compact-mode", () => {
       kind: "top_island_popover",
       anchor: { x: 600, y: 44 },
     } satisfies CompactDetailState);
+  });
+
+  it("toggles the top island popover at the provided cursor anchor", () => {
+    const opened = nextDetailState({
+      currentMode: "top_island",
+      currentDetail: { kind: "none" },
+      action: { type: "toggle_top_island_popover", anchor: { x: 700, y: 52 } },
+    });
+    const closed = nextDetailState({
+      currentMode: "top_island",
+      currentDetail: opened,
+      action: { type: "toggle_top_island_popover", anchor: { x: 700, y: 52 } },
+    });
+
+    expect(opened).toEqual({
+      kind: "top_island_popover",
+      anchor: { x: 700, y: 52 },
+    });
+    expect(closed).toEqual({ kind: "none" });
   });
 
   it("expands the sidebar while scheduling collapse when the pointer only brushes the hotzone", () => {
@@ -406,6 +555,34 @@ describe("compact-mode", () => {
     expect(detail).toEqual({ kind: "none" });
   });
 
+  it("clicking dynamic island only toggles its popover and keeps mode stable", async () => {
+    const { renderer, setMode } = await renderCompactModeControllerForTopIslandFlow();
+
+    try {
+      const topIslandButton = renderer.root.findByType("button");
+
+      await act(async () => {
+        topIslandButton.props.onClick({ clientX: 250, clientY: 120 });
+      });
+
+      const popover = renderer.root.findByType(TopIslandPopoverMock);
+      expect(popover.props.anchor).toEqual({ x: 262, y: 108 });
+      expect(setMode).not.toHaveBeenCalled();
+
+      await act(async () => {
+        topIslandButton.props.onClick({ clientX: 250, clientY: 120 });
+      });
+
+      expect(renderer.root.findAllByType(TopIslandPopoverMock)).toHaveLength(0);
+      expect(setMode).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerTopIslandMocks();
+    }
+  });
+
   it("closes detail explicitly when requested", () => {
     const detail = nextDetailState({
       currentMode: "float_ball",
@@ -522,13 +699,72 @@ describe("compact-mode", () => {
     }
   });
 
+  it("renders a contextual top island popover using the provided anchor", async () => {
+    const { renderer } = await renderTopIslandPopoverWithIslandState({
+      pendingPermissions: [],
+      notifications: [
+        {
+          id: "notif-1",
+          level: "info",
+          read: false,
+          source_adapter_name: "Conflux",
+          content: "Workspace ready",
+        },
+      ],
+      unreadCount: 1,
+      activeStatuses: ["thinking"],
+    });
+
+    try {
+      const popoverRoot = renderer.root.find(
+        (node) =>
+          typeof node.props.className === "string" &&
+          node.props.className.includes("top-island-popover")
+      );
+      const buttonLabels = renderer.root
+        .findAllByType("button")
+        .map((node) => node.props.children)
+        .filter((child) => typeof child === "string");
+
+      expect(popoverRoot.props.style.left).toBe(320);
+      expect(popoverRoot.props.style.top).toBe(180);
+      expect(buttonLabels).toContain("Open Workspace");
+      expect(buttonLabels).toContain("Dismiss");
+      expect(JSON.stringify(renderer.toJSON())).toContain("Mode");
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupTopIslandMocks();
+    }
+  });
+
   it("keeps the permission request queued when responding fails", async () => {
     const {
       clearNotification,
       removePermissionRequest,
       renderer,
       respondToPermissionMock,
-    } = await renderTopIslandWithRejectingPermission();
+    } = await renderTopIslandPopoverWithIslandState({
+      pendingPermissions: [
+        {
+          id: "perm-1",
+          instance_id: "agent-1",
+          action: "shell",
+          description: "Need approval",
+        },
+      ],
+      notifications: [
+        {
+          id: "perm-1",
+          level: "permission_required",
+          read: false,
+          source_adapter_name: "Conflux",
+        },
+      ],
+      unreadCount: 1,
+      respondToPermissionMock: vi.fn().mockRejectedValue(new Error("permission failed")),
+    });
 
     try {
       const allowButton = renderer.root
