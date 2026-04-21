@@ -62,7 +62,7 @@ export const TopIsland: FC<TopIslandProps> = ({ onExpand }) => {
           ? "needs approval"
           : "task done";
 
-    return `${source} \u8def ${suffix}`;
+    return `${source} · ${suffix}`;
   }, [unreadNotification]);
 
   const visualState = useMemo(

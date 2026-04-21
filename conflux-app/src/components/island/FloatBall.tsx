@@ -80,19 +80,24 @@ export const FloatBall: FC<FloatBallProps> = ({ onExpand }) => {
   const pendingPermissions = useIslandStore((s) => s.pendingPermissions);
   const unreadCount = useIslandStore((s) => s.unreadCount);
 
-  const semanticState = useMemo<SemanticState>(() => {
+  const derivedState = useMemo(() => {
     const hasError = notifications.some((n) => !n.read && n.level === "error");
-    const hasNotificationActivity =
+    const notificationCount =
       pendingPermissions.length > 0 ||
-      notifications.some((n) => !n.read && n.level !== "error");
+      notifications.some((n) => !n.read && n.level !== "error")
+        ? Math.max(unreadCount, 1)
+        : 0;
 
-    return resolveFloatBallSemanticState({
-      unreadCount: hasNotificationActivity ? Math.max(unreadCount, 1) : 0,
-      hasError,
-    });
+    return {
+      badgeCount: notificationCount,
+      semanticState: resolveFloatBallSemanticState({
+        unreadCount: notificationCount,
+        hasError,
+      }),
+    };
   }, [notifications, pendingPermissions, unreadCount]);
 
-  const config = semanticConfig(semanticState);
+  const config = semanticConfig(derivedState.semanticState);
 
   return (
     <div className="w-full h-full flex items-center justify-center overflow-hidden">
@@ -112,7 +117,7 @@ export const FloatBall: FC<FloatBallProps> = ({ onExpand }) => {
         }}
       >
         <FloatIcon kind={config.icon} color={config.color} />
-        {semanticState === "notification" && unreadCount > 0 && (
+        {derivedState.semanticState === "notification" && derivedState.badgeCount > 0 && (
           <span
             className="absolute flex items-center justify-center rounded-full"
             style={{
@@ -128,7 +133,7 @@ export const FloatBall: FC<FloatBallProps> = ({ onExpand }) => {
               fontWeight: 700,
             }}
           >
-            {unreadCount > 9 ? "9+" : unreadCount}
+            {derivedState.badgeCount > 9 ? "9+" : derivedState.badgeCount}
           </span>
         )}
       </button>

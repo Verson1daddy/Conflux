@@ -1,4 +1,11 @@
-import { type FC, useCallback, useEffect, useRef, useState } from "react";
+import {
+  type FC,
+  useCallback,
+  useEffect,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import { showWorkspaceOnly } from "@/lib/tauri-bridge";
 import {
   nextDetailState,
@@ -16,6 +23,81 @@ import { TopIsland } from "./TopIsland";
 import { TopIslandPopover } from "./TopIslandPopover";
 
 const SIDEBAR_COLLAPSE_DELAY_MS = 160;
+
+interface SidebarState {
+  expanded: boolean;
+  hotzoneHovered: boolean;
+  panelHovered: boolean;
+  collapseArmed: boolean;
+}
+
+type SidebarAction =
+  | { type: "sync_mode"; mode: IslandMode }
+  | { type: "set_hotzone_hovered"; hovered: boolean }
+  | { type: "set_panel_hovered"; hovered: boolean }
+  | { type: "collapse" }
+  | { type: "collapse_from_timeout" };
+
+function nextSidebarState(base: Omit<SidebarState, "collapseArmed">): SidebarState {
+  const visibility = resolveSidebarVisibility({
+    hotzoneHovered: base.hotzoneHovered,
+    panelHovered: base.panelHovered,
+    expanded: base.expanded,
+    collapseDelayMs: SIDEBAR_COLLAPSE_DELAY_MS,
+  });
+
+  return {
+    ...base,
+    expanded: visibility.expanded,
+    collapseArmed: visibility.shouldScheduleCollapse,
+  };
+}
+
+function createSidebarState(mode: IslandMode): SidebarState {
+  return {
+    expanded: mode === "sidebar",
+    hotzoneHovered: false,
+    panelHovered: false,
+    collapseArmed: false,
+  };
+}
+
+function reduceSidebarState(state: SidebarState, action: SidebarAction): SidebarState {
+  switch (action.type) {
+    case "sync_mode":
+      return createSidebarState(action.mode);
+    case "set_hotzone_hovered":
+      return nextSidebarState({
+        expanded: state.expanded,
+        hotzoneHovered: action.hovered,
+        panelHovered: state.panelHovered,
+      });
+    case "set_panel_hovered":
+      return nextSidebarState({
+        expanded: state.expanded,
+        hotzoneHovered: state.hotzoneHovered,
+        panelHovered: action.hovered,
+      });
+    case "collapse":
+      return {
+        expanded: false,
+        hotzoneHovered: false,
+        panelHovered: false,
+        collapseArmed: false,
+      };
+    case "collapse_from_timeout":
+      if (!state.collapseArmed || state.hotzoneHovered || state.panelHovered) {
+        return state;
+      }
+      return {
+        ...state,
+        expanded: false,
+        collapseArmed: false,
+      };
+    default:
+      return state;
+  }
+}
 
 function anchorFromSurface(
   surface: HTMLDivElement | null,
@@ -35,14 +117,9 @@ function anchorFromSurface(
 export const CompactModeController: FC = () => {
   const mode = useIslandStore((state) => state.mode) as IslandMode;
   const [detail, setDetail] = useState<CompactDetailState>({ kind: "none" });
-  const [sidebarExpanded, setSidebarExpanded] = useState(mode === "sidebar");
-  const [hotzoneHovered, setHotzoneHovered] = useState(false);
-  const [panelHovered, setPanelHovered] = useState(false);
+  const [sidebar, dispatchSidebar] = useReducer(reduceSidebarState, mode, createSidebarState);
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const collapseTimeoutRef = useRef<number | null>(null);
-  const sidebarExpandedRef = useRef(mode === "sidebar");
-  const hotzoneHoveredRef = useRef(false);
-  const panelHoveredRef = useRef(false);
 
   const clearSidebarCollapseTimeout = useCallback(() => {
     if (collapseTimeoutRef.current !== null) {
@@ -64,12 +141,7 @@ export const CompactModeController: FC = () => {
   const handleRestoreWorkspace = useCallback(() => {
     closeDetail();
     clearSidebarCollapseTimeout();
-    hotzoneHoveredRef.current = false;
-    panelHoveredRef.current = false;
-    sidebarExpandedRef.current = false;
-    setHotzoneHovered(false);
-    setPanelHovered(false);
-    setSidebarExpanded(false);
+    dispatchSidebar({ type: "collapse" });
     void showWorkspaceOnly();
   }, [clearSidebarCollapseTimeout, closeDetail]);
 
@@ -94,70 +166,8 @@ export const CompactModeController: FC = () => {
     );
   }, [mode]);
 
-  const applySidebarVisibility = useCallback(
-    (nextHotzoneHovered: boolean, nextPanelHovered: boolean) => {
-      hotzoneHoveredRef.current = nextHotzoneHovered;
-      panelHoveredRef.current = nextPanelHovered;
-      setHotzoneHovered(nextHotzoneHovered);
-      setPanelHovered(nextPanelHovered);
-
-      if (mode !== "sidebar") {
-        return;
-      }
-
-      const next = resolveSidebarVisibility({
-        hotzoneHovered: nextHotzoneHovered,
-        panelHovered: nextPanelHovered,
-        expanded: sidebarExpandedRef.current,
-        collapseDelayMs: SIDEBAR_COLLAPSE_DELAY_MS,
-      });
-
-      if (next.expanded !== sidebarExpandedRef.current) {
-        sidebarExpandedRef.current = next.expanded;
-        setSidebarExpanded(next.expanded);
-      }
-
-      clearSidebarCollapseTimeout();
-      if (!next.shouldScheduleCollapse) {
-        return;
-      }
-
-      collapseTimeoutRef.current = window.setTimeout(() => {
-        if (!hotzoneHoveredRef.current && !panelHoveredRef.current) {
-          sidebarExpandedRef.current = false;
-          setSidebarExpanded(false);
-        }
-      }, SIDEBAR_COLLAPSE_DELAY_MS);
-    },
-    [clearSidebarCollapseTimeout, mode]
-  );
-
-  const handleSidebarHoverChange = useCallback(
-    (hovered: boolean) => {
-      applySidebarVisibility(hovered, panelHoveredRef.current);
-    },
-    [applySidebarVisibility]
-  );
-
-  const handleSidebarPanelHoverChange = useCallback(
-    (hovered: boolean) => {
-      applySidebarVisibility(hotzoneHoveredRef.current, hovered);
-    },
-    [applySidebarVisibility]
-  );
-
-  const handleSidebarCollapse = useCallback(() => {
-    clearSidebarCollapseTimeout();
-    hotzoneHoveredRef.current = false;
-    panelHoveredRef.current = false;
-    sidebarExpandedRef.current = false;
-    setHotzoneHovered(false);
-    setPanelHovered(false);
-    setSidebarExpanded(false);
-  }, [clearSidebarCollapseTimeout]);
-
   const sidebarInteractionState =
-    panelHovered ? "panel" : hotzoneHovered ? "hotzone" : "idle";
+    sidebar.panelHovered ? "panel" : sidebar.hotzoneHovered ? "hotzone" : "idle";
 
   useEffect(() => {
     setDetail((currentDetail) =>
@@ -171,13 +181,22 @@ export const CompactModeController: FC = () => {
     );
 
     clearSidebarCollapseTimeout();
-    hotzoneHoveredRef.current = false;
-    panelHoveredRef.current = false;
-    sidebarExpandedRef.current = mode === "sidebar";
-    setHotzoneHovered(false);
-    setPanelHovered(false);
-    setSidebarExpanded(mode === "sidebar");
+    dispatchSidebar({ type: "sync_mode", mode });
   }, [clearSidebarCollapseTimeout, mode]);
+
+  useEffect(() => {
+    if (mode !== "sidebar" || !sidebar.collapseArmed) {
+      clearSidebarCollapseTimeout();
+      return;
+    }
+
+    clearSidebarCollapseTimeout();
+    collapseTimeoutRef.current = window.setTimeout(() => {
+      dispatchSidebar({ type: "collapse_from_timeout" });
+    }, SIDEBAR_COLLAPSE_DELAY_MS);
+
+    return clearSidebarCollapseTimeout;
+  }, [clearSidebarCollapseTimeout, mode, sidebar.collapseArmed]);
 
   useEffect(() => clearSidebarCollapseTimeout, [clearSidebarCollapseTimeout]);
 
@@ -185,16 +204,22 @@ export const CompactModeController: FC = () => {
     return (
       <div data-sidebar-interaction={sidebarInteractionState}>
         <SidebarHotzone
-          expanded={sidebarExpanded}
-          onHoverChange={handleSidebarHoverChange}
+          expanded={sidebar.expanded}
+          onHoverChange={(hovered) =>
+            dispatchSidebar({ type: "set_hotzone_hovered", hovered })
+          }
         />
-        {sidebarExpanded && (
+        {sidebar.expanded && (
           <div
-            onMouseEnter={() => handleSidebarPanelHoverChange(true)}
-            onMouseLeave={() => handleSidebarPanelHoverChange(false)}
+            onMouseEnter={() =>
+              dispatchSidebar({ type: "set_panel_hovered", hovered: true })
+            }
+            onMouseLeave={() =>
+              dispatchSidebar({ type: "set_panel_hovered", hovered: false })
+            }
           >
             <IslandSurface ref={surfaceRef} mode={mode}>
-              <Sidebar onCollapse={handleSidebarCollapse} />
+              <Sidebar onCollapse={() => dispatchSidebar({ type: "collapse" })} />
             </IslandSurface>
           </div>
         )}

@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it, vi } from "vitest";
 import {
   nextDetailState,
   resolveFloatBallSemanticState,
@@ -98,6 +100,35 @@ describe("compact-mode", () => {
     expect(resolveFloatBallSemanticState({ unreadCount: 0, hasError: false })).toBe("normal");
     expect(resolveFloatBallSemanticState({ unreadCount: 2, hasError: false })).toBe("notification");
     expect(resolveFloatBallSemanticState({ unreadCount: 1, hasError: true })).toBe("error");
+  });
+
+  it("renders a float ball badge when pending permissions drive notification state", async () => {
+    vi.resetModules();
+    vi.doMock("@/stores/islandStore", () => ({
+      useIslandStore: (selector: (state: {
+        notifications: unknown[];
+        pendingPermissions: Array<{ id: string }>;
+        unreadCount: number;
+      }) => unknown) =>
+        selector({
+          notifications: [],
+          pendingPermissions: [{ id: "perm-1" }],
+          unreadCount: 0,
+        }),
+    }));
+
+    try {
+      const { FloatBall } = await import("@/components/island/FloatBall");
+
+      const html = renderToStaticMarkup(
+        createElement(FloatBall, { onExpand: () => undefined })
+      );
+
+      expect(html).toMatch(/>\s*1\s*<\/span>/);
+    } finally {
+      vi.doUnmock("@/stores/islandStore");
+      vi.resetModules();
+    }
   });
 
   it("closes repeated top island toggles", () => {
