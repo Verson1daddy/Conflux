@@ -9,15 +9,28 @@ import {
 
 describe("compact-mode", () => {
   it("does not mutate the selected mode when toggling detail layers", () => {
-    const selectedMode = "top_island";
-    const detail = nextDetailState({
-      currentMode: selectedMode,
-      currentDetail: { kind: "none" },
-      action: { type: "toggle_top_island_popover", anchor: { x: 420, y: 48 } },
+    const prev = {
+      mode: "top_island" as const,
+      detail: { kind: "none" } as CompactDetailState,
+    };
+    const reduceDetail = (
+      state: typeof prev,
+      action: { type: "toggle_top_island_popover"; anchor: { x: number; y: number } },
+    ) => ({
+      ...state,
+      detail: nextDetailState({
+        currentMode: state.mode,
+        currentDetail: state.detail,
+        action,
+      }),
+    });
+    const next = reduceDetail(prev, {
+      type: "toggle_top_island_popover",
+      anchor: { x: 420, y: 48 },
     });
 
-    expect(selectedMode).toBe("top_island");
-    expect(detail.kind).toBe("top_island_popover");
+    expect(next.mode).toBe(prev.mode);
+    expect(next.detail.kind).toBe("top_island_popover");
   });
 
   it("opens a detail layer without switching mode", () => {

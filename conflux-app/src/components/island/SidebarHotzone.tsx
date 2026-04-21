@@ -15,7 +15,7 @@ export const SidebarHotzone: FC<SidebarHotzoneProps> = ({
       tabIndex={0}
       aria-label="Open sidebar"
       aria-expanded={expanded}
-      className="fixed left-0 top-0 h-full"
+      className="fixed right-0 top-0 h-full"
       style={{
         zIndex: 30,
         width: 16,
