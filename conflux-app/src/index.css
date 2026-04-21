@@ -40,28 +40,6 @@ html[data-window-label="island"] #root {
   }
 }
 
-@keyframes island-float-enter {
-  from {
-    opacity: 0;
-    transform: translateY(8px) scale(0.88);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
-@keyframes island-sidebar-enter {
-  from {
-    opacity: 0;
-    transform: translateX(18px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
 .island-shell {
   width: 100%;
   height: 100%;
@@ -70,14 +48,6 @@ html[data-window-label="island"] #root {
 
 .island-shell[data-mode="top_island"] {
   animation: island-capsule-enter var(--duration-normal) var(--ease-apple);
-}
-
-.island-shell[data-mode="float_ball"] {
-  animation: island-float-enter var(--duration-normal) var(--ease-apple);
-}
-
-.island-shell[data-mode="sidebar"] {
-  animation: island-sidebar-enter 0.32s var(--ease-apple);
 }
 
 .island-pressable {
