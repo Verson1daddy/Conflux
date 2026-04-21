@@ -162,11 +162,13 @@ async function renderSidebarAssistantPanel(input: {
     source_instance_id: string;
   }>;
   instances?: Map<string, unknown>;
+  respondToPermissionMock?: ReturnType<typeof vi.fn>;
 }) {
   vi.resetModules();
 
   const focusAgentCard = vi.fn();
-  const respondToPermissionMock = vi.fn().mockResolvedValue(undefined);
+  const respondToPermissionMock =
+    input.respondToPermissionMock ?? vi.fn().mockResolvedValue(undefined);
   const removePermissionRequest = vi.fn();
   const clearNotification = vi.fn();
   const onDismiss = vi.fn();
@@ -1025,6 +1027,181 @@ describe("compact-mode", () => {
 
       expect(onOpenWorkspace).toHaveBeenCalledTimes(1);
       expect(onDismiss).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupSidebarAssistantPanelMocks();
+    }
+  });
+
+  it("wires sidebar allow actions through the permission bridge and clears the store on success", async () => {
+    const respondToPermissionMock = vi.fn().mockResolvedValue(undefined);
+    const {
+      clearNotification,
+      removePermissionRequest,
+      renderer,
+    } = await renderSidebarAssistantPanel({
+      notifications: [
+        {
+          id: "perm-1",
+          level: "permission_required",
+          read: false,
+          content: "Approve shell command",
+          created_at: Date.now() - 10_000,
+          source_instance_id: "agent-7",
+        },
+      ],
+      respondToPermissionMock,
+    });
+
+    try {
+      const allowButton = renderer.root
+        .findAllByType("button")
+        .find((node) => node.props.children === "Allow");
+
+      expect(allowButton).toBeDefined();
+
+      await act(async () => {
+        allowButton?.props.onClick();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(respondToPermissionMock).toHaveBeenCalledTimes(1);
+      expect(respondToPermissionMock).toHaveBeenCalledWith(
+        "agent-7",
+        "perm-1",
+        "approve",
+      );
+      expect(removePermissionRequest).toHaveBeenCalledWith("perm-1");
+      expect(clearNotification).toHaveBeenCalledWith("perm-1");
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupSidebarAssistantPanelMocks();
+    }
+  });
+
+  it("wires sidebar deny actions through the permission bridge and clears the store on success", async () => {
+    const respondToPermissionMock = vi.fn().mockResolvedValue(undefined);
+    const {
+      clearNotification,
+      removePermissionRequest,
+      renderer,
+    } = await renderSidebarAssistantPanel({
+      notifications: [
+        {
+          id: "perm-2",
+          level: "permission_required",
+          read: false,
+          content: "Deny file deletion",
+          created_at: Date.now() - 12_000,
+          source_instance_id: "agent-9",
+        },
+      ],
+      respondToPermissionMock,
+    });
+
+    try {
+      const denyButton = renderer.root
+        .findAllByType("button")
+        .find((node) => node.props.children === "Deny");
+
+      expect(denyButton).toBeDefined();
+
+      await act(async () => {
+        denyButton?.props.onClick();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(respondToPermissionMock).toHaveBeenCalledTimes(1);
+      expect(respondToPermissionMock).toHaveBeenCalledWith(
+        "agent-9",
+        "perm-2",
+        "deny",
+      );
+      expect(removePermissionRequest).toHaveBeenCalledWith("perm-2");
+      expect(clearNotification).toHaveBeenCalledWith("perm-2");
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupSidebarAssistantPanelMocks();
+    }
+  });
+
+  it("suppresses repeated sidebar permission submissions while one is pending", async () => {
+    let resolvePermission!: () => void;
+    const respondToPermissionMock = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolvePermission = resolve;
+        }),
+    );
+    const {
+      clearNotification,
+      removePermissionRequest,
+      renderer,
+    } = await renderSidebarAssistantPanel({
+      notifications: [
+        {
+          id: "perm-3",
+          level: "permission_required",
+          read: false,
+          content: "Approve terminal access",
+          created_at: Date.now() - 15_000,
+          source_instance_id: "agent-11",
+        },
+      ],
+      respondToPermissionMock,
+    });
+
+    try {
+      const getActionButtons = () =>
+        renderer.root.findAllByType("button").filter((node) => {
+          return node.props.children === "Allow" || node.props.children === "Deny";
+        });
+
+      const [allowButton, denyButton] = getActionButtons();
+      expect(allowButton).toBeDefined();
+      expect(denyButton).toBeDefined();
+
+      await act(async () => {
+        allowButton?.props.onClick();
+        await Promise.resolve();
+      });
+
+      expect(respondToPermissionMock).toHaveBeenCalledTimes(1);
+      expect(respondToPermissionMock).toHaveBeenLastCalledWith(
+        "agent-11",
+        "perm-3",
+        "approve",
+      );
+
+      const [pendingAllowButton, pendingDenyButton] = getActionButtons();
+      expect(pendingAllowButton?.props.disabled).toBe(true);
+      expect(pendingDenyButton?.props.disabled).toBe(true);
+
+      await act(async () => {
+        pendingDenyButton?.props.onClick();
+        await Promise.resolve();
+      });
+
+      expect(respondToPermissionMock).toHaveBeenCalledTimes(1);
+      expect(removePermissionRequest).not.toHaveBeenCalled();
+      expect(clearNotification).not.toHaveBeenCalled();
+
+      await act(async () => {
+        resolvePermission();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(removePermissionRequest).toHaveBeenCalledWith("perm-3");
+      expect(clearNotification).toHaveBeenCalledWith("perm-3");
     } finally {
       await act(async () => {
         renderer.unmount();
