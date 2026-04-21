@@ -215,12 +215,12 @@ export const CompactModeController: FC = () => {
     return (
       <>
         <IslandSurface mode={mode}>
-          <FloatBall onExpand={toggleFloatBallPanel} />
+          <FloatBall onToggleDetail={toggleFloatBallPanel} />
         </IslandSurface>
         {detail.kind === "float_ball_panel" && (
           <FloatBallPanel
             onClose={closeDetail}
-            onRestoreWorkspace={handleRestoreWorkspace}
+            onOpenWorkspace={handleRestoreWorkspace}
           />
         )}
       </>

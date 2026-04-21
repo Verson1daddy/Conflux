@@ -3,7 +3,7 @@ import { resolveFloatBallSemanticState } from "@/lib/compact-mode";
 import { useIslandStore } from "@/stores/islandStore";
 
 interface FloatBallProps {
-  onExpand: () => void;
+  onToggleDetail: () => void;
 }
 
 type SemanticState = "normal" | "notification" | "error";
@@ -75,7 +75,7 @@ function FloatIcon({
   );
 }
 
-export const FloatBall: FC<FloatBallProps> = ({ onExpand }) => {
+export const FloatBall: FC<FloatBallProps> = ({ onToggleDetail }) => {
   const notifications = useIslandStore((s) => s.notifications);
   const pendingPermissions = useIslandStore((s) => s.pendingPermissions);
 
@@ -106,39 +106,23 @@ export const FloatBall: FC<FloatBallProps> = ({ onExpand }) => {
   const config = semanticConfig(derivedState.semanticState);
 
   return (
-    <div className="w-full h-full flex items-center justify-center overflow-hidden">
+    <div className="float-ball-shell">
       <button
         type="button"
-        onClick={onExpand}
-        className="relative flex items-center justify-center rounded-full"
-        style={{
-          width: 52,
-          height: 52,
-          border: "1px solid rgba(255,255,255,0.08)",
-          background: "#000000",
-          boxShadow: config.glow,
-          cursor: "pointer",
-          transition:
-            "transform var(--duration-fast) var(--ease-apple), box-shadow var(--duration-normal) var(--ease-apple)",
-        }}
+        onClick={onToggleDetail}
+        className="float-ball island-pressable"
+        data-semantic-state={derivedState.semanticState}
+        aria-label="Open float ball details"
       >
-        <FloatIcon kind={config.icon} color={config.color} />
+        <span className="float-ball__halo" aria-hidden="true" />
+        <span className="float-ball__core" aria-hidden="true">
+          <span className="float-ball__sheen" />
+          <FloatIcon kind={config.icon} color={config.color} />
+        </span>
         {derivedState.badgeCount > 0 && (
           <span
             aria-label={`Float ball activity count ${derivedState.badgeCount}`}
-            className="absolute flex items-center justify-center rounded-full"
-            style={{
-              top: 4,
-              right: 2,
-              minWidth: 16,
-              height: 16,
-              padding: "0 4px",
-              background: "#FFB800",
-              color: "#FFFFFF",
-              fontFamily: "'Geist Sans', sans-serif",
-              fontSize: 9,
-              fontWeight: 700,
-            }}
+            className="float-ball__badge"
           >
             {derivedState.badgeCount > 9 ? "9+" : derivedState.badgeCount}
           </span>

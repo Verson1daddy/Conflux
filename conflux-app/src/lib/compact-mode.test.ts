@@ -59,7 +59,7 @@ async function renderFloatBallWithIslandState(input: {
   try {
     const { FloatBall } = await import("@/components/island/FloatBall");
     return renderToStaticMarkup(
-      createElement(FloatBall, { onExpand: () => undefined })
+      createElement(FloatBall, { onToggleDetail: () => undefined })
     );
   } finally {
     vi.doUnmock("@/stores/islandStore");
@@ -252,6 +252,92 @@ function cleanupCompactModeControllerTopIslandMocks() {
   vi.doUnmock("@/components/island/SidebarHotzone");
   vi.doUnmock("@/components/island/Sidebar");
   vi.doUnmock("@/components/island/TopIslandPopover");
+  vi.resetModules();
+}
+
+async function renderCompactModeControllerForFloatBallFlow(input: {
+  notifications: Array<{
+    id: string;
+    level: string;
+    read: boolean;
+    source_adapter_name?: string;
+    content?: string;
+  }>;
+  pendingPermissions: Array<{
+    id: string;
+    instance_id: string;
+    action: string;
+    description: string;
+  }>;
+  unreadCount: number;
+}) {
+  vi.resetModules();
+
+  const setMode = vi.fn();
+  const showWorkspaceOnly = vi.fn();
+
+  vi.doMock("@/stores/islandStore", () => ({
+    useIslandStore: (
+      selector: (state: {
+        mode: string;
+        setMode: typeof setMode;
+        notifications: typeof input.notifications;
+        pendingPermissions: typeof input.pendingPermissions;
+        unreadCount: number;
+      }) => unknown
+    ) =>
+      selector({
+        mode: "float_ball",
+        setMode,
+        notifications: input.notifications,
+        pendingPermissions: input.pendingPermissions,
+        unreadCount: input.unreadCount,
+      }),
+  }));
+  vi.doMock("@/lib/tauri-bridge", () => ({
+    showWorkspaceOnly,
+  }));
+  vi.doMock("@/components/island/TopIsland", () => ({
+    TopIsland: () => createElement("top-island"),
+  }));
+  vi.doMock("@/components/island/TopIslandPopover", () => ({
+    TopIslandPopover: () => createElement("top-island-popover"),
+  }));
+  vi.doMock("@/components/island/SidebarHotzone", () => ({
+    SidebarHotzone: SidebarHotzoneMock,
+  }));
+  vi.doMock("@/components/island/Sidebar", () => ({
+    Sidebar: SidebarPanelMock,
+  }));
+
+  try {
+    const { CompactModeController } = await import("@/components/island/CompactModeController");
+    let renderer!: TestRenderer.ReactTestRenderer;
+
+    await act(async () => {
+      renderer = TestRenderer.create(createElement(CompactModeController));
+    });
+
+    return { renderer, setMode, showWorkspaceOnly };
+  } catch (error) {
+    vi.doUnmock("@/stores/islandStore");
+    vi.doUnmock("@/lib/tauri-bridge");
+    vi.doUnmock("@/components/island/TopIsland");
+    vi.doUnmock("@/components/island/TopIslandPopover");
+    vi.doUnmock("@/components/island/SidebarHotzone");
+    vi.doUnmock("@/components/island/Sidebar");
+    vi.resetModules();
+    throw error;
+  }
+}
+
+function cleanupCompactModeControllerFloatBallMocks() {
+  vi.doUnmock("@/stores/islandStore");
+  vi.doUnmock("@/lib/tauri-bridge");
+  vi.doUnmock("@/components/island/TopIsland");
+  vi.doUnmock("@/components/island/TopIslandPopover");
+  vi.doUnmock("@/components/island/SidebarHotzone");
+  vi.doUnmock("@/components/island/Sidebar");
   vi.resetModules();
 }
 
@@ -472,6 +558,10 @@ describe("compact-mode", () => {
     expect(resolveFloatBallSemanticState({ unreadCount: 1, hasError: true })).toBe("error");
   });
 
+  it("prefers error state over notification state for the float ball", () => {
+    expect(resolveFloatBallSemanticState({ unreadCount: 3, hasError: true })).toBe("error");
+  });
+
   it("renders the real unread notification count in the float ball badge", async () => {
     const html = await renderFloatBallWithIslandState({
       notifications: [
@@ -580,6 +670,96 @@ describe("compact-mode", () => {
         renderer.unmount();
       });
       cleanupCompactModeControllerTopIslandMocks();
+    }
+  });
+
+  it("clicking float ball only toggles its own panel and keeps mode stable", async () => {
+    const { renderer, setMode, showWorkspaceOnly } = await renderCompactModeControllerForFloatBallFlow({
+      notifications: [
+        {
+          id: "notif-error",
+          level: "error",
+          read: false,
+          source_adapter_name: "Codex",
+          content: "Agent failed to continue",
+        },
+      ],
+      pendingPermissions: [
+        {
+          id: "perm-shell",
+          instance_id: "agent-7",
+          action: "shell",
+          description: "Approve shell command",
+        },
+      ],
+      unreadCount: 1,
+    });
+
+    try {
+      const floatBallButton = renderer.root.findByProps({
+        "aria-label": "Open float ball details",
+      });
+
+      expect(renderer.root.findAllByProps({ "data-testid": "float-ball-panel" })).toHaveLength(0);
+
+      await act(async () => {
+        floatBallButton.props.onClick();
+      });
+
+      const panel = renderer.root.findByProps({ "data-testid": "float-ball-panel" });
+      expect(panel).toBeDefined();
+      expect(setMode).not.toHaveBeenCalled();
+      expect(JSON.stringify(renderer.toJSON())).toContain("Status summary");
+      expect(JSON.stringify(renderer.toJSON())).toContain("Recent activity");
+      expect(JSON.stringify(renderer.toJSON())).toContain("Approve shell command");
+      expect(JSON.stringify(renderer.toJSON())).toContain("Agent failed to continue");
+      expect(JSON.stringify(renderer.toJSON())).toContain("Open Workspace");
+      expect(JSON.stringify(renderer.toJSON())).toContain("Dismiss");
+
+      await act(async () => {
+        floatBallButton.props.onClick();
+      });
+
+      expect(renderer.root.findAllByProps({ "data-testid": "float-ball-panel" })).toHaveLength(0);
+      expect(setMode).not.toHaveBeenCalled();
+
+      await act(async () => {
+        floatBallButton.props.onClick();
+      });
+
+      const openWorkspaceButton = renderer.root
+        .findAllByType("button")
+        .find((node) => node.props.children === "Open Workspace");
+      expect(openWorkspaceButton).toBeDefined();
+
+      await act(async () => {
+        openWorkspaceButton?.props.onClick();
+      });
+
+      expect(showWorkspaceOnly).toHaveBeenCalledTimes(1);
+      expect(renderer.root.findAllByProps({ "data-testid": "float-ball-panel" })).toHaveLength(0);
+      expect(setMode).not.toHaveBeenCalled();
+
+      await act(async () => {
+        floatBallButton.props.onClick();
+      });
+
+      const dismissButton = renderer.root
+        .findAllByType("button")
+        .find((node) => node.props.children === "Dismiss");
+      expect(dismissButton).toBeDefined();
+
+      await act(async () => {
+        dismissButton?.props.onClick();
+      });
+
+      expect(renderer.root.findAllByProps({ "data-testid": "float-ball-panel" })).toHaveLength(0);
+      expect(setMode).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerFloatBallMocks();
     }
   });
 
