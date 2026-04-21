@@ -78,14 +78,16 @@ function FloatIcon({
 export const FloatBall: FC<FloatBallProps> = ({ onExpand }) => {
   const notifications = useIslandStore((s) => s.notifications);
   const pendingPermissions = useIslandStore((s) => s.pendingPermissions);
-  const unreadCount = useIslandStore((s) => s.unreadCount);
 
   const derivedState = useMemo(() => {
+    const unreadNotificationCount = notifications.filter((notification) => !notification.read).length;
     const hasError = notifications.some((n) => !n.read && n.level === "error");
-    const hasActivity =
-      pendingPermissions.length > 0 ||
-      notifications.some((n) => !n.read);
-    const badgeCount = hasActivity ? Math.max(unreadCount, 1) : 0;
+    const badgeCount =
+      unreadNotificationCount > 0
+        ? unreadNotificationCount
+        : pendingPermissions.length > 0
+          ? pendingPermissions.length
+          : 0;
 
     return {
       badgeCount,
@@ -94,7 +96,7 @@ export const FloatBall: FC<FloatBallProps> = ({ onExpand }) => {
         hasError,
       }),
     };
-  }, [notifications, pendingPermissions, unreadCount]);
+  }, [notifications, pendingPermissions]);
 
   const config = semanticConfig(derivedState.semanticState);
 
