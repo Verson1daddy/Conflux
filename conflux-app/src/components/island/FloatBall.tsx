@@ -82,16 +82,15 @@ export const FloatBall: FC<FloatBallProps> = ({ onExpand }) => {
 
   const derivedState = useMemo(() => {
     const hasError = notifications.some((n) => !n.read && n.level === "error");
-    const notificationCount =
+    const hasActivity =
       pendingPermissions.length > 0 ||
-      notifications.some((n) => !n.read && n.level !== "error")
-        ? Math.max(unreadCount, 1)
-        : 0;
+      notifications.some((n) => !n.read);
+    const badgeCount = hasActivity ? Math.max(unreadCount, 1) : 0;
 
     return {
-      badgeCount: notificationCount,
+      badgeCount,
       semanticState: resolveFloatBallSemanticState({
-        unreadCount: notificationCount,
+        unreadCount: badgeCount,
         hasError,
       }),
     };
@@ -117,8 +116,9 @@ export const FloatBall: FC<FloatBallProps> = ({ onExpand }) => {
         }}
       >
         <FloatIcon kind={config.icon} color={config.color} />
-        {derivedState.semanticState === "notification" && derivedState.badgeCount > 0 && (
+        {derivedState.badgeCount > 0 && (
           <span
+            aria-label={`Float ball activity count ${derivedState.badgeCount}`}
             className="absolute flex items-center justify-center rounded-full"
             style={{
               top: 4,

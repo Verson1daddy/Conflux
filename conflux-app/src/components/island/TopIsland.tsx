@@ -83,11 +83,11 @@ export const TopIsland: FC<TopIslandProps> = ({ onExpand }) => {
     setPendingDecision(decision);
     try {
       await respondToPermission(permissionRequest.instance_id, permissionRequest.id, decision);
-    } catch {
-      // Keep the UI moving even if backend acknowledgement fails.
-    } finally {
       removePermissionRequest(permissionRequest.id);
       clearNotification(permissionRequest.id);
+    } catch {
+      // Keep the request available so the user can retry.
+    } finally {
       setPendingDecision(null);
     }
   }

@@ -9,6 +9,38 @@ import {
   type CompactDetailState,
 } from "./compact-mode";
 
+async function renderFloatBallWithIslandState(input: {
+  notifications: Array<{ id: string; level: string; read: boolean }>;
+  pendingPermissions: Array<{ id: string }>;
+  unreadCount: number;
+}) {
+  vi.resetModules();
+  vi.doMock("@/stores/islandStore", () => ({
+    useIslandStore: (
+      selector: (state: {
+        notifications: Array<{ id: string; level: string; read: boolean }>;
+        pendingPermissions: Array<{ id: string }>;
+        unreadCount: number;
+      }) => unknown
+    ) =>
+      selector({
+        notifications: input.notifications,
+        pendingPermissions: input.pendingPermissions,
+        unreadCount: input.unreadCount,
+      }),
+  }));
+
+  try {
+    const { FloatBall } = await import("@/components/island/FloatBall");
+    return renderToStaticMarkup(
+      createElement(FloatBall, { onExpand: () => undefined })
+    );
+  } finally {
+    vi.doUnmock("@/stores/islandStore");
+    vi.resetModules();
+  }
+}
+
 describe("compact-mode", () => {
   it("does not mutate the selected mode when toggling detail layers", () => {
     const prev = {
@@ -103,32 +135,24 @@ describe("compact-mode", () => {
   });
 
   it("renders a float ball badge when pending permissions drive notification state", async () => {
-    vi.resetModules();
-    vi.doMock("@/stores/islandStore", () => ({
-      useIslandStore: (selector: (state: {
-        notifications: unknown[];
-        pendingPermissions: Array<{ id: string }>;
-        unreadCount: number;
-      }) => unknown) =>
-        selector({
-          notifications: [],
-          pendingPermissions: [{ id: "perm-1" }],
-          unreadCount: 0,
-        }),
-    }));
+    const html = await renderFloatBallWithIslandState({
+      notifications: [],
+      pendingPermissions: [{ id: "perm-1" }],
+      unreadCount: 0,
+    });
 
-    try {
-      const { FloatBall } = await import("@/components/island/FloatBall");
+    expect(html).toContain('aria-label="Float ball activity count 1"');
+    expect(html).toMatch(/<span[^>]*aria-label="Float ball activity count 1"[^>]*>1<\/span>/);
+  });
 
-      const html = renderToStaticMarkup(
-        createElement(FloatBall, { onExpand: () => undefined })
-      );
+  it("renders a float ball badge for unread error activity", async () => {
+    const html = await renderFloatBallWithIslandState({
+      notifications: [{ id: "notif-1", level: "error", read: false }],
+      pendingPermissions: [],
+      unreadCount: 1,
+    });
 
-      expect(html).toMatch(/>\s*1\s*<\/span>/);
-    } finally {
-      vi.doUnmock("@/stores/islandStore");
-      vi.resetModules();
-    }
+    expect(html).toContain('aria-label="Float ball activity count 1"');
   });
 
   it("closes repeated top island toggles", () => {
