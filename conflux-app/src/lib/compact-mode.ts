@@ -27,21 +27,37 @@ export function resolveFloatBallSemanticState(input: {
   return "normal";
 }
 
+type CompactDetailAction =
+  | { type: "toggle_top_island_popover"; anchor: { x: number; y: number } }
+  | { type: "toggle_float_ball_panel" }
+  | { type: "close_detail" };
+
+function normalizeDetailForMode(
+  mode: IslandMode,
+  detail: CompactDetailState,
+): CompactDetailState {
+  if (detail.kind === "none") return detail;
+  if (mode === "top_island" && detail.kind === "top_island_popover") return detail;
+  if (mode === "float_ball" && detail.kind === "float_ball_panel") return detail;
+  return { kind: "none" };
+}
+
 export function nextDetailState(input: {
   currentMode: IslandMode;
   currentDetail: CompactDetailState;
-  action:
-    | { type: "toggle_top_island_popover"; anchor: { x: number; y: number } }
-    | { type: "toggle_float_ball_panel" }
-    | { type: "close_detail" };
+  action: CompactDetailAction;
 }): CompactDetailState {
+  const normalizedDetail = normalizeDetailForMode(input.currentMode, input.currentDetail);
+
   if (input.action.type === "close_detail") return { kind: "none" };
   if (input.action.type === "toggle_top_island_popover") {
-    return input.currentDetail.kind === "top_island_popover"
+    if (input.currentMode !== "top_island") return { kind: "none" };
+    return normalizedDetail.kind === "top_island_popover"
       ? { kind: "none" }
       : { kind: "top_island_popover", anchor: input.action.anchor };
   }
-  return input.currentDetail.kind === "float_ball_panel"
+  if (input.currentMode !== "float_ball") return { kind: "none" };
+  return normalizedDetail.kind === "float_ball_panel"
     ? { kind: "none" }
     : { kind: "float_ball_panel" };
 }

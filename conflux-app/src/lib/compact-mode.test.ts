@@ -21,7 +21,7 @@ describe("compact-mode", () => {
     } satisfies CompactDetailState);
   });
 
-  it("keeps sidebar closed when the pointer only brushes the hotzone", () => {
+  it("expands the sidebar while scheduling collapse when the pointer only brushes the hotzone", () => {
     const next = resolveSidebarVisibility({
       hotzoneHovered: true,
       panelHovered: false,
@@ -59,5 +59,45 @@ describe("compact-mode", () => {
     expect(resolveFloatBallSemanticState({ unreadCount: 0, hasError: false })).toBe("normal");
     expect(resolveFloatBallSemanticState({ unreadCount: 2, hasError: false })).toBe("notification");
     expect(resolveFloatBallSemanticState({ unreadCount: 1, hasError: true })).toBe("error");
+  });
+
+  it("closes repeated top island toggles", () => {
+    const detail = nextDetailState({
+      currentMode: "top_island",
+      currentDetail: { kind: "top_island_popover", anchor: { x: 600, y: 44 } },
+      action: { type: "toggle_top_island_popover", anchor: { x: 620, y: 52 } },
+    });
+
+    expect(detail).toEqual({ kind: "none" });
+  });
+
+  it("closes detail explicitly when requested", () => {
+    const detail = nextDetailState({
+      currentMode: "float_ball",
+      currentDetail: { kind: "float_ball_panel" },
+      action: { type: "close_detail" },
+    });
+
+    expect(detail).toEqual({ kind: "none" });
+  });
+
+  it("rejects illegal mode and action combinations", () => {
+    const detail = nextDetailState({
+      currentMode: "sidebar",
+      currentDetail: { kind: "top_island_popover", anchor: { x: 600, y: 44 } },
+      action: { type: "toggle_top_island_popover", anchor: { x: 640, y: 44 } },
+    });
+
+    expect(detail).toEqual({ kind: "none" });
+  });
+
+  it("normalizes an illegal current detail before opening the allowed one", () => {
+    const detail = nextDetailState({
+      currentMode: "float_ball",
+      currentDetail: { kind: "top_island_popover", anchor: { x: 600, y: 44 } },
+      action: { type: "toggle_float_ball_panel" },
+    });
+
+    expect(detail).toEqual({ kind: "float_ball_panel" });
   });
 });

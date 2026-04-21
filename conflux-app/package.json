@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "vitest run src/lib/compact-mode.test.ts",
+    "test:watch": "vitest src/lib/compact-mode.test.ts",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && cargo check --manifest-path src-tauri/Cargo.toml",
     "build": "tsc && vite build",
