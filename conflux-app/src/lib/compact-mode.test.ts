@@ -67,6 +67,105 @@ async function renderFloatBallWithIslandState(input: {
   }
 }
 
+function classNameIncludes(value: unknown, token: string): boolean {
+  return typeof value === "string" && value.split(/\s+/).includes(token);
+}
+
+async function renderFloatBallRendererWithIslandState(input: {
+  notifications: Array<{ id: string; level: string; read: boolean }>;
+  pendingPermissions: Array<{ id: string }>;
+  unreadCount: number;
+}) {
+  vi.resetModules();
+  vi.doMock("@/stores/islandStore", () => ({
+    useIslandStore: (
+      selector: (state: {
+        notifications: Array<{ id: string; level: string; read: boolean }>;
+        pendingPermissions: Array<{ id: string }>;
+        unreadCount: number;
+      }) => unknown
+    ) =>
+      selector({
+        notifications: input.notifications,
+        pendingPermissions: input.pendingPermissions,
+        unreadCount: input.unreadCount,
+      }),
+  }));
+
+  try {
+    const { FloatBall } = await import("@/components/island/FloatBall");
+    let renderer!: TestRenderer.ReactTestRenderer;
+
+    await act(async () => {
+      renderer = TestRenderer.create(
+        createElement(FloatBall, { onToggleDetail: () => undefined })
+      );
+    });
+
+    return renderer;
+  } finally {
+    vi.doUnmock("@/stores/islandStore");
+    vi.resetModules();
+  }
+}
+
+async function renderTopIslandWithIslandState(input: {
+  notifications: Array<{
+    id: string;
+    level: string;
+    read: boolean;
+    source_adapter_name?: string;
+    content?: string;
+  }>;
+  pendingPermissions: Array<{ id: string }>;
+  unreadCount: number;
+  instances?: Map<
+    string,
+    { status: "thinking" | "coding" | "waiting_permission" | "idle" }
+  >;
+}) {
+  vi.resetModules();
+  vi.doMock("@/stores/islandStore", () => ({
+    useIslandStore: (
+      selector: (state: {
+        notifications: typeof input.notifications;
+        pendingPermissions: typeof input.pendingPermissions;
+        unreadCount: number;
+      }) => unknown
+    ) =>
+      selector({
+        notifications: input.notifications,
+        pendingPermissions: input.pendingPermissions,
+        unreadCount: input.unreadCount,
+      }),
+  }));
+  vi.doMock("@/stores/agentStore", () => ({
+    useAgentStore: (
+      selector: (state: { instances: typeof input.instances }) => unknown
+    ) =>
+      selector({
+        instances: input.instances ?? new Map(),
+      }),
+  }));
+
+  try {
+    const { TopIsland } = await import("@/components/island/TopIsland");
+    let renderer!: TestRenderer.ReactTestRenderer;
+
+    await act(async () => {
+      renderer = TestRenderer.create(
+        createElement(TopIsland, { onExpand: () => undefined })
+      );
+    });
+
+    return renderer;
+  } finally {
+    vi.doUnmock("@/stores/islandStore");
+    vi.doUnmock("@/stores/agentStore");
+    vi.resetModules();
+  }
+}
+
 async function renderCompactModeControllerForSidebarFlow() {
   vi.resetModules();
   vi.useFakeTimers();
@@ -250,6 +349,80 @@ function cleanupSidebarAssistantPanelMocks() {
   vi.doUnmock("@/stores/agentStore");
   vi.doUnmock("@/lib/tauri-bridge");
   vi.resetModules();
+}
+
+async function renderSidebarWithIslandState(input: {
+  notifications: Array<{
+    id: string;
+    level: string;
+    read: boolean;
+    content?: string;
+    created_at: number;
+    source_instance_id: string;
+  }>;
+  instances?: Map<string, unknown>;
+}) {
+  vi.resetModules();
+  vi.doMock("@/stores/islandStore", () => ({
+    useIslandStore: (
+      selector: (state: {
+        notifications: typeof input.notifications;
+        removePermissionRequest: ReturnType<typeof vi.fn>;
+        clearNotification: ReturnType<typeof vi.fn>;
+      }) => unknown
+    ) =>
+      selector({
+        notifications: input.notifications,
+        removePermissionRequest: vi.fn(),
+        clearNotification: vi.fn(),
+      }),
+  }));
+  vi.doMock("@/stores/agentStore", () => ({
+    agentDisplayLabel: (agent: { name?: string; instance_id: string }) =>
+      agent.name ?? agent.instance_id,
+    useAgentStore: (selector: (state: { instances: Map<string, unknown> }) => unknown) =>
+      selector({
+        instances:
+          input.instances ??
+          new Map([
+            [
+              "agent-1",
+              {
+                instance_id: "agent-1",
+                name: "Research Alpha",
+                created_at: Date.now() - 25_000,
+                status: "coding",
+              },
+            ],
+          ]),
+      }),
+  }));
+  vi.doMock("@/lib/tauri-bridge", () => ({
+    focusAgentCard: vi.fn(),
+    respondToPermission: vi.fn(),
+  }));
+
+  try {
+    const { Sidebar } = await import("@/components/island/Sidebar");
+    let renderer!: TestRenderer.ReactTestRenderer;
+
+    await act(async () => {
+      renderer = TestRenderer.create(
+        createElement(Sidebar, {
+          expanded: true,
+          onCollapse: () => undefined,
+          onOpenWorkspace: () => undefined,
+        })
+      );
+    });
+
+    return renderer;
+  } finally {
+    vi.doUnmock("@/stores/islandStore");
+    vi.doUnmock("@/stores/agentStore");
+    vi.doUnmock("@/lib/tauri-bridge");
+    vi.resetModules();
+  }
 }
 
 async function renderCompactModeControllerForTopIslandFlow() {
@@ -654,6 +827,46 @@ describe("compact-mode", () => {
     expect(resolveTopIslandState({ activeCount: 0, permissionCount: 0, unreadCount: 0 })).toBe("idle");
   });
 
+  it("locks the idle top island shell geometry to the pen baseline", async () => {
+    const renderer = await renderTopIslandWithIslandState({
+      notifications: [],
+      pendingPermissions: [],
+      unreadCount: 0,
+    });
+    const capsule = renderer.root.find(
+      (node) =>
+        node.type === "button" && classNameIncludes(node.props.className, "top-island-capsule")
+    );
+
+    expect(classNameIncludes(capsule.props.className, "top-island-capsule")).toBe(true);
+    expect(capsule.props["data-visual-state"]).toBe("idle");
+    expect(capsule.props.style?.["--top-island-width"]).toBe("400px");
+  });
+
+  it("locks the unread top island shell geometry to the pen baseline", async () => {
+    const renderer = await renderTopIslandWithIslandState({
+      notifications: [
+        {
+          id: "notif-1",
+          level: "info",
+          read: false,
+          source_adapter_name: "Conflux",
+          content: "Workspace ready",
+        },
+      ],
+      pendingPermissions: [],
+      unreadCount: 1,
+    });
+    const capsule = renderer.root.find(
+      (node) =>
+        node.type === "button" && classNameIncludes(node.props.className, "top-island-capsule")
+    );
+
+    expect(classNameIncludes(capsule.props.className, "top-island-capsule")).toBe(true);
+    expect(capsule.props["data-visual-state"]).toBe("active");
+    expect(capsule.props.style?.["--top-island-width"]).toBe("420px");
+  });
+
   it("maps float ball data to semantic states", () => {
     expect(resolveFloatBallSemanticState({ unreadCount: 0, hasError: false })).toBe("normal");
     expect(resolveFloatBallSemanticState({ unreadCount: 2, hasError: false })).toBe("notification");
@@ -735,6 +948,21 @@ describe("compact-mode", () => {
     });
 
     expect(html).toContain('aria-label="Float ball activity count 1"');
+  });
+
+  it("locks the float ball shell geometry to the pen baseline", async () => {
+    const renderer = await renderFloatBallRendererWithIslandState({
+      notifications: [{ id: "notif-1", level: "info", read: false }],
+      pendingPermissions: [],
+      unreadCount: 1,
+    });
+    const button = renderer.root.find(
+      (node) =>
+        node.type === "button" && classNameIncludes(node.props.className, "float-ball")
+    );
+
+    expect(classNameIncludes(button.props.className, "float-ball")).toBe(true);
+    expect(button.props.style?.["--float-ball-size"]).toBe("52px");
   });
 
   it("closes repeated top island toggles", () => {
@@ -981,6 +1209,33 @@ describe("compact-mode", () => {
       });
       cleanupCompactModeControllerSidebarMocks();
     }
+  });
+
+  it("locks the sidebar shell geometry to the pen baseline", async () => {
+    const renderer = await renderSidebarWithIslandState({
+      notifications: [
+        {
+          id: "perm-1",
+          level: "permission_required",
+          read: false,
+          content: "Approve shell command",
+          created_at: Date.now() - 10_000,
+          source_instance_id: "agent-7",
+        },
+      ],
+    });
+    const rail = renderer.root.find(
+      (node) =>
+        node.type === "aside" && classNameIncludes(node.props.className, "sidebar-panel")
+    );
+    const band = renderer.root.find(
+      (node) => classNameIncludes(node.props.className, "sidebar-panel__band")
+    );
+
+    expect(classNameIncludes(rail.props.className, "sidebar-panel")).toBe(true);
+    expect(classNameIncludes(band.props.className, "sidebar-panel__band")).toBe(true);
+    expect(rail.props.style?.["--sidebar-rail-width"]).toBe("300px");
+    expect(band.props.style?.["--sidebar-band-width"]).toBe("220px");
   });
 
   it("renders sidebar as a compact assistant panel with explicit workspace and dismiss actions", async () => {
