@@ -8,6 +8,18 @@ import {
 } from "./compact-mode";
 
 describe("compact-mode", () => {
+  it("does not mutate the selected mode when toggling detail layers", () => {
+    const selectedMode = "top_island";
+    const detail = nextDetailState({
+      currentMode: selectedMode,
+      currentDetail: { kind: "none" },
+      action: { type: "toggle_top_island_popover", anchor: { x: 420, y: 48 } },
+    });
+
+    expect(selectedMode).toBe("top_island");
+    expect(detail.kind).toBe("top_island_popover");
+  });
+
   it("opens a detail layer without switching mode", () => {
     const detail = nextDetailState({
       currentMode: "top_island",
