@@ -348,6 +348,31 @@ describe("compact-mode", () => {
     expect(html).toMatch(/<span[^>]*aria-label="Float ball activity count 2"[^>]*>2<\/span>/);
   });
 
+  it("adds unmatched pending permissions on top of unread notifications in mixed state", async () => {
+    const html = await renderFloatBallWithIslandState({
+      notifications: [{ id: "notif-1", level: "info", read: false }],
+      pendingPermissions: [{ id: "perm-1" }, { id: "perm-2" }],
+      unreadCount: 0,
+    });
+
+    expect(html).toContain('aria-label="Float ball activity count 3"');
+    expect(html).toMatch(/<span[^>]*aria-label="Float ball activity count 3"[^>]*>3<\/span>/);
+  });
+
+  it("does not double count pending permissions already represented by unread permission notifications", async () => {
+    const html = await renderFloatBallWithIslandState({
+      notifications: [
+        { id: "notif-1", level: "permission_required", read: false },
+        { id: "notif-2", level: "permission_required", read: false },
+      ],
+      pendingPermissions: [{ id: "perm-1" }, { id: "perm-2" }],
+      unreadCount: 0,
+    });
+
+    expect(html).toContain('aria-label="Float ball activity count 2"');
+    expect(html).toMatch(/<span[^>]*aria-label="Float ball activity count 2"[^>]*>2<\/span>/);
+  });
+
   it("renders a float ball badge for unread error activity", async () => {
     const html = await renderFloatBallWithIslandState({
       notifications: [{ id: "notif-1", level: "error", read: false }],

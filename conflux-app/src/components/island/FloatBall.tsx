@@ -81,13 +81,16 @@ export const FloatBall: FC<FloatBallProps> = ({ onExpand }) => {
 
   const derivedState = useMemo(() => {
     const unreadNotificationCount = notifications.filter((notification) => !notification.read).length;
+    const unreadPermissionNotificationCount = notifications.filter(
+      (notification) =>
+        !notification.read && notification.level === "permission_required"
+    ).length;
+    const unmatchedPendingPermissions = Math.max(
+      0,
+      pendingPermissions.length - unreadPermissionNotificationCount
+    );
     const hasError = notifications.some((n) => !n.read && n.level === "error");
-    const badgeCount =
-      unreadNotificationCount > 0
-        ? unreadNotificationCount
-        : pendingPermissions.length > 0
-          ? pendingPermissions.length
-          : 0;
+    const badgeCount = unreadNotificationCount + unmatchedPendingPermissions;
 
     return {
       badgeCount,
