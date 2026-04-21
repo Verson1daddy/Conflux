@@ -74,6 +74,20 @@ describe("compact-mode", () => {
     });
   });
 
+  it("schedules collapse after the pointer leaves an expanded sidebar", () => {
+    const next = resolveSidebarVisibility({
+      hotzoneHovered: false,
+      panelHovered: false,
+      expanded: true,
+      collapseDelayMs: 160,
+    });
+
+    expect(next).toEqual({
+      expanded: true,
+      shouldScheduleCollapse: true,
+    });
+  });
+
   it("maps top island data to pen-aligned states", () => {
     expect(resolveTopIslandState({ activeCount: 3, permissionCount: 0, unreadCount: 0 })).toBe("active");
     expect(resolveTopIslandState({ activeCount: 0, permissionCount: 1, unreadCount: 0 })).toBe("permission");

@@ -2,27 +2,23 @@ import { type FC } from "react";
 
 interface SidebarHotzoneProps {
   expanded: boolean;
-  onExpandedChange: (expanded: boolean) => void;
+  onHoverChange: (hovered: boolean) => void;
 }
 
 export const SidebarHotzone: FC<SidebarHotzoneProps> = ({
   expanded,
-  onExpandedChange,
+  onHoverChange,
 }) => {
   return (
     <div
-      role="button"
-      tabIndex={0}
-      aria-label="Open sidebar"
-      aria-expanded={expanded}
       className="fixed right-0 top-0 h-full"
       style={{
         zIndex: 30,
         width: 16,
         background: expanded ? "transparent" : "rgba(255,255,255,0.01)",
       }}
-      onMouseEnter={() => onExpandedChange(true)}
-      onFocus={() => onExpandedChange(true)}
+      onMouseEnter={() => onHoverChange(true)}
+      onMouseLeave={() => onHoverChange(false)}
     />
   );
 };
