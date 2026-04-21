@@ -11,12 +11,8 @@ export const SidebarHotzone: FC<SidebarHotzoneProps> = ({
 }) => {
   return (
     <div
-      className="fixed right-0 top-0 h-full"
-      style={{
-        zIndex: 30,
-        width: 16,
-        background: expanded ? "transparent" : "rgba(255,255,255,0.01)",
-      }}
+      aria-hidden="true"
+      className={expanded ? "sidebar-hotzone is-active" : "sidebar-hotzone"}
       onMouseEnter={() => onHoverChange(true)}
       onMouseLeave={() => onHoverChange(false)}
     />

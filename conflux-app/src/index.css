@@ -539,6 +539,404 @@ html[data-window-label="island"] #root {
   color: rgba(255, 255, 255, 0.76);
 }
 
+.sidebar-hotzone {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  z-index: 30;
+  background: linear-gradient(
+    270deg,
+    rgba(184, 212, 227, 0.08),
+    rgba(184, 212, 227, 0.015) 58%,
+    transparent
+  );
+  transition: opacity var(--duration-fast) var(--ease-out-smooth);
+}
+
+.sidebar-hotzone::after {
+  content: "";
+  position: absolute;
+  top: 18%;
+  right: 4px;
+  width: 2px;
+  height: 64%;
+  border-radius: 999px;
+  background: linear-gradient(
+    180deg,
+    rgba(184, 212, 227, 0),
+    rgba(184, 212, 227, 0.42),
+    rgba(184, 212, 227, 0)
+  );
+  opacity: 0.72;
+}
+
+.sidebar-hotzone.is-active {
+  opacity: 0.48;
+}
+
+.sidebar-panel {
+  position: fixed;
+  top: 14px;
+  right: 12px;
+  bottom: 14px;
+  width: min(360px, calc(100vw - 28px));
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+  border-radius: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background:
+    radial-gradient(circle at top right, rgba(184, 212, 227, 0.14), transparent 30%),
+    linear-gradient(180deg, rgba(16, 20, 27, 0.96), rgba(7, 10, 15, 0.98));
+  box-shadow:
+    0 28px 64px rgba(0, 0, 0, 0.48),
+    0 0 30px rgba(184, 212, 227, 0.11);
+  backdrop-filter: blur(28px);
+  -webkit-backdrop-filter: blur(28px);
+  overflow: hidden;
+  transform-origin: right center;
+}
+
+.sidebar-panel.is-expanded {
+  animation: sidebar-panel-enter var(--duration-normal) var(--ease-apple);
+}
+
+.sidebar-panel__brand,
+.sidebar-panel__brand-copy,
+.sidebar-panel__hero,
+.sidebar-panel__stats,
+.sidebar-panel__stat,
+.sidebar-panel__actions,
+.sidebar-panel__body,
+.sidebar-panel__section,
+.sidebar-panel__list,
+.sidebar-panel__agent,
+.sidebar-panel__agent-copy,
+.sidebar-panel__notification,
+.sidebar-panel__notification-copy,
+.sidebar-panel__permission-actions,
+.sidebar-panel__section-header {
+  display: flex;
+}
+
+.sidebar-panel__brand,
+.sidebar-panel__section-header,
+.sidebar-panel__notification-row,
+.sidebar-panel__actions {
+  align-items: center;
+}
+
+.sidebar-panel__brand {
+  gap: 12px;
+  padding: 2px 4px 0;
+}
+
+.sidebar-panel__brand-mark {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #b8d4e3;
+  flex-shrink: 0;
+}
+
+.sidebar-panel__brand-copy {
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-panel__brand-name {
+  color: #f7fbff;
+  font-family: "Fraunces Variable", Georgia, serif;
+  font-size: 19px;
+  font-weight: 700;
+}
+
+.sidebar-panel__brand-meta,
+.sidebar-panel__eyebrow,
+.sidebar-panel__section-label,
+.sidebar-panel__stat-label {
+  color: rgba(255, 255, 255, 0.5);
+  font-family: "Geist Sans", sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.42px;
+  text-transform: uppercase;
+}
+
+.sidebar-panel__edge-pill,
+.sidebar-panel__section-count {
+  margin-left: auto;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.7);
+  font-family: "Geist Sans", sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.sidebar-panel__hero,
+.sidebar-panel__body,
+.sidebar-panel__section,
+.sidebar-panel__list,
+.sidebar-panel__agent-copy,
+.sidebar-panel__notification-copy,
+.sidebar-panel__stat {
+  flex-direction: column;
+}
+
+.sidebar-panel__hero {
+  gap: 10px;
+  padding: 18px;
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.03)),
+    rgba(9, 12, 18, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.sidebar-panel__title {
+  margin: 0;
+  color: #f7fbff;
+  font-family: "Geist Sans", sans-serif;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.sidebar-panel__summary,
+.sidebar-panel__notification-body,
+.sidebar-panel__empty,
+.sidebar-panel__agent-status,
+.sidebar-panel__notification-time,
+.sidebar-panel__brand-meta {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.62);
+  font-family: "Geist Sans", sans-serif;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.sidebar-panel__stats {
+  gap: 8px;
+}
+
+.sidebar-panel__stat {
+  min-width: 0;
+  flex: 1;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.sidebar-panel__stat-value {
+  color: #f7fbff;
+  font-family: "Geist Sans", sans-serif;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.sidebar-panel__actions {
+  gap: 10px;
+}
+
+.sidebar-panel__action,
+.sidebar-panel__mini-action {
+  min-height: 34px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: "Geist Sans", sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  transition:
+    transform var(--duration-fast) var(--ease-out-smooth),
+    background-color var(--duration-fast) var(--ease-out-smooth),
+    border-color var(--duration-fast) var(--ease-out-smooth);
+}
+
+.sidebar-panel__action:hover,
+.sidebar-panel__mini-action:hover {
+  transform: translateY(-1px);
+}
+
+.sidebar-panel__action {
+  flex: 1;
+  padding: 0 16px;
+}
+
+.sidebar-panel__action--primary,
+.sidebar-panel__mini-action--approve {
+  background: rgba(184, 212, 227, 0.16);
+  color: #f7fbff;
+}
+
+.sidebar-panel__action--secondary,
+.sidebar-panel__mini-action {
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.sidebar-panel__body {
+  flex: 1;
+  gap: 12px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.sidebar-panel__section {
+  gap: 10px;
+  padding: 14px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.sidebar-panel__section-header {
+  gap: 10px;
+}
+
+.sidebar-panel__list {
+  gap: 8px;
+}
+
+.sidebar-panel__agent {
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  background: rgba(6, 9, 14, 0.62);
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.sidebar-panel__agent-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.sidebar-panel__agent-copy {
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+}
+
+.sidebar-panel__agent-name {
+  color: #f7fbff;
+  font-family: "Geist Sans", sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-panel__agent-time {
+  color: rgba(255, 255, 255, 0.5);
+  font-family: "JetBrains Mono Variable", monospace;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.sidebar-panel__notification {
+  gap: 10px;
+  padding: 11px 12px;
+  border-radius: 16px;
+  background: rgba(6, 9, 14, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.sidebar-panel__notification-icon {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(52, 199, 89, 0.12);
+  color: #34c759;
+  font-family: "Geist Sans", sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.sidebar-panel__notification-icon[data-level="permission_required"] {
+  background: rgba(255, 184, 0, 0.14);
+  color: #ffb800;
+}
+
+.sidebar-panel__notification-icon[data-level="error"] {
+  background: rgba(255, 59, 48, 0.14);
+  color: #ff3b30;
+}
+
+.sidebar-panel__notification-copy {
+  min-width: 0;
+  flex: 1;
+  gap: 5px;
+}
+
+.sidebar-panel__notification-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sidebar-panel__notification-title {
+  color: #f7fbff;
+  font-family: "Geist Sans", sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sidebar-panel__permission-actions {
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.sidebar-panel__mini-action {
+  padding: 0 12px;
+}
+
+.sidebar-panel__mini-action:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.sidebar-panel__empty {
+  padding: 4px 2px;
+}
+
+@keyframes sidebar-panel-enter {
+  from {
+    opacity: 0;
+    transform: translateX(22px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
 /* ===== Modal system: scrim + panel enter/exit ===== */
 @keyframes modal-scrim-fade-in {
   from { opacity: 0; }

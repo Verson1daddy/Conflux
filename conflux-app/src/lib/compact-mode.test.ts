@@ -75,9 +75,11 @@ async function renderCompactModeControllerForSidebarFlow() {
     setTimeout,
   });
 
+  const setMode = vi.fn();
+
   vi.doMock("@/stores/islandStore", () => ({
-    useIslandStore: (selector: (state: { mode: string }) => unknown) =>
-      selector({ mode: "sidebar" }),
+    useIslandStore: (selector: (state: { mode: string; setMode: typeof setMode }) => unknown) =>
+      selector({ mode: "sidebar", setMode }),
   }));
   vi.doMock("@/lib/tauri-bridge", () => ({
     showWorkspaceOnly: vi.fn(),
@@ -117,7 +119,7 @@ async function renderCompactModeControllerForSidebarFlow() {
       renderer = TestRenderer.create(createElement(CompactModeController));
     });
 
-    return renderer;
+    return { renderer, setMode };
   } catch (error) {
     vi.useRealTimers();
     vi.unstubAllGlobals();
@@ -147,6 +149,104 @@ function cleanupCompactModeControllerSidebarMocks() {
   vi.doUnmock("@/components/island/FloatBallPanel");
   vi.doUnmock("@/components/island/TopIsland");
   vi.doUnmock("@/components/island/TopIslandPopover");
+  vi.resetModules();
+}
+
+async function renderSidebarAssistantPanel(input: {
+  notifications: Array<{
+    id: string;
+    level: string;
+    read: boolean;
+    content?: string;
+    created_at: number;
+    source_instance_id: string;
+  }>;
+  instances?: Map<string, unknown>;
+}) {
+  vi.resetModules();
+
+  const focusAgentCard = vi.fn();
+  const respondToPermissionMock = vi.fn().mockResolvedValue(undefined);
+  const removePermissionRequest = vi.fn();
+  const clearNotification = vi.fn();
+  const onDismiss = vi.fn();
+  const onOpenWorkspace = vi.fn();
+
+  vi.doMock("@/stores/islandStore", () => ({
+    useIslandStore: (
+      selector: (state: {
+        notifications: typeof input.notifications;
+        removePermissionRequest: typeof removePermissionRequest;
+        clearNotification: typeof clearNotification;
+      }) => unknown
+    ) =>
+      selector({
+        notifications: input.notifications,
+        removePermissionRequest,
+        clearNotification,
+      }),
+  }));
+  vi.doMock("@/stores/agentStore", () => ({
+    agentDisplayLabel: (agent: { name?: string; instance_id: string }) =>
+      agent.name ?? agent.instance_id,
+    useAgentStore: (selector: (state: { instances: Map<string, unknown> }) => unknown) =>
+      selector({
+        instances:
+          input.instances ??
+          new Map([
+            [
+              "agent-1",
+              {
+                instance_id: "agent-1",
+                name: "Research Alpha",
+                created_at: Date.now() - 25_000,
+                status: "coding",
+              },
+            ],
+          ]),
+      }),
+  }));
+  vi.doMock("@/lib/tauri-bridge", () => ({
+    focusAgentCard,
+    respondToPermission: respondToPermissionMock,
+  }));
+
+  try {
+    const { Sidebar } = await import("@/components/island/Sidebar");
+    let renderer!: TestRenderer.ReactTestRenderer;
+
+    await act(async () => {
+      renderer = TestRenderer.create(
+        createElement(Sidebar, {
+          expanded: true,
+          onCollapse: onDismiss,
+          onOpenWorkspace,
+        })
+      );
+    });
+
+    return {
+      clearNotification,
+      focusAgentCard,
+      onDismiss,
+      onOpenWorkspace,
+      removePermissionRequest,
+      renderer,
+      respondToPermissionMock,
+    };
+  } catch (error) {
+    vi.doUnmock("@/stores/islandStore");
+    vi.doUnmock("@/stores/agentStore");
+    vi.doUnmock("@/lib/tauri-bridge");
+    vi.resetModules();
+    throw error;
+  }
+}
+
+function cleanupSidebarAssistantPanelMocks() {
+  vi.doUnmock("@/stores/islandStore");
+  vi.doUnmock("@/stores/agentStore");
+  vi.doUnmock("@/lib/tauri-bridge");
   vi.resetModules();
 }
 
@@ -794,15 +894,18 @@ describe("compact-mode", () => {
   });
 
   it("collapses the sidebar only after hover leaves and the timeout elapses", async () => {
-    const renderer = await renderCompactModeControllerForSidebarFlow();
+    const { renderer, setMode } = await renderCompactModeControllerForSidebarFlow();
 
     try {
-      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(1);
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(0);
 
       const hotzone = renderer.root.findByType(SidebarHotzoneMock);
       await act(async () => {
         hotzone.props.onHoverChange(true);
       });
+
+      expect(setMode).not.toHaveBeenCalled();
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(1);
 
       const panelSensor = renderer.root.find(
         (node) =>
@@ -819,6 +922,7 @@ describe("compact-mode", () => {
       });
 
       expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(1);
+      expect(setMode).not.toHaveBeenCalled();
 
       await act(async () => {
         panelSensor.props.onMouseLeave();
@@ -834,6 +938,7 @@ describe("compact-mode", () => {
       });
 
       expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(0);
+      expect(setMode).not.toHaveBeenCalled();
     } finally {
       await act(async () => {
         renderer.unmount();
@@ -843,14 +948,9 @@ describe("compact-mode", () => {
   });
 
   it("auto-collapses after hotzone-only hover without entering the panel", async () => {
-    const renderer = await renderCompactModeControllerForSidebarFlow();
+    const { renderer, setMode } = await renderCompactModeControllerForSidebarFlow();
 
     try {
-      const sidebarPanel = renderer.root.findByType(SidebarPanelMock);
-      await act(async () => {
-        sidebarPanel.props.onCollapse();
-      });
-
       expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(0);
 
       const hotzone = renderer.root.findByType(SidebarHotzoneMock);
@@ -859,6 +959,7 @@ describe("compact-mode", () => {
       });
 
       expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(1);
+      expect(setMode).not.toHaveBeenCalled();
 
       await act(async () => {
         vi.advanceTimersByTime(159);
@@ -871,11 +972,64 @@ describe("compact-mode", () => {
       });
 
       expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(0);
+      expect(setMode).not.toHaveBeenCalled();
     } finally {
       await act(async () => {
         renderer.unmount();
       });
       cleanupCompactModeControllerSidebarMocks();
+    }
+  });
+
+  it("renders sidebar as a compact assistant panel with explicit workspace and dismiss actions", async () => {
+    const {
+      onDismiss,
+      onOpenWorkspace,
+      renderer,
+    } = await renderSidebarAssistantPanel({
+      notifications: [
+        {
+          id: "notif-1",
+          level: "info",
+          read: false,
+          content: "Workspace sync is ready",
+          created_at: Date.now() - 60_000,
+          source_instance_id: "agent-1",
+        },
+      ],
+    });
+
+    try {
+      const json = JSON.stringify(renderer.toJSON());
+      expect(json).toContain("Assistant");
+      expect(json).toContain("Open Workspace");
+      expect(json).toContain("Dismiss");
+      expect(json).toContain("Agents");
+      expect(json).toContain("Notifications");
+
+      const buttons = renderer.root.findAllByType("button");
+      const openWorkspaceButton = buttons.find(
+        (node) => node.props.children === "Open Workspace"
+      );
+      const dismissButton = buttons.find((node) => node.props.children === "Dismiss");
+
+      expect(openWorkspaceButton).toBeDefined();
+      expect(dismissButton).toBeDefined();
+
+      await act(async () => {
+        openWorkspaceButton?.props.onClick();
+      });
+      await act(async () => {
+        dismissButton?.props.onClick();
+      });
+
+      expect(onOpenWorkspace).toHaveBeenCalledTimes(1);
+      expect(onDismiss).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupSidebarAssistantPanelMocks();
     }
   });
 

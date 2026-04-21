@@ -32,7 +32,7 @@ interface SidebarState {
 }
 
 type SidebarAction =
-  | { type: "sync_mode"; mode: IslandMode }
+  | { type: "sync_mode" }
   | { type: "set_hotzone_hovered"; hovered: boolean }
   | { type: "set_panel_hovered"; hovered: boolean }
   | { type: "collapse" }
@@ -53,9 +53,9 @@ function nextSidebarState(base: Omit<SidebarState, "collapseArmed">): SidebarSta
   };
 }
 
-function createSidebarState(mode: IslandMode): SidebarState {
+function createSidebarState(): SidebarState {
   return {
-    expanded: mode === "sidebar",
+    expanded: false,
     hotzoneHovered: false,
     panelHovered: false,
     collapseArmed: false,
@@ -65,7 +65,7 @@ function createSidebarState(mode: IslandMode): SidebarState {
 function reduceSidebarState(state: SidebarState, action: SidebarAction): SidebarState {
   switch (action.type) {
     case "sync_mode":
-      return createSidebarState(action.mode);
+      return createSidebarState();
     case "set_hotzone_hovered":
       return nextSidebarState({
         expanded: state.expanded,
@@ -103,7 +103,7 @@ function reduceSidebarState(state: SidebarState, action: SidebarAction): Sidebar
 export const CompactModeController: FC = () => {
   const mode = useIslandStore((state) => state.mode) as IslandMode;
   const [detail, setDetail] = useState<CompactDetailState>({ kind: "none" });
-  const [sidebar, dispatchSidebar] = useReducer(reduceSidebarState, mode, createSidebarState);
+  const [sidebar, dispatchSidebar] = useReducer(reduceSidebarState, undefined, createSidebarState);
   const collapseTimeoutRef = useRef<number | null>(null);
 
   const clearSidebarCollapseTimeout = useCallback(() => {
@@ -165,7 +165,7 @@ export const CompactModeController: FC = () => {
     );
 
     clearSidebarCollapseTimeout();
-    dispatchSidebar({ type: "sync_mode", mode });
+    dispatchSidebar({ type: "sync_mode" });
   }, [clearSidebarCollapseTimeout, mode]);
 
   useEffect(() => {
@@ -203,7 +203,11 @@ export const CompactModeController: FC = () => {
             }
           >
             <IslandSurface mode={mode}>
-              <Sidebar onCollapse={() => dispatchSidebar({ type: "collapse" })} />
+              <Sidebar
+                expanded={sidebar.expanded}
+                onCollapse={() => dispatchSidebar({ type: "collapse" })}
+                onOpenWorkspace={handleRestoreWorkspace}
+              />
             </IslandSurface>
           </div>
         )}
