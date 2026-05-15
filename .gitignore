@@ -20,9 +20,14 @@ build/
 # Rust / Cargo build artifacts
 target/
 **/target/
+conflux-app/src-tauri/target-codex-*/
 
 # Tauri 2 generated schemas (per-build)
 conflux-app/src-tauri/gen/schemas/
+
+# Claude Code local worktrees
+.claude/worktrees/
+.worktrees/
 
 # Python cache
 __pycache__/
