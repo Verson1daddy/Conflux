@@ -46,6 +46,12 @@ export async function startBackendDiscussion(
  * @param targetInstanceIds — Instance IDs to inject the message into via PTY stdin
  * @returns The persisted DiscussionMessage from the backend
  */
+interface InjectionResult {
+  instanceId: string;
+  ok: boolean;
+  error?: unknown;
+}
+
 export async function sendMessageWithInjection(
   discussionId: string,
   content: string,
@@ -54,15 +60,21 @@ export async function sendMessageWithInjection(
   // Step 1: Persist the message in the backend discussion store
   const msg = await sendDiscussionMessage(discussionId, content);
 
-  // Step 2: Inject the message content into each participant's PTY in parallel.
-  // We use "discussion_user_message" as the InjectionSource so the backend
-  // can apply appropriate rate-limiting / audit logging.
-  const injections = targetInstanceIds.map((id) =>
-    injectStdin(id, content + PTY_ENTER, "discussion_user_message").catch((err) => {
-      console.warn(`[discussion-ipc] inject to ${id} failed:`, err);
+  const injectionResults = await Promise.all(
+    targetInstanceIds.map(async (id): Promise<InjectionResult> => {
+      try {
+        await injectStdin(id, content + PTY_ENTER, "discussion_user_message");
+        return { instanceId: id, ok: true };
+      } catch (error) {
+        console.warn(`[discussion-ipc] inject to ${id} failed:`, error);
+        return { instanceId: id, ok: false, error };
+      }
     }),
   );
-  await Promise.allSettled(injections);
+
+  if (injectionResults.length > 0 && injectionResults.every((result) => !result.ok)) {
+    throw new Error("Failed to inject the interject message into every participant PTY.");
+  }
 
   return msg;
 }
