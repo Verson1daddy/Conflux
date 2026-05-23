@@ -23,10 +23,9 @@
 //   conflux://pty-output events for instanceId and write base64-decoded
 //   bytes to the terminal as they arrive.
 
-import { useCallback, useEffect, useRef, type FC } from "react";
+import { useCallback, useEffect, useRef, useState, type FC } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import {
   onProcessExitedForInstance,
@@ -40,6 +39,11 @@ import {
   resizePty,
   respawnAgentInstance,
 } from "@/lib/tauri-bridge";
+import {
+  copyTextToClipboard,
+  createTerminalInputController,
+} from "@/lib/terminal-input";
+import { shouldStopTerminalWheelPropagation } from "@/lib/terminal-wheel";
 import { useAgentStore } from "@/stores/agentStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { ExitOverlay } from "./ExitOverlay";
@@ -50,6 +54,13 @@ interface XtermTerminalProps {
   interactive?: boolean;
   subscribeToPty?: boolean;
   cardWidth?: number;
+  replayHistory?: boolean;
+  allowPreviewResizeSync?: boolean;
+}
+
+interface LoadedWebglAddon {
+  dispose: () => void;
+  onContextLoss: (callback: () => void) => void;
 }
 
 /** Compute terminal font size proportional to card width. */
@@ -57,8 +68,8 @@ function computeFontSize(cardWidth: number | undefined): number {
   if (!cardWidth) return 13;
   const BASE_WIDTH = 580;
   const BASE_FONT = 13;
-  const MIN_FONT = 8;
-  const MAX_FONT = 16;
+  const MIN_FONT = 9;
+  const MAX_FONT = 18;
   return Math.round(Math.min(MAX_FONT, Math.max(MIN_FONT, BASE_FONT * (cardWidth / BASE_WIDTH))));
 }
 
@@ -109,10 +120,13 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
   interactive = false,
   subscribeToPty = false,
   cardWidth,
+  replayHistory = true,
+  allowPreviewResizeSync = false,
 }) => {
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const [sendFailure, setSendFailure] = useState<string | null>(null);
 
   // C2-T1 Exit Overlay · read exit state from agentStore (NOT local state)
   // so that resize/flip/expand toggles that unmount this component don't
@@ -200,6 +214,7 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
   useEffect(() => {
     if (!hostRef.current) return;
 
+    const host = hostRef.current;
     const terminal = new Terminal({
       fontFamily:
         "'JetBrains Mono Variable', 'JetBrains Mono', 'Cascadia Mono', 'Consolas', monospace",
@@ -217,9 +232,13 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
       allowTransparency: false,
       drawBoldTextInBrightColors: true,
       scrollback: 5000,
+      scrollOnEraseInDisplay: true,
+      scrollOnUserInput: true,
+      scrollSensitivity: 1.4,
       theme: CONFLUX_THEME,
       rightClickSelectsWord: true,
       macOptionIsMeta: true,
+      windowsPty: { backend: "conpty" },
       // Smooth scrolling + minimum contrast boost improve legibility on
       // dark backgrounds without touching individual color tokens.
       smoothScrollDuration: 120,
@@ -229,23 +248,40 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
 
-    terminal.open(hostRef.current);
+    terminal.open(host);
+
+    const stopWheelPropagation = (event: WheelEvent) => {
+      if (shouldStopTerminalWheelPropagation(event, interactive)) {
+        event.stopPropagation();
+      }
+    };
+    host.addEventListener("wheel", stopWheelPropagation, { passive: true });
 
     // Load WebGL renderer best-effort. This has to happen AFTER open() so
     // the canvas element exists; if the host OS / GPU refuses WebGL2 we
     // catch the error and fall back to the default DOM renderer.
-    let webglAddon: WebglAddon | undefined;
-    try {
-      webglAddon = new WebglAddon();
-      webglAddon.onContextLoss(() => {
-        // Chromium can drop the WebGL context under memory pressure. Dispose
-        // the addon so xterm falls back to DOM instead of freezing.
-        webglAddon?.dispose();
-      });
-      terminal.loadAddon(webglAddon);
-    } catch (err) {
+    let webglAddon: LoadedWebglAddon | undefined;
+    if (interactive) {
+      void (async () => {
+        try {
+          const module = await import("@xterm/addon-webgl");
+          if (terminalRef.current !== terminal) {
+            return;
+          }
+
+          const addon = new module.WebglAddon() as LoadedWebglAddon;
+          addon.onContextLoss(() => {
+            addon.dispose();
+            if (webglAddon === addon) {
+              webglAddon = undefined;
+            }
+          });
+          terminal.loadAddon(addon as never);
+          webglAddon = addon;
+        } catch (err) {
       console.warn("[XtermTerminal] WebGL renderer unavailable — using DOM fallback.", err);
-      webglAddon = undefined;
+        }
+      })();
     }
 
     // Forward xterm grid-size changes to the backend PTY master so that
@@ -257,15 +293,14 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
     // the final onResize call always wins because the timer is cleared on
     // every event.
     let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-    // Track whether the first resize has been sent. Card previews
-    // (interactive=false) send exactly ONE initial resize so the PTY starts
-    // at the right column count instead of the default 120. After that,
-    // only the interactive expanded terminal keeps resizing — otherwise
-    // two terminals fight over the same PTY grid and TUI accumulates errors.
+    // Track whether the first resize has been sent. Preview cards normally
+    // send just one initial resize, but when preview resize sync is enabled
+    // they keep updating the PTY so the folded terminal stays aligned after
+    // card size/layout changes.
     let initialResizeSent = false;
     const notifyBackendResize = (cols: number, rows: number) => {
       if (!subscribeToPty) return;
-      if (!interactive && initialResizeSent) return;
+      if (!interactive && initialResizeSent && !allowPreviewResizeSync) return;
       initialResizeSent = true;
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       resizeDebounceTimer = setTimeout(() => {
@@ -294,7 +329,7 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
     const resizeObserver = new ResizeObserver(() => {
       try { fitAddon.fit(); } catch { /* ignore */ }
     });
-    resizeObserver.observe(hostRef.current);
+    resizeObserver.observe(host);
 
     // Write initial content (demo or replayed history)
     if (content) {
@@ -303,17 +338,38 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
 
     // Interactive mode: route keystrokes to backend stdin, fall back to local
     // echo when the backend rejects (e.g. demo mode without a real PTY).
+    let inputDisposable: { dispose: () => void } | undefined;
     if (interactive) {
-      terminal.onData((data) => {
-        if (subscribeToPty) {
-          injectStdin(instanceId, data, "user_direct").catch(() => {
-            // Backend unavailable or PTY gone — echo locally so the user
-            // still sees their keystrokes instead of a frozen terminal.
-            terminal.write(data);
-          });
-        } else {
+      const inputController = createTerminalInputController({
+        hasSelection: () => terminal.hasSelection(),
+        getSelection: () => terminal.getSelection(),
+        copyText: copyTextToClipboard,
+        sendData: (data) => {
+          if (subscribeToPty) {
+            return injectStdin(instanceId, data, "user_direct");
+          }
           terminal.write(data);
-        }
+        },
+        echoLocal: (data) => {
+          terminal.write(data);
+        },
+        allowEchoFallback: !subscribeToPty,
+        onSendSuccess: () => {
+          setSendFailure(null);
+        },
+        onSendFailure: (data) => {
+          if (subscribeToPty && data.trim().length > 0) {
+            setSendFailure(`Input failed to reach the live PTY: ${JSON.stringify(data)}`);
+            return;
+          }
+          if (subscribeToPty) {
+            setSendFailure("Input failed to reach the live PTY.");
+          }
+        },
+      });
+
+      inputDisposable = terminal.onData((data) => {
+        inputController.handleData(data);
       });
     }
 
@@ -339,16 +395,23 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
     let cancelled = false;
     if (subscribeToPty) {
       (async () => {
-        try {
-          const history = await getPtyHistory(instanceId);
-          if (cancelled) return;
-          if (history.length > 0) {
-            try { terminal.write(decodePtyChunk(history)); } catch { /* ignore */ }
+        if (replayHistory) {
+          try {
+            const history = await getPtyHistory(instanceId);
+            if (cancelled) return;
+            if (history.length > 0) {
+              try {
+                terminal.clear();
+                terminal.write(decodePtyChunk(history));
+              } catch {
+                /* ignore */
+              }
+            }
+          } catch {
+            // Instance not found yet or backend unavailable — skip replay and
+            // go straight to live subscribe. The card will simply start
+            // receiving chunks from "now" without the pre-mount history.
           }
-        } catch {
-          // Instance not found yet or backend unavailable — skip replay and
-          // go straight to live subscribe. The card will simply start
-          // receiving chunks from "now" without the pre-mount history.
         }
         if (cancelled) return;
         try {
@@ -385,10 +448,11 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
 
     // C2-T1 belt-and-suspenders: poll is_process_exited every 2s as
     // fallback in case the event-based detection never fires (Windows
-    // ConPTY reader hang). Only active when subscribeToPty=true AND no
-    // exit has been detected yet. Stops as soon as we see exitState set.
+    // ConPTY reader hang). Keep this only for the interactive terminal;
+    // preview cards rely on event delivery so we don't attach N timers
+    // across the whole canvas.
     let exitPollTimer: ReturnType<typeof setInterval> | null = null;
-    if (subscribeToPty) {
+    if (subscribeToPty && interactive) {
       exitPollTimer = setInterval(async () => {
         // If exit already detected, skip this tick but do NOT clearInterval.
         // The interval must stay alive so that after a respawn (which clears
@@ -421,7 +485,9 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
       if (exitPollTimer) clearInterval(exitPollTimer);
       unlisten?.();
       unlistenExit?.();
+      inputDisposable?.dispose();
       resizeObserver.disconnect();
+      host.removeEventListener("wheel", stopWheelPropagation);
       webglAddon?.dispose();
       terminal.dispose();
       terminalRef.current = null;
@@ -433,6 +499,7 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
 
   return (
     <div
+      data-testid="xterm-terminal-shell"
       className="relative w-full h-full"
       style={{
         background: TERMINAL_BG,
@@ -441,6 +508,18 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
       }}
     >
       <div ref={hostRef} className="absolute inset-0" />
+      {sendFailure && (
+        <div
+          className="absolute left-2 right-2 top-2 z-10 rounded-md border px-2 py-1 text-[11px]"
+          style={{
+            background: "rgba(120, 18, 18, 0.88)",
+            borderColor: "rgba(255, 99, 99, 0.35)",
+            color: "#FFD7D7",
+          }}
+        >
+          {sendFailure}
+        </div>
+      )}
       {exitState && (
         <ExitOverlay
           payload={exitState}

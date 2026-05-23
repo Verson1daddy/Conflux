@@ -1,18 +1,20 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { IslandBar } from "./IslandBar";
 import { useAgentInstances } from "@/hooks/useAgentInstances";
 import { useIslandMode } from "@/hooks/useIslandMode";
+import { markIslandWindowReady } from "@/lib/tauri-bridge";
 import { useIslandStore } from "@/stores/islandStore";
 import type { IslandMode } from "@/types";
 
-function windowBackground(mode: IslandMode): string {
-  return mode === "sidebar" ? "#050507" : "transparent";
+function windowBackground(_mode: IslandMode): string {
+  return "transparent";
 }
 
 export function IslandWindowApp() {
   useAgentInstances({ hydrateTrees: false });
-  useIslandMode();
+  const { isHydrated } = useIslandMode({ preferBackendMode: true });
   const mode = useIslandStore((s) => s.mode) as IslandMode;
+  const [isReady, setIsReady] = useState(false);
 
   useEffect(() => {
     document.documentElement.style.background = windowBackground(mode);
@@ -28,12 +30,45 @@ export function IslandWindowApp() {
     };
   }, [mode]);
 
+  useEffect(() => {
+    if (!isHydrated) {
+      setIsReady(false);
+      return;
+    }
+
+    let innerFrame = 0;
+    const frame = window.requestAnimationFrame(() => {
+      innerFrame = window.requestAnimationFrame(() => {
+        setIsReady(true);
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (innerFrame) {
+        window.cancelAnimationFrame(innerFrame);
+      }
+    };
+  }, [isHydrated, mode]);
+
+  useEffect(() => {
+    if (!isReady) {
+      return;
+    }
+
+    void markIslandWindowReady();
+  }, [isReady, mode]);
+
   return (
     <div
       className="relative w-screen h-screen overflow-hidden"
-      style={{ background: windowBackground(mode) }}
+      data-island-ready={isReady ? "true" : "false"}
+      data-island-mode={mode}
+      style={{
+        background: windowBackground(mode),
+      }}
     >
-      <IslandBar />
+      {isHydrated ? <IslandBar /> : null}
     </div>
   );
 }

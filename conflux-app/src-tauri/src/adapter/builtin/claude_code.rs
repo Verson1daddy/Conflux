@@ -89,8 +89,7 @@ impl ClaudeCodeAdapter {
         let patterns = ClaudeCodePatterns {
             thinking: Regex::new(r"⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|Thinking")
                 .expect("内置 thinking 正则编译失败"),
-            coding: Regex::new(r"Writing|Editing|Creating")
-                .expect("内置 coding 正则编译失败"),
+            coding: Regex::new(r"Writing|Editing|Creating").expect("内置 coding 正则编译失败"),
             done: Regex::new(r"✓|Done|Completed").expect("内置 done 正则编译失败"),
             error: Regex::new(r"Error|✗|Failed").expect("内置 error 正则编译失败"),
             waiting_permission: Regex::new(r"Allow|Deny|approve")
@@ -139,12 +138,9 @@ impl AgentAdapter for ClaudeCodeAdapter {
         _working_dir: &str,
         _args: &[String],
     ) -> Result<Box<dyn AgentInstance>, ConfluxError> {
-        // BE-2: PtyManager::spawn() 尚未实现
-        // 完整逻辑：
-        // 1. 构建命令行: self.config.command + self.config.default_args + args
-        // 2. 调用 PtyManager::spawn(command, working_dir) 创建 PTY 进程
-        // 3. 包装为 ClaudeCodeInstance 返回
-        todo!("BE-2: PtyManager::spawn() — 等待 PTY 管理器完成后对接")
+        Err(ConfluxError::InvalidConfig {
+            message: "ClaudeCodeAdapter::spawn is not a runnable path; use create_agent_instance/PtyManager::spawn".to_string(),
+        })
     }
 
     async fn detect_auth(&self) -> Result<(), String> {
@@ -160,22 +156,24 @@ impl AgentAdapter for ClaudeCodeAdapter {
             cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
         match cmd.spawn() {
-            Ok(child) => match child.wait_with_output() {
-                Ok(output) => {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    let combined = format!("{}{}", stdout, stderr);
-                    if combined.contains("not logged in")
-                        || combined.contains("auth")
-                        || !output.status.success()
-                    {
-                        Err("Claude Code CLI is installed but may need login. Run: claude login".to_string())
-                    } else {
-                        Ok(())
+            Ok(child) => {
+                match child.wait_with_output() {
+                    Ok(output) => {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        let combined = format!("{}{}", stdout, stderr);
+                        if combined.contains("not logged in")
+                            || combined.contains("auth")
+                            || !output.status.success()
+                        {
+                            Err("Claude Code CLI is installed but may need login. Run: claude login".to_string())
+                        } else {
+                            Ok(())
+                        }
                     }
+                    Err(e) => Err(format!("Failed to check Claude Code CLI: {}", e)),
                 }
-                Err(e) => Err(format!("Failed to check Claude Code CLI: {}", e)),
-            },
+            }
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::NotFound {
                     Err("Claude Code CLI not found. Install it first: npm install -g @anthropic-ai/claude-code".to_string())

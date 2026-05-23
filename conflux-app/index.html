@@ -6,7 +6,35 @@
     <title>Conflux</title>
     <!-- Fonts are bundled locally via @fontsource (imported in src/main.tsx) -->
     <!-- This avoids the Google Fonts CDN which is blocked/slow from mainland China -->
+    <script>
+      (() => {
+        const label = new URLSearchParams(window.location.search).get("confluxWindow");
+        if (label === "island" || label === "float_panel") {
+          document.documentElement.dataset.windowLabel = label;
+        }
+      })();
+    </script>
+    <style>
+      html,
+      body,
+      #root {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        background: #050507;
+        color: #f2f2f2;
+      }
 
+      html[data-window-label="island"],
+      html[data-window-label="island"] body,
+      html[data-window-label="island"] #root,
+      html[data-window-label="float_panel"],
+      html[data-window-label="float_panel"] body,
+      html[data-window-label="float_panel"] #root {
+        background: transparent !important;
+        overflow: hidden;
+      }
+    </style>
   </head>
   <body class="bg-canvas-1 text-[#F2F2F2] font-body overflow-hidden select-none">
     <div id="root"></div>

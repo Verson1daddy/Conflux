@@ -2,10 +2,15 @@ import type { IslandMode } from "@/types";
 
 export type TopIslandVisualState = "active" | "permission" | "idle";
 export type FloatBallVisualState = "normal" | "notification" | "error";
+export type TopIslandPopoverView = "details" | "notifications" | "quick_reply";
 
 export type CompactDetailState =
   | { kind: "none" }
-  | { kind: "top_island_popover"; anchor: { x: number; y: number } }
+  | {
+      kind: "top_island_popover";
+      anchor: { x: number; y: number };
+      view: TopIslandPopoverView;
+    }
   | { kind: "float_ball_panel" };
 
 export function resolveTopIslandState(input: {
@@ -28,8 +33,13 @@ export function resolveFloatBallSemanticState(input: {
 }
 
 type CompactDetailAction =
-  | { type: "toggle_top_island_popover"; anchor: { x: number; y: number } }
+  | {
+      type: "toggle_top_island_popover";
+      anchor: { x: number; y: number };
+      view: TopIslandPopoverView;
+    }
   | { type: "toggle_float_ball_panel" }
+  | { type: "open_float_ball_panel" }
   | { type: "close_detail" };
 
 function normalizeDetailForMode(
@@ -52,11 +62,17 @@ export function nextDetailState(input: {
   if (input.action.type === "close_detail") return { kind: "none" };
   if (input.action.type === "toggle_top_island_popover") {
     if (input.currentMode !== "top_island") return { kind: "none" };
-    return normalizedDetail.kind === "top_island_popover"
+    return normalizedDetail.kind === "top_island_popover" &&
+      normalizedDetail.view === input.action.view
       ? { kind: "none" }
-      : { kind: "top_island_popover", anchor: input.action.anchor };
+      : {
+          kind: "top_island_popover",
+          anchor: input.action.anchor,
+          view: input.action.view,
+        };
   }
   if (input.currentMode !== "float_ball") return { kind: "none" };
+  if (input.action.type === "open_float_ball_panel") return { kind: "float_ball_panel" };
   return normalizedDetail.kind === "float_ball_panel"
     ? { kind: "none" }
     : { kind: "float_ball_panel" };
@@ -68,11 +84,11 @@ export function resolveSidebarVisibility(input: {
   expanded: boolean;
   collapseDelayMs: number;
 }) {
-  if (input.panelHovered) {
-    return { expanded: true, shouldScheduleCollapse: false };
-  }
-  if (input.hotzoneHovered) {
-    return { expanded: true, shouldScheduleCollapse: true };
+  if (input.panelHovered || input.hotzoneHovered) {
+    return {
+      expanded: input.expanded,
+      shouldScheduleCollapse: false,
+    };
   }
   return {
     expanded: input.expanded,

@@ -1,18 +1,44 @@
-// ===== CloseConfirmModal =====
-// Shown when user clicks close without a saved preference.
-// Offers "Minimize to system tray" or "Quit completely" with a "Remember" checkbox.
-
-import { type FC, useState } from "react";
+import { type FC, useEffect, useState } from "react";
+import type { CloseAction } from "@/types";
 
 interface CloseConfirmModalProps {
   visible: boolean;
-  onConfirm: (action: "tray" | "quit", remember: boolean) => void;
+  onConfirm: (action: CloseAction, remember: boolean) => void;
   onCancel: () => void;
 }
 
-const CloseConfirmModal: FC<CloseConfirmModalProps> = ({ visible, onConfirm, onCancel }) => {
-  const [action, setAction] = useState<"tray" | "quit">("tray");
+const OPTIONS: Array<{ value: CloseAction; label: string; description: string }> = [
+  {
+    value: "quit",
+    label: "Quit completely",
+    description: "Exit the Conflux process and remove the tray icon.",
+  },
+  {
+    value: "top_island",
+    label: "Dynamic Island",
+    description: "Hide the workspace and keep only the top capsule available.",
+  },
+  {
+    value: "sidebar",
+    label: "Sidebar",
+    description: "Hide the workspace and keep only the right-edge reveal sidebar available.",
+  },
+];
+
+const CloseConfirmModal: FC<CloseConfirmModalProps> = ({
+  visible,
+  onConfirm,
+  onCancel,
+}) => {
+  const [action, setAction] = useState<CloseAction>("quit");
   const [remember, setRemember] = useState(false);
+
+  useEffect(() => {
+    if (!visible) {
+      setAction("quit");
+      setRemember(false);
+    }
+  }, [visible]);
 
   if (!visible) return null;
 
@@ -33,7 +59,7 @@ const CloseConfirmModal: FC<CloseConfirmModalProps> = ({ visible, onConfirm, onC
     >
       <div
         style={{
-          width: 360,
+          width: 420,
           background: "rgba(28,30,34,0.95)",
           borderRadius: 16,
           border: "1px solid rgba(255,255,255,0.10)",
@@ -42,107 +68,102 @@ const CloseConfirmModal: FC<CloseConfirmModalProps> = ({ visible, onConfirm, onC
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Title */}
         <h2
           style={{
             fontFamily: "'Fraunces Variable', serif",
             fontSize: 20,
             fontWeight: 600,
             color: "#F2F2F2",
-            margin: "0 0 20px",
+            margin: "0 0 12px",
           }}
         >
           Close Conflux?
         </h2>
 
-        {/* Radio options */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 20 }}>
-          <label
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              cursor: "pointer",
-              padding: "10px 12px",
-              borderRadius: 10,
-              background: action === "tray" ? "rgba(184,212,227,0.08)" : "transparent",
-              border: action === "tray" ? "1px solid rgba(184,212,227,0.20)" : "1px solid rgba(255,255,255,0.06)",
-              transition: "all 150ms cubic-bezier(0.22, 1, 0.36, 1)",
-            }}
-            onClick={() => setAction("tray")}
-          >
-            <span
-              style={{
-                width: 18,
-                height: 18,
-                borderRadius: 9999,
-                border: action === "tray" ? "2px solid #B8D4E3" : "2px solid #6B7280",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                flexShrink: 0,
-              }}
-            >
-              {action === "tray" && (
-                <span style={{ width: 8, height: 8, borderRadius: 9999, background: "#B8D4E3" }} />
-              )}
-            </span>
-            <span
-              style={{
-                fontFamily: "'Geist Sans', sans-serif",
-                fontSize: 14,
-                color: action === "tray" ? "#F2F2F2" : "#B8B3B0",
-                fontWeight: 500,
-              }}
-            >
-              Minimize to system tray
-            </span>
-          </label>
+        <p
+          style={{
+            margin: "0 0 20px",
+            color: "#6B7280",
+            fontFamily: "'Geist Sans', sans-serif",
+            fontSize: 13,
+            lineHeight: 1.5,
+          }}
+        >
+          Choose whether to quit the app or switch the workspace into one compact mode.
+        </p>
 
-          <label
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              cursor: "pointer",
-              padding: "10px 12px",
-              borderRadius: 10,
-              background: action === "quit" ? "rgba(184,212,227,0.08)" : "transparent",
-              border: action === "quit" ? "1px solid rgba(184,212,227,0.20)" : "1px solid rgba(255,255,255,0.06)",
-              transition: "all 150ms cubic-bezier(0.22, 1, 0.36, 1)",
-            }}
-            onClick={() => setAction("quit")}
-          >
-            <span
-              style={{
-                width: 18,
-                height: 18,
-                borderRadius: 9999,
-                border: action === "quit" ? "2px solid #B8D4E3" : "2px solid #6B7280",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                flexShrink: 0,
-              }}
-            >
-              {action === "quit" && (
-                <span style={{ width: 8, height: 8, borderRadius: 9999, background: "#B8D4E3" }} />
-              )}
-            </span>
-            <span
-              style={{
-                fontFamily: "'Geist Sans', sans-serif",
-                fontSize: 14,
-                color: action === "quit" ? "#F2F2F2" : "#B8B3B0",
-                fontWeight: 500,
-              }}
-            >
-              Quit completely
-            </span>
-          </label>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+          {OPTIONS.map((option) => {
+            const selected = action === option.value;
+            return (
+              <label
+                key={option.value}
+                style={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: 12,
+                  cursor: "pointer",
+                  padding: "12px 14px",
+                  borderRadius: 10,
+                  background: selected ? "rgba(184,212,227,0.08)" : "transparent",
+                  border: selected
+                    ? "1px solid rgba(184,212,227,0.20)"
+                    : "1px solid rgba(255,255,255,0.06)",
+                  transition: "all 150ms cubic-bezier(0.22, 1, 0.36, 1)",
+                }}
+                onClick={() => setAction(option.value)}
+              >
+                <span
+                  style={{
+                    width: 18,
+                    height: 18,
+                    marginTop: 1,
+                    borderRadius: 9999,
+                    border: selected ? "2px solid #B8D4E3" : "2px solid #6B7280",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  {selected && (
+                    <span
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: 9999,
+                        background: "#B8D4E3",
+                      }}
+                    />
+                  )}
+                </span>
+                <span style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <span
+                    style={{
+                      fontFamily: "'Geist Sans', sans-serif",
+                      fontSize: 14,
+                      color: selected ? "#F2F2F2" : "#B8B3B0",
+                      fontWeight: 500,
+                    }}
+                  >
+                    {option.label}
+                  </span>
+                  <span
+                    style={{
+                      fontFamily: "'Geist Sans', sans-serif",
+                      fontSize: 12,
+                      color: "#6B7280",
+                      lineHeight: 1.45,
+                    }}
+                  >
+                    {option.description}
+                  </span>
+                </span>
+              </label>
+            );
+          })}
         </div>
 
-        {/* Remember checkbox */}
         <label
           style={{
             display: "flex",
@@ -151,7 +172,7 @@ const CloseConfirmModal: FC<CloseConfirmModalProps> = ({ visible, onConfirm, onC
             cursor: "pointer",
             marginBottom: 24,
           }}
-          onClick={() => setRemember((v) => !v)}
+          onClick={() => setRemember((value) => !value)}
         >
           <span
             style={{
@@ -168,7 +189,16 @@ const CloseConfirmModal: FC<CloseConfirmModalProps> = ({ visible, onConfirm, onC
             }}
           >
             {remember && (
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#B8D4E3" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+              <svg
+                width="10"
+                height="10"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#B8D4E3"
+                strokeWidth="3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
                 <path d="M20 6 9 17l-5-5" />
               </svg>
             )}
@@ -184,7 +214,6 @@ const CloseConfirmModal: FC<CloseConfirmModalProps> = ({ visible, onConfirm, onC
           </span>
         </label>
 
-        {/* Action buttons */}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
           <button
             onClick={onCancel}
@@ -199,10 +228,7 @@ const CloseConfirmModal: FC<CloseConfirmModalProps> = ({ visible, onConfirm, onC
               fontSize: 13,
               fontWeight: 500,
               cursor: "pointer",
-              transition: "all 150ms cubic-bezier(0.22, 1, 0.36, 1)",
             }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.05)"; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
           >
             Cancel
           </button>
@@ -219,10 +245,7 @@ const CloseConfirmModal: FC<CloseConfirmModalProps> = ({ visible, onConfirm, onC
               fontSize: 13,
               fontWeight: 600,
               cursor: "pointer",
-              transition: "all 150ms cubic-bezier(0.22, 1, 0.36, 1)",
             }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "#c8e0ed"; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "#B8D4E3"; }}
           >
             Confirm
           </button>

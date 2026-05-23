@@ -17,69 +17,69 @@ pub mod error;
 // ===== Re-exports（方便外部模块直接使用） =====
 
 // 标识符类型
-pub use types::InstanceId;
 pub use types::AdapterId;
 pub use types::DiscussionId;
+pub use types::InstanceId;
 
 // Agent 状态相关
+pub use types::AgentInstanceInfo;
 pub use types::AgentMode;
-pub use types::AgentStatus;
 pub use types::AgentState;
 pub use types::AgentStateDetail;
-pub use types::AgentInstanceInfo;
+pub use types::AgentStatus;
 
 // Sub-Agent 相关
-pub use types::SubAgentInfo;
 pub use types::AgentTree;
+pub use types::SubAgentInfo;
 
 // 讨论相关
-pub use types::DiscussionStatus;
-pub use types::DiscussionSession;
-pub use types::DiscussionMessageData;
 pub use types::DiscussionMessage;
+pub use types::DiscussionMessageData;
+pub use types::DiscussionSession;
+pub use types::DiscussionStatus;
 pub use types::DiscussionSummary;
 pub use types::MessageSender;
 
 // 通知与权限
-pub use types::NotificationLevel;
-pub use types::NotificationActionType;
 pub use types::NotificationAction;
+pub use types::NotificationActionType;
 pub use types::NotificationItem;
-pub use types::PermissionRequest;
+pub use types::NotificationLevel;
 pub use types::PermissionDecision;
+pub use types::PermissionRequest;
 pub use types::PermissionStatus;
 
 // 灵动岛
 pub use types::IslandMode;
 
 // 布局
-pub use types::Position;
-pub use types::Size;
+pub use types::AutoPackConfig;
 pub use types::CardLayout;
-pub use types::LayoutMode;
-pub use types::PackSortStrategy;
 pub use types::CardSizePreset;
 pub use types::CardSizeSlot;
-pub use types::AutoPackConfig;
+pub use types::LayoutMode;
+pub use types::PackSortStrategy;
+pub use types::Position;
+pub use types::Size;
 pub use types::WorkspaceLayout;
 pub use types::SNAP_GRID_PX;
 
 // 会话记录
-pub use types::SessionSummary;
 pub use types::SessionEvent;
+pub use types::SessionSummary;
 
 // 适配器
+pub use types::AdapterAuthStatus;
 pub use types::AdapterCapabilities;
 pub use types::AdapterConfig;
-pub use types::StatusPatterns;
 pub use types::AdapterInfo;
-pub use types::AdapterAuthStatus;
+pub use types::StatusPatterns;
 
 // 安全补丁类型（附录 B）
+pub use types::ErrorSeverity;
+pub use types::EventPriority;
 pub use types::InjectionSource;
 pub use types::StdinInjectionPolicy;
-pub use types::EventPriority;
-pub use types::ErrorSeverity;
 
 // 事件
 pub use event::ConfluxEvent;

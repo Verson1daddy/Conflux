@@ -1,13 +1,18 @@
-import { type FC, useCallback, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type FC, useCallback, useMemo, useRef, useState } from "react";
+import { startCurrentWindowDrag } from "@/lib/window-drag";
 import { useIslandStore } from "@/stores/islandStore";
 import { useAgentStore, agentDisplayLabel } from "@/stores/agentStore";
 import { focusAgentCard, respondToPermission } from "@/lib/tauri-bridge";
-import type { AgentStatus, PermissionDecision } from "@/types";
+import { COMPACT_WINDOW_METRICS, px } from "@/lib/compact-window-metrics";
+import { getLiveAgentInstances } from "@/lib/workspace-status";
+import type { AgentStatus, NotificationItem, PermissionDecision } from "@/types";
 
 interface SidebarProps {
   expanded: boolean;
   onCollapse: () => void;
   onOpenWorkspace: () => void;
+  onUndock?: () => void;
+  onDragStart?: () => void;
 }
 
 const STATUS_DOT_COLORS: Record<AgentStatus, string> = {
@@ -27,6 +32,121 @@ const STATUS_LABELS: Record<AgentStatus, string> = {
   done: "Done",
   error: "Error",
 };
+
+function LayersIcon() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" />
+      <path d="m22 12-8.58 3.91a2 2 0 0 1-1.66 0L3.18 12" opacity="0.6" />
+      <path d="m22 17-8.58 3.91a2 2 0 0 1-1.66 0L3.18 17" opacity="0.3" />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
+    </svg>
+  );
+}
+
+function MoveIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 3v18" />
+      <path d="m7 8 5-5 5 5" />
+      <path d="m7 16 5 5 5-5" />
+    </svg>
+  );
+}
+
+function ShieldIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m5 12 5 5L20 7" />
+    </svg>
+  );
+}
+
+function AlertIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" />
+      <path d="M12 9v4" />
+      <path d="M12 17h.01" />
+    </svg>
+  );
+}
 
 function formatElapsedTime(timestamp: number): string {
   if (timestamp <= 0) return "--";
@@ -51,54 +171,74 @@ function formatNotificationTime(timestamp: number): string {
   return `${diffMin} min ago`;
 }
 
+function notificationPresentation(notification: NotificationItem) {
+  if (notification.level === "permission_required") {
+    return {
+      icon: <ShieldIcon />,
+      tone: "warning",
+      title: "Permission Request",
+    } as const;
+  }
+
+  if (notification.level === "error") {
+    return {
+      icon: <AlertIcon />,
+      tone: "error",
+      title: notification.source_adapter_name || "Error",
+    } as const;
+  }
+
+  return {
+    icon: <CheckIcon />,
+    tone: "info",
+    title: notification.source_adapter_name || "Task Complete",
+  } as const;
+}
+
 export const Sidebar: FC<SidebarProps> = ({
   expanded,
   onCollapse,
   onOpenWorkspace,
+  onUndock,
+  onDragStart,
 }) => {
   const notifications = useIslandStore((s) => s.notifications);
   const removePermissionRequest = useIslandStore((s) => s.removePermissionRequest);
-  const clearNotification = useIslandStore((s) => s.clearNotification);
   const instances = useAgentStore((s) => s.instances);
   const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
   const pendingRef = useRef<Set<string>>(new Set());
 
-  const agents = useMemo(() => {
-    return Array.from(instances.values()).sort((a, b) => a.created_at - b.created_at);
-  }, [instances]);
-
-  const summary = useMemo(() => {
-    const activeCount = agents.filter((agent) => agent.status !== "idle").length;
-    const permissionCount = notifications.filter(
-      (notification) => notification.level === "permission_required",
-    ).length;
-    const unreadCount = notifications.filter((notification) => !notification.read).length;
-
-    if (permissionCount > 0) {
-      return `${permissionCount} approval request${permissionCount > 1 ? "s are" : " is"} waiting while ${activeCount} agent${activeCount === 1 ? "" : "s"} stay in motion.`;
-    }
-    if (unreadCount > 0) {
-      return `${unreadCount} fresh update${unreadCount > 1 ? "s" : ""} ready to review without reopening the full workspace.`;
-    }
-    if (activeCount > 0) {
-      return `${activeCount} agent${activeCount === 1 ? "" : "s"} still running. Reveal the panel when you need status, then dismiss it back into the edge.`;
-    }
-    return "No urgent activity. Keep the panel tucked away until you need a quick workspace pulse.";
-  }, [agents, notifications]);
-
-  const stats = useMemo(
-    () => [
-      { label: "Active", value: agents.filter((agent) => agent.status !== "idle").length },
-      { label: "Alerts", value: notifications.filter((notification) => !notification.read).length },
-      {
-        label: "Permissions",
-        value: notifications.filter(
-          (notification) => notification.level === "permission_required",
-        ).length,
-      },
-    ],
-    [agents, notifications],
+  const agents = useMemo(
+    () =>
+      getLiveAgentInstances(instances).sort(
+        (a, b) => b.last_activity_at - a.last_activity_at
+      ),
+    [instances]
   );
+
+  const unreadNotifications = useMemo(
+    () => notifications.filter((notification) => !notification.read),
+    [notifications]
+  );
+
+  const permissionNotifications = useMemo(
+    () =>
+      unreadNotifications.filter(
+        (notification) => notification.level === "permission_required"
+      ),
+    [unreadNotifications]
+  );
+
+  const activityNotifications = useMemo(() => {
+    const permissions = permissionNotifications.slice(0, 2);
+    const nonPermissions = unreadNotifications
+      .filter((notification) => notification.level !== "permission_required")
+      .slice(0, Math.max(0, 4 - permissions.length));
+
+    return [...permissions, ...nonPermissions];
+  }, [permissionNotifications, unreadNotifications]);
+
+  const visibleAgents = useMemo(() => agents.slice(0, 3), [agents]);
 
   const handleAgentClick = useCallback(async (id: string) => {
     try {
@@ -109,11 +249,7 @@ export const Sidebar: FC<SidebarProps> = ({
   }, []);
 
   const handlePermissionDecision = useCallback(
-    async (
-      instanceId: string,
-      permissionId: string,
-      decision: PermissionDecision,
-    ) => {
+    async (instanceId: string, permissionId: string, decision: PermissionDecision) => {
       if (pendingRef.current.has(permissionId)) return;
 
       pendingRef.current.add(permissionId);
@@ -124,6 +260,7 @@ export const Sidebar: FC<SidebarProps> = ({
         await respondToPermission(instanceId, permissionId, decision);
         completed = true;
       } catch {
+        // Keep the permission request visible so the user can retry.
       } finally {
         pendingRef.current.delete(permissionId);
       }
@@ -138,14 +275,13 @@ export const Sidebar: FC<SidebarProps> = ({
       }
 
       removePermissionRequest(permissionId);
-      clearNotification(permissionId);
       setPendingIds((prev) => {
         const next = new Set(prev);
         next.delete(permissionId);
         return next;
       });
     },
-    [clearNotification, removePermissionRequest],
+    [removePermissionRequest]
   );
 
   return (
@@ -153,75 +289,82 @@ export const Sidebar: FC<SidebarProps> = ({
       aria-hidden={!expanded}
       className={expanded ? "sidebar-panel is-expanded" : "sidebar-panel"}
       data-testid="sidebar-panel"
+      style={
+        {
+          ["--sidebar-rail-width" as const]: px(
+            COMPACT_WINDOW_METRICS.sidebar.expandedWidth
+          ),
+        } as CSSProperties
+      }
     >
-      <div className="sidebar-panel__brand">
-        <div className="sidebar-panel__brand-mark" aria-hidden="true">
-          <svg
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" />
-            <path d="m22 12-8.58 3.91a2 2 0 0 1-1.66 0L3.18 12" opacity="0.6" />
-            <path d="m22 17-8.58 3.91a2 2 0 0 1-1.66 0L3.18 17" opacity="0.3" />
-          </svg>
-        </div>
-        <div className="sidebar-panel__brand-copy">
-          <span className="sidebar-panel__brand-name">Conflux</span>
-          <span className="sidebar-panel__brand-meta">Compact Assistant</span>
-        </div>
-        <span className="sidebar-panel__edge-pill">Right Edge Reveal</span>
-      </div>
-
-      <section className="sidebar-panel__hero">
-        <span className="sidebar-panel__eyebrow">Assistant</span>
-        <h2 className="sidebar-panel__title">Compact workspace pulse</h2>
-        <p className="sidebar-panel__summary">{summary}</p>
-
-        <div className="sidebar-panel__stats" aria-label="Sidebar assistant stats">
-          {stats.map((stat) => (
-            <div key={stat.label} className="sidebar-panel__stat">
-              <span className="sidebar-panel__stat-value">{stat.value}</span>
-              <span className="sidebar-panel__stat-label">{stat.label}</span>
-            </div>
-          ))}
+      <header className="sidebar-panel__header">
+        <div className="sidebar-panel__logo">
+          <span className="sidebar-panel__logo-mark" aria-hidden="true">
+            <LayersIcon />
+          </span>
+          <span className="sidebar-panel__header-title">Conflux</span>
         </div>
 
-        <div className="sidebar-panel__actions">
-          <button
-            type="button"
-            className="sidebar-panel__action sidebar-panel__action--primary"
-            onClick={onOpenWorkspace}
-          >
-            Open Workspace
-          </button>
-          <button
-            type="button"
-            className="sidebar-panel__action sidebar-panel__action--secondary"
-            onClick={onCollapse}
-          >
-            Dismiss
-          </button>
-        </div>
-      </section>
+        <div
+          className="sidebar-panel__drag-handle"
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            event.stopPropagation();
+            onDragStart?.();
+            void startCurrentWindowDrag();
+          }}
+          aria-hidden="true"
+        />
+        <span className="sidebar-panel__header-spacer" aria-hidden="true" />
+        <button
+          type="button"
+          className="sidebar-panel__header-action"
+          onClick={onUndock}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+          }}
+          aria-label="Undock compact sidebar"
+          title="Undock compact sidebar"
+          disabled={!onUndock}
+        >
+          <MoveIcon />
+        </button>
+        <button
+          type="button"
+          className="sidebar-panel__dismiss"
+          onClick={onCollapse}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+          }}
+          aria-label="Dismiss compact sidebar"
+        >
+          <CloseIcon />
+        </button>
+      </header>
 
-      <div className="sidebar-panel__body">
-        <section className="sidebar-panel__section">
+      <div
+        className="sidebar-panel__band"
+        style={
+          {
+            ["--sidebar-band-width" as const]: px(
+              COMPACT_WINDOW_METRICS.sidebar.bandWidth
+            ),
+          } as CSSProperties
+        }
+      >
+        <div className="sidebar-panel__body sidebar-panel__body--stack">
+          <p className="sidebar-panel__eyebrow">Assistant</p>
+        <section className="sidebar-panel__section sidebar-panel__section--plain">
           <div className="sidebar-panel__section-header">
             <span className="sidebar-panel__section-label">Agents</span>
             <span className="sidebar-panel__section-count">{agents.length}</span>
           </div>
 
           <div className="sidebar-panel__list">
-            {agents.length === 0 ? (
+            {visibleAgents.length === 0 ? (
               <p className="sidebar-panel__empty">No active agents</p>
             ) : (
-              agents.map((agent) => (
+              visibleAgents.map((agent) => (
                 <button
                   key={agent.instance_id}
                   type="button"
@@ -241,7 +384,11 @@ export const Sidebar: FC<SidebarProps> = ({
                     </span>
                   </div>
                   <span className="sidebar-panel__agent-time">
-                    {agent.status === "idle" ? "--" : formatElapsedTime(agent.created_at)}
+                    {agent.ended_at
+                      ? "ended"
+                      : agent.status === "idle"
+                        ? "--"
+                        : formatElapsedTime(agent.last_activity_at)}
                   </span>
                 </button>
               ))
@@ -249,62 +396,59 @@ export const Sidebar: FC<SidebarProps> = ({
           </div>
         </section>
 
-        <section className="sidebar-panel__section">
+        <section className="sidebar-panel__section sidebar-panel__section--plain">
           <div className="sidebar-panel__section-header">
             <span className="sidebar-panel__section-label">Notifications</span>
             <span className="sidebar-panel__section-count">
-              {Math.min(notifications.length, 6)}
+              {unreadNotifications.length}
             </span>
           </div>
 
           <div className="sidebar-panel__list">
-            {notifications.length === 0 ? (
-              <p className="sidebar-panel__empty">No notifications</p>
+            {activityNotifications.length === 0 ? (
+              <p className="sidebar-panel__empty">No unread notifications</p>
             ) : (
-              notifications.slice(0, 6).map((notif) => {
-                const isPermission = notif.level === "permission_required";
-                const isError = notif.level === "error";
+              activityNotifications.map((notification) => {
+                const presentation = notificationPresentation(notification);
+                const isPending = pendingIds.has(notification.id);
 
                 return (
-                  <div key={notif.id} className="sidebar-panel__notification">
+                  <div key={notification.id} className="sidebar-panel__notification">
                     <div
                       className="sidebar-panel__notification-icon"
-                      data-level={notif.level}
+                      data-level={presentation.tone}
                       aria-hidden="true"
                     >
-                      {isPermission ? "!" : isError ? "×" : "•"}
+                      {presentation.icon}
                     </div>
 
                     <div className="sidebar-panel__notification-copy">
                       <div className="sidebar-panel__notification-row">
                         <span className="sidebar-panel__notification-title">
-                          {isPermission
-                            ? "Permission Request"
-                            : isError
-                              ? "Error"
-                              : "Task Complete"}
+                          {presentation.title}
                         </span>
                         <span className="sidebar-panel__notification-time">
-                          {formatNotificationTime(notif.created_at)}
+                          {formatNotificationTime(notification.created_at)}
                         </span>
                       </div>
+
                       <p className="sidebar-panel__notification-body">
-                        {notif.content}
+                        {notification.content}
                       </p>
 
-                      {isPermission && (
+                      {notification.level === "permission_required" && (
                         <div className="sidebar-panel__permission-actions">
                           <button
                             type="button"
                             className="sidebar-panel__mini-action sidebar-panel__mini-action--approve"
                             onClick={() =>
                               void handlePermissionDecision(
-                                notif.source_instance_id,
-                                notif.id,
-                                "approve",
+                                notification.source_instance_id,
+                                notification.id,
+                                "approve"
                               )
                             }
-                            disabled={pendingIds.has(notif.id)}
+                            disabled={isPending}
                           >
                             Allow
                           </button>
@@ -313,12 +457,12 @@ export const Sidebar: FC<SidebarProps> = ({
                             className="sidebar-panel__mini-action"
                             onClick={() =>
                               void handlePermissionDecision(
-                                notif.source_instance_id,
-                                notif.id,
-                                "deny",
+                                notification.source_instance_id,
+                                notification.id,
+                                "deny"
                               )
                             }
-                            disabled={pendingIds.has(notif.id)}
+                            disabled={isPending}
                           >
                             Deny
                           </button>
@@ -331,6 +475,30 @@ export const Sidebar: FC<SidebarProps> = ({
             )}
           </div>
         </section>
+
+        <div className="sidebar-panel__footer">
+          <button
+            type="button"
+            className="sidebar-panel__action sidebar-panel__action--primary"
+            onClick={onOpenWorkspace}
+            onPointerDown={(event) => {
+              event.stopPropagation();
+            }}
+          >
+            Open Workspace
+          </button>
+          <button
+            type="button"
+            className="sidebar-panel__action sidebar-panel__action--secondary"
+            onClick={onCollapse}
+            onPointerDown={(event) => {
+              event.stopPropagation();
+            }}
+          >
+            Dismiss
+          </button>
+        </div>
+        </div>
       </div>
     </aside>
   );

@@ -5,11 +5,18 @@
 // expanded terminal so keystrokes echo locally (Phase B placeholder until
 // backend PTY is wired).
 
-import { type FC, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, type FC, type ReactNode, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useAgentStore } from "@/stores/agentStore";
-import { XtermTerminal } from "./XtermTerminal";
+import { onSubAgentCompleted, onSubAgentSpawned } from "@/lib/event-listener";
+import { getAgentTree } from "@/lib/tauri-bridge";
 import type { AgentStatus } from "@/types";
+
+const XtermTerminal = lazy(() =>
+  import("./XtermTerminal").then((module) => ({
+    default: module.XtermTerminal,
+  }))
+);
 
 // ===== C2-A4 Shield (shared constants with AgentCard) =====
 
@@ -159,6 +166,7 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
   const openDiscussionWizard = useAgentStore((s) => s.openDiscussionWizard);
   const instance = useAgentStore((s) => s.instances.get(instanceId));
   const tree = useAgentStore((s) => s.trees.get(instanceId));
+  const updateTree = useAgentStore((s) => s.updateTree);
 
   // C2-A4 Shield — shared with AgentCard via store
   const shieldTier = (useAgentStore(
@@ -187,6 +195,40 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
   const status = useAgentStore(
     (s) => s.statuses.get(instanceId) ?? "idle"
   ) as AgentStatus;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const refreshTree = async (targetInstanceId: string) => {
+      if (targetInstanceId !== instanceId) {
+        return;
+      }
+
+      try {
+        const nextTree = await getAgentTree(instanceId);
+        if (!cancelled) {
+          updateTree(instanceId, nextTree);
+        }
+      } catch {
+        // Tree is optional; keep the placeholder when backend data is unavailable.
+      }
+    };
+
+    void refreshTree(instanceId);
+
+    const unlistenSpawned = onSubAgentSpawned((payload) => {
+      void refreshTree(payload.instance_id);
+    });
+    const unlistenCompleted = onSubAgentCompleted((payload) => {
+      void refreshTree(payload.instance_id);
+    });
+
+    return () => {
+      cancelled = true;
+      unlistenSpawned.then((fn) => fn());
+      unlistenCompleted.then((fn) => fn());
+    };
+  }, [instanceId, updateTree]);
 
   // Real instances subscribe to the live PTY stream; demo instances keep
   // playing the static ANSI reel. Real and demo cards can coexist on the
@@ -474,19 +516,25 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
 
           {/* ----- Terminal area (interactive xterm) ----- */}
           <div
-            className="flex-1 min-w-0"
+            data-testid="expanded-terminal-region"
+            className="flex-1 min-w-0 min-h-0 flex overflow-hidden"
             style={{
               padding: "16px 20px",
               background: COLORS.surfacePrimary,
             }}
           >
-            <XtermTerminal
-              instanceId={instanceId}
-              content={isDemo ? demoContent : undefined}
-              interactive
-              subscribeToPty={!isDemo}
-              cardWidth={embedded ? undefined : 800}
-            />
+            <div className="min-h-0 flex-1">
+              <Suspense fallback={null}>
+                <XtermTerminal
+                  key={instanceId}
+                  instanceId={instanceId}
+                  content={isDemo ? demoContent : undefined}
+                  interactive
+                  subscribeToPty={!isDemo}
+                  cardWidth={embedded ? undefined : 800}
+                />
+              </Suspense>
+            </div>
           </div>
         </div>
 

@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Conflux default capabilities — core event/window/app + shell plugin",
-  "windows": ["main"],
+  "windows": ["main", "workspace", "island", "float_panel"],
   "permissions": [
     "core:default",
     "core:event:default",
@@ -23,6 +23,7 @@
     "core:app:default",
     "core:path:default",
     "core:resources:default",
+    "dialog:allow-open",
     "shell:default"
   ]
 }

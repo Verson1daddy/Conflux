@@ -84,6 +84,7 @@ export type {
 
 // 灵动岛相关类型
 export type {
+  CloseAction,
   IslandMode,
   NotificationLevel,
   NotificationActionType,

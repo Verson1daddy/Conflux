@@ -1,16 +1,16 @@
-// ===== ArtifactsDrawer — Discussion Artifacts Bottom Drawer =====
+// ===== ArtifactsDrawer: Discussion Artifacts Bottom Drawer =====
 // Slides up from the bottom of the chatroom when the artifacts button is clicked.
 // Shows all code blocks extracted from the discussion messages, with:
-//   - Artifact list (language label, preview, Pin/Draft status)
-//   - Preview area (selected artifact with syntax highlight + copy)
-//   - Pin/Draft toggle per artifact
-//   - Copy-to-clipboard for each artifact
+//  - Artifact list (language label, preview, Pin/Draft status)
+//  - Preview area (selected artifact with syntax highlight + copy)
+//  - Pin/Draft toggle per artifact
+//  - Copy-to-clipboard for each artifact
 
-import { type FC, useState, useCallback } from "react";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import type { DiscussionMessage } from "@/stores/agentStore";
+import { type FC, useState, useCallback, useEffect } from "react";
+import { SyntaxHighlighter } from "@/lib/syntax-highlighter";
+import type { DiscussionArtifact } from "@/stores/agentStore";
 
-// Palette — matches DiscussionPanel light theme
+// Palette: matches DiscussionPanel light theme
 const COLORS = {
   surfacePanel:   "#FAF8F5",
   surfaceCardBg:  "#FFFFFF",
@@ -57,42 +57,6 @@ function langLabel(raw: string): string {
   return (LANG_LABELS[raw.toLowerCase()] ?? raw) || "Code";
 }
 
-// ===== Artifact types =====
-
-/** A flattened code artifact for display in the drawer */
-export interface ArtifactData {
-  id: string;           // unique within discussion: "${msgId}-${blockIdx}"
-  msgId: string;
-  authorName: string;
-  round: number;
-  blockIdx: number;
-  lang: string;
-  content: string;
-  /** Draft = not yet confirmed; Pin = confirmed worth keeping */
-  status: "draft" | "pinned";
-}
-
-// Extract all artifacts from discussion messages
-export function extractArtifacts(messages: DiscussionMessage[]): ArtifactData[] {
-  const artifacts: ArtifactData[] = [];
-  for (const msg of messages) {
-    if (!msg.codeBlocks) continue;
-    msg.codeBlocks.forEach((block, blockIdx) => {
-      artifacts.push({
-        id: `${msg.id}-${blockIdx}`,
-        msgId: msg.id,
-        authorName: msg.authorName,
-        round: msg.round,
-        blockIdx,
-        lang: block.lang,
-        content: block.content,
-        status: "draft",
-      });
-    });
-  }
-  return artifacts;
-}
-
 // ===== Icon components =====
 
 const IconX: FC<{ size?: number }> = ({ size = 16 }) => (
@@ -126,7 +90,7 @@ const IconCheck: FC<{ size?: number }> = ({ size = 14 }) => (
 // ===== ArtifactListItem =====
 
 interface ArtifactListItemProps {
-  artifact: ArtifactData;
+  artifact: DiscussionArtifact;
   selected: boolean;
   onClick: () => void;
   onTogglePin: () => void;
@@ -230,7 +194,7 @@ const ArtifactListItem: FC<ArtifactListItemProps> = ({ artifact, selected, onCli
 
 // ===== Preview pane =====
 
-const PreviewPane: FC<{ artifact: ArtifactData; onCopy: () => void; copied: boolean }> = ({ artifact, onCopy, copied }) => (
+const PreviewPane: FC<{ artifact: DiscussionArtifact; onCopy: () => void; copied: boolean }> = ({ artifact, onCopy, copied }) => (
   <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
     {/* Preview header */}
     <div
@@ -255,7 +219,7 @@ const PreviewPane: FC<{ artifact: ArtifactData; onCopy: () => void; copied: bool
         {langLabel(artifact.lang)}
       </span>
       <span style={{ fontFamily: "'Geist Sans', sans-serif", fontSize: 10, color: COLORS.textMuted }}>
-        {artifact.authorName} · Round {artifact.round}
+        {artifact.authorName} - Round {artifact.round}
       </span>
       <div style={{ flex: 1 }} />
       <button
@@ -320,26 +284,26 @@ const PreviewPane: FC<{ artifact: ArtifactData; onCopy: () => void; copied: bool
 // ===== Main ArtifactsDrawer =====
 
 interface ArtifactsDrawerProps {
-  messages: DiscussionMessage[];
+  artifacts: DiscussionArtifact[];
+  onTogglePin: (artifactId: string) => void;
   onClose: () => void;
 }
 
-const ArtifactsDrawer: FC<ArtifactsDrawerProps> = ({ messages, onClose }) => {
-  const allArtifacts = extractArtifacts(messages);
-  const pinned = allArtifacts.filter((a) => a.status === "pinned");
-
-  // Local status map
-  const [statuses, setStatuses] = useState<Record<string, "draft" | "pinned">>(() => {
-    const init: Record<string, "draft" | "pinned"> = {};
-    for (const a of allArtifacts) init[a.id] = a.status;
-    return init;
-  });
-
-  const artifacts = allArtifacts.map((a) => ({ ...a, status: statuses[a.id] ?? a.status }));
-
+const ArtifactsDrawer: FC<ArtifactsDrawerProps> = ({ artifacts, onTogglePin, onClose }) => {
+  const pinned = artifacts.filter((a) => a.status === "pinned");
   const [selectedId, setSelectedId] = useState<string | null>(
     artifacts.length > 0 ? artifacts[0].id : null,
   );
+
+  useEffect(() => {
+    if (artifacts.length === 0) {
+      setSelectedId(null);
+      return;
+    }
+    if (!selectedId || !artifacts.some((artifact) => artifact.id === selectedId)) {
+      setSelectedId(artifacts[0].id);
+    }
+  }, [artifacts, selectedId]);
 
   const selectedArtifact = artifacts.find((a) => a.id === selectedId) ?? null;
 
@@ -360,13 +324,6 @@ const ArtifactsDrawer: FC<ArtifactsDrawerProps> = ({ messages, onClose }) => {
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }, [selectedArtifact]);
-
-  const togglePin = useCallback((id: string) => {
-    setStatuses((prev) => ({
-      ...prev,
-      [id]: prev[id] === "pinned" ? "draft" : "pinned",
-    }));
-  }, []);
 
   return (
     <div
@@ -391,9 +348,10 @@ const ArtifactsDrawer: FC<ArtifactsDrawerProps> = ({ messages, onClose }) => {
           flexShrink: 0,
         }}
       >
-        <span style={{ color: COLORS.textMuted }}>
-          <IconChevronUp size={14} />
-        </span>
+        <IconChevronUp
+              size={14}
+              style={{ color: COLORS.textMuted, verticalAlign: "middle" }}
+            />
         <span
           style={{
             fontFamily: "'Fraunces Variable', Georgia, serif",
@@ -411,8 +369,8 @@ const ArtifactsDrawer: FC<ArtifactsDrawerProps> = ({ messages, onClose }) => {
             color: COLORS.textMuted,
           }}
         >
-          {allArtifacts.length} code block{allArtifacts.length !== 1 ? "s" : ""}
-          {pinned.length > 0 && ` · ${pinned.length} pinned`}
+          {artifacts.length} code block{artifacts.length !== 1 ? "s" : ""}
+          {pinned.length > 0 && ` - ${pinned.length} pinned`}
         </span>
         <div style={{ flex: 1 }} />
         <button
@@ -434,7 +392,7 @@ const ArtifactsDrawer: FC<ArtifactsDrawerProps> = ({ messages, onClose }) => {
       </div>
 
       {/* Content */}
-      {allArtifacts.length === 0 ? (
+      {artifacts.length === 0 ? (
         <div
           style={{
             display: "flex",
@@ -447,7 +405,7 @@ const ArtifactsDrawer: FC<ArtifactsDrawerProps> = ({ messages, onClose }) => {
             fontSize: 12,
           }}
         >
-          <span>No code blocks yet — agents will generate artifacts as they discuss.</span>
+          <span>No code blocks yet; agents will generate artifacts as they discuss.</span>
         </div>
       ) : (
         <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>
@@ -470,7 +428,7 @@ const ArtifactsDrawer: FC<ArtifactsDrawerProps> = ({ messages, onClose }) => {
                 artifact={a}
                 selected={a.id === selectedId}
                 onClick={() => setSelectedId(a.id)}
-                onTogglePin={() => togglePin(a.id)}
+                onTogglePin={() => onTogglePin(a.id)}
               />
             ))}
           </div>

@@ -2,63 +2,63 @@ import {
   type FC,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useReducer,
   useRef,
   useState,
 } from "react";
-import { showWorkspaceOnly } from "@/lib/tauri-bridge";
+import { onCompactDetailReset } from "@/lib/event-listener";
+import { writeFloatPanelSnapshot } from "@/lib/float-panel-snapshot";
+import {
+  setIslandDetailPresentation,
+  showFloatBallPanelWindow,
+  showWorkspaceOnly,
+} from "@/lib/tauri-bridge";
 import {
   nextDetailState,
-  resolveSidebarVisibility,
   type CompactDetailState,
+  type TopIslandPopoverView,
 } from "@/lib/compact-mode";
 import { useIslandStore } from "@/stores/islandStore";
 import type { IslandMode } from "@/types";
 import { FloatBall } from "./FloatBall";
-import { FloatBallPanel } from "./FloatBallPanel";
 import { IslandSurface } from "./IslandSurface";
 import { Sidebar } from "./Sidebar";
 import { SidebarHotzone } from "./SidebarHotzone";
 import { TopIsland } from "./TopIsland";
+import type { TopIslandPresentation } from "./TopIsland";
 import { TopIslandPopover } from "./TopIslandPopover";
 
 const SIDEBAR_COLLAPSE_DELAY_MS = 160;
 
+type SidebarIntent =
+  | "docked_idle"
+  | "docked_hover_open"
+  | "docked_pinned_open"
+  | "floating_open";
+
 interface SidebarState {
-  expanded: boolean;
-  hotzoneHovered: boolean;
+  intent: SidebarIntent;
   panelHovered: boolean;
   collapseArmed: boolean;
+  awaitingPointerSync: boolean;
 }
 
 type SidebarAction =
   | { type: "sync_mode" }
-  | { type: "set_hotzone_hovered"; hovered: boolean }
+  | { type: "expand_hover" }
+  | { type: "expand_pinned" }
+  | { type: "undock" }
   | { type: "set_panel_hovered"; hovered: boolean }
   | { type: "collapse" }
   | { type: "collapse_from_timeout" };
 
-function nextSidebarState(base: Omit<SidebarState, "collapseArmed">): SidebarState {
-  const visibility = resolveSidebarVisibility({
-    hotzoneHovered: base.hotzoneHovered,
-    panelHovered: base.panelHovered,
-    expanded: base.expanded,
-    collapseDelayMs: SIDEBAR_COLLAPSE_DELAY_MS,
-  });
-
-  return {
-    ...base,
-    expanded: visibility.expanded,
-    collapseArmed: visibility.shouldScheduleCollapse,
-  };
-}
-
 function createSidebarState(): SidebarState {
   return {
-    expanded: false,
-    hotzoneHovered: false,
+    intent: "docked_idle",
     panelHovered: false,
     collapseArmed: false,
+    awaitingPointerSync: false,
   };
 }
 
@@ -66,35 +66,57 @@ function reduceSidebarState(state: SidebarState, action: SidebarAction): Sidebar
   switch (action.type) {
     case "sync_mode":
       return createSidebarState();
-    case "set_hotzone_hovered":
-      return nextSidebarState({
-        expanded: state.expanded,
-        hotzoneHovered: action.hovered,
-        panelHovered: state.panelHovered,
-      });
-    case "set_panel_hovered":
-      return nextSidebarState({
-        expanded: state.expanded,
-        hotzoneHovered: state.hotzoneHovered,
-        panelHovered: action.hovered,
-      });
-    case "collapse":
+    case "expand_hover":
       return {
-        expanded: false,
-        hotzoneHovered: false,
-        panelHovered: false,
+        intent: "docked_hover_open",
+        panelHovered: true,
         collapseArmed: false,
+        awaitingPointerSync: false,
       };
-    case "collapse_from_timeout":
-      if (!state.collapseArmed || state.panelHovered) {
-        return state;
+    case "expand_pinned":
+      return {
+        intent: "docked_pinned_open",
+        panelHovered: true,
+        collapseArmed: false,
+        awaitingPointerSync: false,
+      };
+    case "undock":
+      return {
+        intent: "floating_open",
+        panelHovered: true,
+        collapseArmed: false,
+        awaitingPointerSync: false,
+      };
+    case "set_panel_hovered":
+      if (action.hovered) {
+        return {
+          ...state,
+          panelHovered: true,
+          collapseArmed: false,
+          awaitingPointerSync: false,
+        };
+      }
+      if (state.intent === "docked_hover_open") {
+        return {
+          ...state,
+          panelHovered: false,
+          collapseArmed: true,
+          awaitingPointerSync: false,
+        };
       }
       return {
-        expanded: false,
-        hotzoneHovered: false,
+        ...state,
         panelHovered: false,
         collapseArmed: false,
+        awaitingPointerSync: false,
       };
+    case "collapse":
+      return createSidebarState();
+    case "collapse_from_timeout":
+      if (state.intent !== "docked_hover_open" || !state.collapseArmed || state.panelHovered) {
+        return state;
+      }
+      return createSidebarState();
     default:
       return state;
   }
@@ -102,9 +124,20 @@ function reduceSidebarState(state: SidebarState, action: SidebarAction): Sidebar
 
 export const CompactModeController: FC = () => {
   const mode = useIslandStore((state) => state.mode) as IslandMode;
+  const notifications = useIslandStore((state) => state.notifications);
+  const pendingPermissions = useIslandStore((state) => state.pendingPermissions);
+  const pendingPermissionCount = useIslandStore((state) => state.pendingPermissions.length);
+  const topIslandUnreadCount = useIslandStore((state) => state.unreadCount);
   const [detail, setDetail] = useState<CompactDetailState>({ kind: "none" });
+  const [topIslandPresentation, setTopIslandPresentation] =
+    useState<TopIslandPresentation>("collapsed");
   const [sidebar, dispatchSidebar] = useReducer(reduceSidebarState, undefined, createSidebarState);
+  const [sidebarWindowExpanded, setSidebarWindowExpanded] = useState(false);
+  const [sidebarCloseEpoch, setSidebarCloseEpoch] = useState(0);
+  const [topIslandPopoverWindowExpanded, setTopIslandPopoverWindowExpanded] = useState(false);
   const collapseTimeoutRef = useRef<number | null>(null);
+  const floatBallOpeningRef = useRef(false);
+  const sidebarPresentationRequestRef = useRef(0);
 
   const clearSidebarCollapseTimeout = useCallback(() => {
     if (collapseTimeoutRef.current !== null) {
@@ -114,6 +147,7 @@ export const CompactModeController: FC = () => {
   }, []);
 
   const closeDetail = useCallback(() => {
+    setTopIslandPopoverWindowExpanded(false);
     setDetail((currentDetail) =>
       nextDetailState({
         currentMode: mode,
@@ -121,37 +155,125 @@ export const CompactModeController: FC = () => {
         action: { type: "close_detail" },
       })
     );
-  }, [mode]);
+
+    if (
+      mode === "top_island" &&
+      pendingPermissionCount === 0 &&
+      topIslandUnreadCount === 0
+    ) {
+      setTopIslandPresentation("collapsed");
+      void setIslandDetailPresentation("none", mode);
+    }
+  }, [mode, pendingPermissionCount, topIslandUnreadCount]);
 
   const handleRestoreWorkspace = useCallback(() => {
     closeDetail();
     clearSidebarCollapseTimeout();
     dispatchSidebar({ type: "collapse" });
+    setSidebarWindowExpanded(false);
     void showWorkspaceOnly();
   }, [clearSidebarCollapseTimeout, closeDetail]);
 
-  const toggleTopIslandPopover = useCallback((anchor: { x: number; y: number }) => {
+  const expandTopIslandShell = useCallback(() => {
+    setTopIslandPresentation("expanded");
+  }, []);
+
+  const collapseTopIslandShell = useCallback(() => {
+    if (
+      mode !== "top_island" ||
+      detail.kind !== "none" ||
+      pendingPermissionCount > 0 ||
+      topIslandUnreadCount > 0
+    ) {
+      return;
+    }
+
+    setTopIslandPresentation("collapsed");
+    void setIslandDetailPresentation("none", mode);
+  }, [detail.kind, mode, pendingPermissionCount, topIslandUnreadCount]);
+
+  const toggleTopIslandPopover = useCallback((anchor: { x: number; y: number }, view: TopIslandPopoverView) => {
+    if (detail.kind === "top_island_popover" && detail.view === view) {
+      setDetail((currentDetail) =>
+        nextDetailState({
+          currentMode: mode,
+          currentDetail,
+          action: { type: "close_detail" },
+        })
+      );
+
+      if (pendingPermissionCount === 0 && topIslandUnreadCount === 0) {
+        setTopIslandPresentation("collapsed");
+        void setIslandDetailPresentation("none", mode);
+      }
+      return;
+    }
+
+    setTopIslandPresentation("expanded");
     setDetail((currentDetail) =>
-      nextDetailState({
-        currentMode: mode,
-        currentDetail,
-        action: { type: "toggle_top_island_popover", anchor },
+        nextDetailState({
+          currentMode: mode,
+          currentDetail,
+        action: { type: "toggle_top_island_popover", anchor, view },
       })
     );
-  }, [mode]);
+  }, [detail, mode, pendingPermissionCount, topIslandUnreadCount]);
+
+  const handleTopIslandSnapToMonitor = useCallback(
+    (_presentation: TopIslandPresentation) => {
+      if (mode !== "top_island") return;
+
+      const detailPresentation =
+        detail.kind === "top_island_popover"
+          ? "top_island_popover"
+          : "none";
+
+      void setIslandDetailPresentation(detailPresentation, mode);
+    },
+    [detail.kind, mode],
+  );
 
   const toggleFloatBallPanel = useCallback(() => {
-    setDetail((currentDetail) =>
-      nextDetailState({
-        currentMode: mode,
-        currentDetail,
-        action: { type: "toggle_float_ball_panel" },
-      })
-    );
-  }, [mode]);
+    if (floatBallOpeningRef.current) {
+      return;
+    }
 
+    floatBallOpeningRef.current = true;
+    writeFloatPanelSnapshot({
+      notifications,
+      pendingPermissions,
+    });
+    void showFloatBallPanelWindow()
+      .then(() => {
+        setDetail((currentDetail) =>
+          nextDetailState({
+            currentMode: mode,
+            currentDetail,
+            action: { type: "open_float_ball_panel" },
+          })
+        );
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        floatBallOpeningRef.current = false;
+      });
+  }, [mode, notifications, pendingPermissions]);
+
+  const sidebarExpanded = sidebar.intent !== "docked_idle";
+  const sidebarDocked = sidebar.intent !== "floating_open";
+  const showSidebarHotzone = sidebar.intent === "docked_idle";
   const sidebarInteractionState =
-    sidebar.panelHovered ? "panel" : sidebar.hotzoneHovered ? "hotzone" : "idle";
+    sidebar.intent === "floating_open"
+      ? "floating"
+      : sidebar.intent === "docked_idle"
+        ? "idle"
+        : sidebar.panelHovered
+          ? "panel"
+          : "expanded";
+  const effectiveTopIslandPresentation: TopIslandPresentation =
+    pendingPermissionCount > 0 || topIslandUnreadCount > 0
+      ? "expanded"
+      : topIslandPresentation;
 
   useEffect(() => {
     setDetail((currentDetail) =>
@@ -166,10 +288,13 @@ export const CompactModeController: FC = () => {
 
     clearSidebarCollapseTimeout();
     dispatchSidebar({ type: "sync_mode" });
+    setSidebarWindowExpanded(false);
+    setTopIslandPopoverWindowExpanded(false);
+    setTopIslandPresentation("collapsed");
   }, [clearSidebarCollapseTimeout, mode]);
 
   useEffect(() => {
-    if (mode !== "sidebar" || !sidebar.collapseArmed) {
+    if (mode !== "sidebar" || !sidebar.collapseArmed || !sidebarWindowExpanded) {
       clearSidebarCollapseTimeout();
       return;
     }
@@ -180,36 +305,178 @@ export const CompactModeController: FC = () => {
     }, SIDEBAR_COLLAPSE_DELAY_MS);
 
     return clearSidebarCollapseTimeout;
-  }, [clearSidebarCollapseTimeout, mode, sidebar.collapseArmed]);
+  }, [clearSidebarCollapseTimeout, mode, sidebar.collapseArmed, sidebarWindowExpanded]);
 
   useEffect(() => clearSidebarCollapseTimeout, [clearSidebarCollapseTimeout]);
+
+  useEffect(() => {
+    if (detail.kind !== "float_ball_panel") {
+      return;
+    }
+
+    writeFloatPanelSnapshot({
+      notifications,
+      pendingPermissions,
+    });
+  }, [detail.kind, notifications, pendingPermissions]);
+
+  useEffect(() => {
+    if (mode !== "sidebar") {
+      return;
+    }
+    if (!sidebarExpanded) {
+      setSidebarWindowExpanded(false);
+      setSidebarCloseEpoch((value) => value + 1);
+      return;
+    }
+
+    const presentation = sidebarDocked ? "sidebar_expanded" : "sidebar_floating";
+    const requestId = sidebarPresentationRequestRef.current + 1;
+    sidebarPresentationRequestRef.current = requestId;
+    setSidebarWindowExpanded(false);
+
+    void setIslandDetailPresentation(presentation, mode)
+      .then(() => {
+        if (sidebarPresentationRequestRef.current !== requestId) {
+          return;
+        }
+        setSidebarWindowExpanded(true);
+      })
+      .catch(() => {
+        if (sidebarPresentationRequestRef.current !== requestId) {
+          return;
+        }
+        setSidebarWindowExpanded(false);
+        dispatchSidebar({ type: "collapse" });
+      });
+  }, [mode, sidebarDocked, sidebarExpanded]);
+
+  useLayoutEffect(() => {
+    if (mode !== "sidebar" || sidebarExpanded) {
+      return;
+    }
+    sidebarPresentationRequestRef.current += 1;
+    void setIslandDetailPresentation("none", mode);
+  }, [mode, sidebarExpanded]);
+
+  useLayoutEffect(() => {
+    if (mode !== "top_island") {
+      return;
+    }
+
+    const detailPresentation =
+      detail.kind === "top_island_popover"
+        ? "top_island_popover"
+        : "none";
+
+    setTopIslandPopoverWindowExpanded(false);
+
+    let disposed = false;
+    void setIslandDetailPresentation(detailPresentation, mode)
+      .then(() => {
+        if (disposed) {
+          return;
+        }
+
+        setTopIslandPopoverWindowExpanded(detailPresentation === "top_island_popover");
+      })
+      .catch(() => {
+        if (!disposed) {
+          setTopIslandPopoverWindowExpanded(false);
+        }
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, [detail.kind, mode]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+
+    onCompactDetailReset((source) => {
+      if (source === "float_panel") {
+        setDetail((currentDetail) =>
+          currentDetail.kind === "float_ball_panel"
+            ? { kind: "none" }
+            : currentDetail
+        );
+        return;
+      }
+
+      setDetail({ kind: "none" });
+      clearSidebarCollapseTimeout();
+      dispatchSidebar({ type: "collapse" });
+      setSidebarWindowExpanded(false);
+      setTopIslandPopoverWindowExpanded(false);
+      setTopIslandPresentation("collapsed");
+    }).then((fn) => {
+      if (disposed) {
+        fn();
+        return;
+      }
+      unlisten = fn;
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [clearSidebarCollapseTimeout]);
 
   if (mode === "sidebar") {
     return (
       <div data-sidebar-interaction={sidebarInteractionState}>
-        <SidebarHotzone
-          expanded={sidebar.expanded}
-          onHoverChange={(hovered) =>
-            dispatchSidebar({ type: "set_hotzone_hovered", hovered })
-          }
-        />
-        {sidebar.expanded && (
-          <div
-            onMouseEnter={() =>
-              dispatchSidebar({ type: "set_panel_hovered", hovered: true })
-            }
-            onMouseLeave={() =>
-              dispatchSidebar({ type: "set_panel_hovered", hovered: false })
-            }
-          >
+        {showSidebarHotzone && (
+          <SidebarHotzone
+            expanded={false}
+            onActivate={() => dispatchSidebar({ type: "expand_pinned" })}
+            onHoverChange={(hovered) => {
+              if (hovered) {
+                dispatchSidebar({ type: "expand_hover" });
+              }
+            }}
+          />
+        )}
+        {sidebarExpanded && sidebarWindowExpanded && (
+          sidebarDocked ? (
+            <div
+              className="sidebar-panel-sensor"
+              onPointerEnter={() =>
+                dispatchSidebar({ type: "set_panel_hovered", hovered: true })
+              }
+              onPointerLeave={() =>
+                dispatchSidebar({ type: "set_panel_hovered", hovered: false })
+              }
+              onMouseEnter={() =>
+                dispatchSidebar({ type: "set_panel_hovered", hovered: true })
+              }
+              onMouseLeave={() =>
+                dispatchSidebar({ type: "set_panel_hovered", hovered: false })
+              }
+            >
+              <IslandSurface mode={mode}>
+                <Sidebar
+                  key={`docked-${sidebarCloseEpoch}`}
+                  expanded={true}
+                  onCollapse={() => dispatchSidebar({ type: "collapse" })}
+                  onOpenWorkspace={handleRestoreWorkspace}
+                  onUndock={() => dispatchSidebar({ type: "undock" })}
+                  onDragStart={() => dispatchSidebar({ type: "undock" })}
+                />
+              </IslandSurface>
+            </div>
+          ) : (
             <IslandSurface mode={mode}>
               <Sidebar
-                expanded={sidebar.expanded}
+                key={`floating-${sidebarCloseEpoch}`}
+                expanded={true}
                 onCollapse={() => dispatchSidebar({ type: "collapse" })}
                 onOpenWorkspace={handleRestoreWorkspace}
               />
             </IslandSurface>
-          </div>
+          )
         )}
       </div>
     );
@@ -221,12 +488,6 @@ export const CompactModeController: FC = () => {
         <IslandSurface mode={mode}>
           <FloatBall onToggleDetail={toggleFloatBallPanel} />
         </IslandSurface>
-        {detail.kind === "float_ball_panel" && (
-          <FloatBallPanel
-            onClose={closeDetail}
-            onOpenWorkspace={handleRestoreWorkspace}
-          />
-        )}
       </>
     );
   }
@@ -234,11 +495,18 @@ export const CompactModeController: FC = () => {
   return (
     <>
       <IslandSurface mode={mode}>
-        <TopIsland onExpand={toggleTopIslandPopover} />
+        <TopIsland
+          presentation={effectiveTopIslandPresentation}
+          onExpandShell={expandTopIslandShell}
+          onCollapseShell={collapseTopIslandShell}
+          onExpand={toggleTopIslandPopover}
+          onSnapToMonitor={handleTopIslandSnapToMonitor}
+        />
       </IslandSurface>
-      {detail.kind === "top_island_popover" && (
+      {detail.kind === "top_island_popover" && topIslandPopoverWindowExpanded && (
         <TopIslandPopover
           anchor={detail.anchor}
+          view={detail.view}
           onClose={closeDetail}
           onRestoreWorkspace={handleRestoreWorkspace}
         />

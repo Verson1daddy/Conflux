@@ -1,10 +1,41 @@
 import { type FC, useMemo } from "react";
 import { resolveFloatBallSemanticState } from "@/lib/compact-mode";
 import { useIslandStore } from "@/stores/islandStore";
+import type { NotificationItem, PermissionRequest } from "@/types";
 
 interface FloatBallPanelProps {
   onClose: () => void;
   onOpenWorkspace: () => void;
+  notificationsOverride?: NotificationItem[];
+  pendingPermissionsOverride?: PermissionRequest[];
+}
+
+function deriveFloatBallActivity(input: {
+  notifications: NotificationItem[];
+  pendingPermissions: PermissionRequest[];
+}) {
+  const unreadNotifications = input.notifications.filter(
+    (notification) => !notification.read
+  );
+  const unreadPermissionNotificationIds = new Set(
+    unreadNotifications
+      .filter((notification) => notification.level === "permission_required")
+      .map((notification) => notification.id)
+  );
+  const displayUnreadNotifications = unreadNotifications.filter(
+    (notification) => !unreadPermissionNotificationIds.has(notification.id)
+  );
+
+  return {
+    unreadNotifications,
+    displayUnreadNotifications,
+    pendingPermissionCount: input.pendingPermissions.length,
+    activityCount:
+      displayUnreadNotifications.length + input.pendingPermissions.length,
+    hasError: unreadNotifications.some(
+      (notification) => notification.level === "error"
+    ),
+  };
 }
 
 function formatSemanticLabel(state: "normal" | "notification" | "error") {
@@ -25,44 +56,59 @@ function formatActivitySummary(input: {
   const segments: string[] = [];
 
   if (input.unreadNotificationCount > 0) {
-    segments.push(`${input.unreadNotificationCount} unread notification${input.unreadNotificationCount > 1 ? "s" : ""}`);
+    segments.push(
+      `${input.unreadNotificationCount} unread notification${
+        input.unreadNotificationCount > 1 ? "s" : ""
+      }`
+    );
   }
   if (input.pendingPermissionCount > 0) {
-    segments.push(`${input.pendingPermissionCount} pending permission${input.pendingPermissionCount > 1 ? "s" : ""}`);
+    segments.push(
+      `${input.pendingPermissionCount} pending permission${
+        input.pendingPermissionCount > 1 ? "s" : ""
+      }`
+    );
   }
 
-  return segments.length > 0 ? segments.join(" · ") : "All clear. No unread notifications or pending permissions.";
+  return segments.length > 0
+    ? segments.join(" / ")
+    : "All clear. No unread notifications or pending permissions.";
 }
 
 export const FloatBallPanel: FC<FloatBallPanelProps> = ({
   onClose,
   onOpenWorkspace,
+  notificationsOverride,
+  pendingPermissionsOverride,
 }) => {
-  const notifications = useIslandStore((s) => s.notifications);
-  const pendingPermissions = useIslandStore((s) => s.pendingPermissions);
+  const storeNotifications = useIslandStore((s) => s.notifications);
+  const storePendingPermissions = useIslandStore((s) => s.pendingPermissions);
+  const notifications = notificationsOverride ?? storeNotifications;
+  const pendingPermissions = pendingPermissionsOverride ?? storePendingPermissions;
 
-  const unreadNotifications = useMemo(
-    () => notifications.filter((notification) => !notification.read),
-    [notifications]
+  const activity = useMemo(
+    () => deriveFloatBallActivity({ notifications, pendingPermissions }),
+    [notifications, pendingPermissions]
   );
 
   const semanticState = useMemo(
     () =>
       resolveFloatBallSemanticState({
-        unreadCount: unreadNotifications.length + pendingPermissions.length,
-        hasError: unreadNotifications.some((notification) => notification.level === "error"),
+        unreadCount: activity.activityCount,
+        hasError: activity.hasError,
       }),
-    [pendingPermissions.length, unreadNotifications]
+    [activity.activityCount, activity.hasError]
   );
 
-  const latestNotification = unreadNotifications[0];
+  const latestNotification =
+    activity.displayUnreadNotifications[0] ?? activity.unreadNotifications[0];
   const latestPermission = pendingPermissions[0];
 
   return (
     <div
       data-testid="float-ball-panel"
       className="fixed compact-detail float-ball-panel"
-      style={{ zIndex: 40 }}
+      style={{ zIndex: 2147483647 }}
     >
       <div className="float-ball-panel__anchor" aria-hidden="true" />
 
@@ -83,8 +129,8 @@ export const FloatBallPanel: FC<FloatBallPanelProps> = ({
         <span className="float-ball-panel__label">Status summary</span>
         <span className="float-ball-panel__value">
           {formatActivitySummary({
-            unreadNotificationCount: unreadNotifications.length,
-            pendingPermissionCount: pendingPermissions.length,
+            unreadNotificationCount: activity.displayUnreadNotifications.length,
+            pendingPermissionCount: activity.pendingPermissionCount,
           })}
         </span>
       </div>

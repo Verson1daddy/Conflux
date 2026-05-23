@@ -3,6 +3,8 @@
 // 当多个 Agent 状态发生变化时，协调器分析事件流并决定是否需要通知主框架
 
 use crate::core::ConfluxEvent;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 
 /// 主框架协调器
 ///
@@ -12,88 +14,155 @@ use crate::core::ConfluxEvent;
 pub struct Coordinator;
 
 impl Coordinator {
+    /// 协调指令的自动 stdin 注入默认关闭，避免在用户正在操作的 CLI 会话中
+    /// 突然塞入系统调度文本。只有显式设置环境变量时才开启。
+    pub fn auto_injection_enabled() -> bool {
+        std::env::var("CONFLUX_ENABLE_COORDINATOR_AUTOINJECT")
+            .map(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "True"))
+            .unwrap_or(false)
+    }
+
     /// 使用模板和上下文构建调度指令提示词
     ///
     /// 将模板中的 `{context}` 占位符替换为实际的上下文摘要文本，
     /// 生成最终发送给主框架 Agent 的调度指令。
-    ///
-    /// # 参数
-    /// - `context`: 由 ContextAggregator::aggregate() 生成的状态摘要文本
-    /// - `template`: 适配器定义的 coordination_template（含 `{context}` 占位符）
-    ///
-    /// # 返回
-    /// 替换占位符后的完整调度指令字符串
-    ///
-    /// # 示例
-    /// ```text
-    /// template: "请根据以下状态安排任务:\n{context}\n请输出调度计划。"
-    /// context:  "=== Agent 状态摘要（共 2 个实例） ===\n..."
-    /// result:   "请根据以下状态安排任务:\n=== Agent 状态摘要...===\n...\n请输出调度计划。"
-    /// ```
     pub fn build_coordination_prompt(context: &str, template: &str) -> String {
         template.replace("{context}", context)
     }
 
     /// 判断是否需要触发协调
     ///
-    /// 分析一批事件，当满足以下条件之一时返回 true：
-    /// 1. 有 2 个或以上不同实例的状态变更事件（多 Agent 同时活跃）
-    /// 2. 有任务完成事件（TaskCompleted）——可能需要重新分配工作
-    /// 3. 有调度指令事件（CoordinationCommand）——表示已有显式协调请求
-    /// 4. 有错误事件且严重级别 >= Error——可能需要紧急协调
-    ///
-    /// # 参数
-    /// - `events`: 待分析的事件列表
-    ///
-    /// # 返回
-    /// 是否应触发主框架协调
+    /// 冻结契约（contracts_phase_c.md）中的 4 个触发条件：
+    /// 1. 任意 3 个不同实例在 5 分钟内各自完成 >=2 个 TaskCompleted
+    /// 2. 任一实例的 ErrorOccurred 数 >= 该实例 TaskCompleted 数的 20%
+    /// 3. 连续 10 分钟没有任何 AgentStatusChanged
+    /// 4. 任一实例输出中出现“需要协调”关键词
     pub fn should_coordinate(events: &[ConfluxEvent]) -> bool {
         if events.is_empty() {
             return false;
         }
 
-        // 条件 2: 有任务完成事件
-        let has_task_completed = events
-            .iter()
-            .any(|e| matches!(e, ConfluxEvent::TaskCompleted { .. }));
-        if has_task_completed {
+        if Self::has_dense_task_completions(events) {
             return true;
         }
 
-        // 条件 3: 有调度指令事件
-        let has_coordination = events
-            .iter()
-            .any(|e| matches!(e, ConfluxEvent::CoordinationCommand { .. }));
-        if has_coordination {
+        if Self::has_error_ratio_breach(events) {
             return true;
         }
 
-        // 条件 4: 有严重错误事件（Error 或 Fatal 级别）
-        let has_severe_error = events.iter().any(|e| {
-            matches!(
-                e,
-                ConfluxEvent::ErrorOccurred {
-                    severity,
-                    ..
-                } if matches!(severity, crate::core::ErrorSeverity::Error | crate::core::ErrorSeverity::Fatal)
-            )
-        });
-        if has_severe_error {
+        if Self::has_ten_minute_status_silence(events) {
             return true;
         }
 
-        // 条件 1: 多个不同实例的状态变更
-        let mut status_change_instances = std::collections::HashSet::new();
-        for event in events {
-            if let ConfluxEvent::AgentStatusChanged { instance_id, .. } = event {
-                status_change_instances.insert(instance_id.0.clone());
-            }
-        }
-        if status_change_instances.len() >= 2 {
+        if Self::has_coordination_keyword(events) {
             return true;
         }
 
         false
+    }
+
+    fn has_dense_task_completions(events: &[ConfluxEvent]) -> bool {
+        let latest_ts = events
+            .iter()
+            .map(Self::event_timestamp_secs)
+            .max()
+            .unwrap_or(0);
+        let mut completions_by_instance = std::collections::HashMap::<String, usize>::new();
+
+        for event in events {
+            if let ConfluxEvent::TaskCompleted { instance_id, .. } = event {
+                let ts = Self::event_timestamp_secs(event);
+                if latest_ts.saturating_sub(ts) > 5 * 60 {
+                    continue;
+                }
+                *completions_by_instance
+                    .entry(instance_id.0.clone())
+                    .or_insert(0) += 1;
+            }
+        }
+
+        completions_by_instance
+            .values()
+            .filter(|count| **count >= 2)
+            .count()
+            >= 3
+    }
+
+    fn has_error_ratio_breach(events: &[ConfluxEvent]) -> bool {
+        let mut completed = std::collections::HashMap::<String, usize>::new();
+        let mut errors = std::collections::HashMap::<String, usize>::new();
+
+        for event in events {
+            match event {
+                ConfluxEvent::TaskCompleted { instance_id, .. } => {
+                    *completed.entry(instance_id.0.clone()).or_insert(0) += 1;
+                }
+                ConfluxEvent::ErrorOccurred { instance_id, .. } => {
+                    *errors.entry(instance_id.0.clone()).or_insert(0) += 1;
+                }
+                _ => {}
+            }
+        }
+
+        errors.into_iter().any(|(instance_id, error_count)| {
+            let completed_count = completed.get(&instance_id).copied().unwrap_or(0);
+            completed_count > 0 && error_count * 5 >= completed_count
+        })
+    }
+
+    fn has_ten_minute_status_silence(events: &[ConfluxEvent]) -> bool {
+        let latest_ts = events
+            .iter()
+            .map(Self::event_timestamp_secs)
+            .max()
+            .unwrap_or(0);
+
+        let latest_status_change = events
+            .iter()
+            .filter_map(|event| match event {
+                ConfluxEvent::AgentStatusChanged { timestamp, .. } => {
+                    Some((*timestamp).max(0) as u64 / 1000)
+                }
+                _ => None,
+            })
+            .max();
+
+        match latest_status_change {
+            Some(ts) => latest_ts.saturating_sub(ts) >= 10 * 60,
+            None => latest_ts >= 10 * 60,
+        }
+    }
+
+    fn has_coordination_keyword(events: &[ConfluxEvent]) -> bool {
+        events.iter().any(|event| match event {
+            ConfluxEvent::PtyOutput { data, .. } => BASE64
+                .decode(data)
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .is_some_and(|text| text.contains("需要协调")),
+            ConfluxEvent::ErrorOccurred { error_message, .. } => error_message.contains("需要协调"),
+            _ => false,
+        })
+    }
+
+    fn event_timestamp_secs(event: &ConfluxEvent) -> u64 {
+        match event {
+            ConfluxEvent::AgentStatusChanged { timestamp, .. } => (*timestamp).max(0) as u64 / 1000,
+            ConfluxEvent::PermissionRequested { timestamp, .. } => {
+                (*timestamp).max(0) as u64 / 1000
+            }
+            ConfluxEvent::SubAgentSpawned { timestamp, .. } => (*timestamp).max(0) as u64 / 1000,
+            ConfluxEvent::SubAgentCompleted { timestamp, .. } => (*timestamp).max(0) as u64 / 1000,
+            ConfluxEvent::TaskCompleted { timestamp, .. } => (*timestamp).max(0) as u64 / 1000,
+            ConfluxEvent::ErrorOccurred { timestamp, .. } => (*timestamp).max(0) as u64 / 1000,
+            ConfluxEvent::DiscussionMessage { timestamp, .. } => (*timestamp).max(0) as u64 / 1000,
+            ConfluxEvent::CoordinationCommand { timestamp, .. } => {
+                (*timestamp).max(0) as u64 / 1000
+            }
+            ConfluxEvent::PtyOutput { timestamp, .. } => (*timestamp).max(0) as u64 / 1000,
+            ConfluxEvent::StdinInjected { timestamp, .. } => (*timestamp).max(0) as u64 / 1000,
+            ConfluxEvent::ProcessExited { timestamp, .. } => (*timestamp).max(0) as u64 / 1000,
+        }
     }
 }
 
@@ -101,6 +170,13 @@ impl Coordinator {
 mod tests {
     use super::*;
     use crate::core::{AgentStatus, ErrorSeverity, InstanceId};
+    use std::sync::{Mutex, OnceLock};
+
+    static TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn test_env_lock() -> &'static Mutex<()> {
+        TEST_ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn test_build_coordination_prompt() {
@@ -118,67 +194,213 @@ mod tests {
     }
 
     #[test]
+    fn test_auto_injection_disabled_by_default() {
+        let _guard = test_env_lock().lock().expect("lock test env");
+        let old = std::env::var("CONFLUX_ENABLE_COORDINATOR_AUTOINJECT").ok();
+        std::env::remove_var("CONFLUX_ENABLE_COORDINATOR_AUTOINJECT");
+
+        assert!(!Coordinator::auto_injection_enabled());
+
+        if let Some(value) = old {
+            std::env::set_var("CONFLUX_ENABLE_COORDINATOR_AUTOINJECT", value);
+        }
+    }
+
+    #[test]
+    fn test_auto_injection_enabled_only_when_explicitly_requested() {
+        let _guard = test_env_lock().lock().expect("lock test env");
+        let old = std::env::var("CONFLUX_ENABLE_COORDINATOR_AUTOINJECT").ok();
+        std::env::set_var("CONFLUX_ENABLE_COORDINATOR_AUTOINJECT", "true");
+
+        assert!(Coordinator::auto_injection_enabled());
+
+        if let Some(value) = old {
+            std::env::set_var("CONFLUX_ENABLE_COORDINATOR_AUTOINJECT", value);
+        } else {
+            std::env::remove_var("CONFLUX_ENABLE_COORDINATOR_AUTOINJECT");
+        }
+    }
+
+    #[test]
     fn test_should_coordinate_empty() {
         assert!(!Coordinator::should_coordinate(&[]));
     }
 
     #[test]
-    fn test_should_coordinate_task_completed() {
-        let events = vec![ConfluxEvent::TaskCompleted {
-            instance_id: InstanceId("a".to_string()),
-            summary: "done".to_string(),
-            timestamp: 1000,
-        }];
-        assert!(Coordinator::should_coordinate(&events));
-    }
-
-    #[test]
-    fn test_should_coordinate_multiple_status_changes() {
+    fn test_should_coordinate_three_instances_complete_twice_in_five_minutes() {
         let events = vec![
-            ConfluxEvent::AgentStatusChanged {
+            ConfluxEvent::TaskCompleted {
                 instance_id: InstanceId("a".to_string()),
-                old_status: AgentStatus::Idle,
-                new_status: AgentStatus::Thinking,
+                summary: "done".to_string(),
                 timestamp: 1000,
             },
-            ConfluxEvent::AgentStatusChanged {
+            ConfluxEvent::TaskCompleted {
+                instance_id: InstanceId("a".to_string()),
+                summary: "done".to_string(),
+                timestamp: 2000,
+            },
+            ConfluxEvent::TaskCompleted {
                 instance_id: InstanceId("b".to_string()),
-                old_status: AgentStatus::Idle,
-                new_status: AgentStatus::Coding,
-                timestamp: 1001,
+                summary: "done".to_string(),
+                timestamp: 3000,
+            },
+            ConfluxEvent::TaskCompleted {
+                instance_id: InstanceId("b".to_string()),
+                summary: "done".to_string(),
+                timestamp: 4000,
+            },
+            ConfluxEvent::TaskCompleted {
+                instance_id: InstanceId("c".to_string()),
+                summary: "done".to_string(),
+                timestamp: 5000,
+            },
+            ConfluxEvent::TaskCompleted {
+                instance_id: InstanceId("c".to_string()),
+                summary: "done".to_string(),
+                timestamp: 6000,
             },
         ];
         assert!(Coordinator::should_coordinate(&events));
     }
 
     #[test]
-    fn test_should_not_coordinate_single_status_change() {
-        let events = vec![ConfluxEvent::AgentStatusChanged {
-            instance_id: InstanceId("a".to_string()),
-            old_status: AgentStatus::Idle,
-            new_status: AgentStatus::Thinking,
-            timestamp: 1000,
-        }];
+    fn test_should_coordinate_three_instances_complete_twice_with_epoch_timestamps() {
+        let base = 1_700_000_000_000i64;
+        let events = vec![
+            ConfluxEvent::TaskCompleted {
+                instance_id: InstanceId("a".to_string()),
+                summary: "done".to_string(),
+                timestamp: base - 240_000,
+            },
+            ConfluxEvent::TaskCompleted {
+                instance_id: InstanceId("a".to_string()),
+                summary: "done".to_string(),
+                timestamp: base - 180_000,
+            },
+            ConfluxEvent::TaskCompleted {
+                instance_id: InstanceId("b".to_string()),
+                summary: "done".to_string(),
+                timestamp: base - 120_000,
+            },
+            ConfluxEvent::TaskCompleted {
+                instance_id: InstanceId("b".to_string()),
+                summary: "done".to_string(),
+                timestamp: base - 90_000,
+            },
+            ConfluxEvent::TaskCompleted {
+                instance_id: InstanceId("c".to_string()),
+                summary: "done".to_string(),
+                timestamp: base - 60_000,
+            },
+            ConfluxEvent::TaskCompleted {
+                instance_id: InstanceId("c".to_string()),
+                summary: "done".to_string(),
+                timestamp: base,
+            },
+        ];
+        assert!(Coordinator::should_coordinate(&events));
+    }
+
+    #[test]
+    fn test_should_not_coordinate_two_instances_only() {
+        let events = vec![
+            ConfluxEvent::TaskCompleted {
+                instance_id: InstanceId("a".to_string()),
+                summary: "done".to_string(),
+                timestamp: 1000,
+            },
+            ConfluxEvent::TaskCompleted {
+                instance_id: InstanceId("a".to_string()),
+                summary: "done".to_string(),
+                timestamp: 2000,
+            },
+            ConfluxEvent::TaskCompleted {
+                instance_id: InstanceId("b".to_string()),
+                summary: "done".to_string(),
+                timestamp: 3000,
+            },
+            ConfluxEvent::TaskCompleted {
+                instance_id: InstanceId("b".to_string()),
+                summary: "done".to_string(),
+                timestamp: 4000,
+            },
+        ];
         assert!(!Coordinator::should_coordinate(&events));
     }
 
     #[test]
-    fn test_should_coordinate_severe_error() {
-        let events = vec![ConfluxEvent::ErrorOccurred {
+    fn test_should_coordinate_error_ratio_breach() {
+        let events = vec![
+            ConfluxEvent::TaskCompleted {
+                instance_id: InstanceId("a".to_string()),
+                summary: "done".to_string(),
+                timestamp: 1000,
+            },
+            ConfluxEvent::TaskCompleted {
+                instance_id: InstanceId("a".to_string()),
+                summary: "done".to_string(),
+                timestamp: 2000,
+            },
+            ConfluxEvent::TaskCompleted {
+                instance_id: InstanceId("a".to_string()),
+                summary: "done".to_string(),
+                timestamp: 3000,
+            },
+            ConfluxEvent::TaskCompleted {
+                instance_id: InstanceId("a".to_string()),
+                summary: "done".to_string(),
+                timestamp: 4000,
+            },
+            ConfluxEvent::TaskCompleted {
+                instance_id: InstanceId("a".to_string()),
+                summary: "done".to_string(),
+                timestamp: 5000,
+            },
+            ConfluxEvent::ErrorOccurred {
+                instance_id: InstanceId("a".to_string()),
+                error_message: "boom".to_string(),
+                severity: ErrorSeverity::Warning,
+                timestamp: 6000,
+            },
+        ];
+        assert!(Coordinator::should_coordinate(&events));
+    }
+
+    #[test]
+    fn test_should_coordinate_ten_minute_status_silence() {
+        let events = vec![
+            ConfluxEvent::AgentStatusChanged {
+                instance_id: InstanceId("a".to_string()),
+                old_status: AgentStatus::Idle,
+                new_status: AgentStatus::Thinking,
+                timestamp: 1_000,
+            },
+            ConfluxEvent::TaskCompleted {
+                instance_id: InstanceId("a".to_string()),
+                summary: "later event".to_string(),
+                timestamp: 601_000,
+            },
+        ];
+        assert!(Coordinator::should_coordinate(&events));
+    }
+
+    #[test]
+    fn test_should_coordinate_keyword_in_output() {
+        let encoded = BASE64.encode("当前任务卡住了，需要协调".as_bytes());
+        let events = vec![ConfluxEvent::PtyOutput {
             instance_id: InstanceId("a".to_string()),
-            error_message: "fatal crash".to_string(),
-            severity: ErrorSeverity::Fatal,
+            data: encoded,
             timestamp: 1000,
         }];
         assert!(Coordinator::should_coordinate(&events));
     }
 
     #[test]
-    fn test_should_not_coordinate_warning() {
-        let events = vec![ConfluxEvent::ErrorOccurred {
+    fn test_should_not_coordinate_without_any_trigger() {
+        let events = vec![ConfluxEvent::AgentStatusChanged {
             instance_id: InstanceId("a".to_string()),
-            error_message: "minor warning".to_string(),
-            severity: ErrorSeverity::Warning,
+            old_status: AgentStatus::Idle,
+            new_status: AgentStatus::Thinking,
             timestamp: 1000,
         }];
         assert!(!Coordinator::should_coordinate(&events));

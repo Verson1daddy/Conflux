@@ -18,8 +18,8 @@ use crate::core::{
     AgentMode, ConfluxError, ConfluxEvent, DiscussionId, DiscussionMessage, DiscussionSession,
     DiscussionSummary, InstanceId, MessageSender,
 };
-use crate::AppState;
 use crate::persistence::query as db_query;
+use crate::AppState;
 
 /// 创建新的多 Agent 讨论
 ///
@@ -61,11 +61,11 @@ pub async fn start_discussion(
         // Look up the adapter_id from the workspace instance
         let adapter_id = {
             let map = state.instance_adapter_map.read();
-            map.get(&participant_id.0).cloned().ok_or_else(|| {
-                ConfluxError::InstanceNotFound {
+            map.get(&participant_id.0)
+                .cloned()
+                .ok_or_else(|| ConfluxError::InstanceNotFound {
                     instance_id: participant_id.0.clone(),
-                }
-            })?
+                })?
         };
 
         // Get adapter config + trait object
@@ -76,11 +76,12 @@ pub async fn start_discussion(
                     adapter_id: adapter_id.clone(),
                 }
             })?;
-            let adapter = registry.get(&adapter_id).ok_or_else(|| {
-                ConfluxError::AdapterNotFound {
-                    adapter_id: adapter_id.clone(),
-                }
-            })?;
+            let adapter =
+                registry
+                    .get(&adapter_id)
+                    .ok_or_else(|| ConfluxError::AdapterNotFound {
+                        adapter_id: adapter_id.clone(),
+                    })?;
             (config, adapter)
         };
 
@@ -112,8 +113,8 @@ pub async fn start_discussion(
             Some(adapter_arc),
             Some(dispatcher),
             AgentMode::Sandbox,
-            true,  // hidden = true
-            None,  // display_name: sandbox 实例不需要别名
+            true, // hidden = true
+            None, // display_name: sandbox 实例不需要别名
         )?;
 
         let sandbox_id = InstanceId(sandbox_id_str);
@@ -130,12 +131,7 @@ pub async fn start_discussion(
     // 1. 在内存中创建讨论（带 sandbox_instance_ids）
     let (session, system_msg) = {
         let mut engine = state.discussion_engine.write();
-        let session = engine.start(
-            topic,
-            participant_ids,
-            sandbox_instance_ids,
-            rounds,
-        );
+        let session = engine.start(topic, participant_ids, sandbox_instance_ids, rounds);
         // 获取系统开场消息用于写入数据库
         let msgs = engine
             .get_messages(&session.id.0)
@@ -185,7 +181,11 @@ pub async fn send_discussion_message(
     // HIGH-01 修复：输入长度验证
     if content.len() > MAX_CONTENT_LENGTH {
         return Err(ConfluxError::OrchestrationError {
-            message: format!("content 长度 {} 超过上限 {}", content.len(), MAX_CONTENT_LENGTH),
+            message: format!(
+                "content 长度 {} 超过上限 {}",
+                content.len(),
+                MAX_CONTENT_LENGTH
+            ),
         });
     }
     // 1. 在内存中发送消息

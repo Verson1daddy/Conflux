@@ -2,18 +2,98 @@
 // The main workspace canvas container.
 // Performance: zoom/pan use ref + direct DOM transform; store commits only on idle.
 
-import { useCallback, useRef, useEffect, useState } from "react";
+import { useCallback, useMemo, useRef, useEffect, useState } from "react";
+import type { CSSProperties } from "react";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useAgentStore } from "@/stores/agentStore";
-import { useWorkspaceLayout } from "@/hooks/useWorkspaceLayout";
+import {
+  shouldAutoFitOnCardsRestored,
+  useWorkspaceLayout,
+} from "@/hooks/useWorkspaceLayout";
+import {
+  fitCardsIntoViewport,
+  shouldDisablePinnedFilter,
+  shouldFitCardsIntoViewport,
+} from "@/lib/canvas-viewport";
 import { togglePinInstance } from "@/lib/tauri-bridge";
 import { AgentCard } from "./AgentCard";
 import { LayoutManager } from "./LayoutManager";
 import type { AgentStatus, AgentInstanceInfo } from "@/types";
 
 const MIN_ZOOM = 0.25;
-const MAX_ZOOM = 3;
-const ZOOM_SENSITIVITY = 0.001;
+const MAX_ZOOM = 7;
+const ZOOM_SENSITIVITY = 0.0007;
+const GRID_LEVELS = [1280, 640, 320, 160, 80, 40, 20, 10, 5, 2.5, 1.25, 0.625, 0.3125] as const;
+const GRID_TARGET_MAJOR_PX = 168;
+const GRID_SIGMA = 1.05;
+
+function normalizeZoomForGrid(zoom: number): number {
+  return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom));
+}
+
+function levelDistance(levelSize: number, zoom: number) {
+  const pixelSize = levelSize * zoom;
+  return Math.abs(Math.log2(pixelSize / GRID_TARGET_MAJOR_PX));
+}
+
+function gridWeight(distance: number) {
+  return Math.exp(-(distance * distance) / (2 * GRID_SIGMA * GRID_SIGMA));
+}
+
+type GridLevelVisual = {
+  size: number;
+  color: string;
+  lineWidth: number;
+  prominence: number;
+};
+
+function resolveGridVisuals(zoom: number): GridLevelVisual[] {
+  const normalizedZoom = normalizeZoomForGrid(zoom);
+  const weighted = GRID_LEVELS.map((size) => {
+    const distance = levelDistance(size, normalizedZoom);
+    return { size, weight: gridWeight(distance) };
+  }).filter((level) => level.weight > 0.01);
+
+  const maxWeight = Math.max(...weighted.map((level) => level.weight), 1);
+  const majorLevels = weighted.map((level) => {
+    const prominence = level.weight / maxWeight;
+    const eased = Math.pow(prominence, 0.82);
+    const brightness = Math.round(176 + eased * 28);
+    const alpha = 0.018 + level.weight * (0.12 + eased * 0.08);
+    const lineWidth = eased > 0.94 ? 1.2 : eased > 0.62 ? 1.02 : 1;
+
+    return {
+      size: level.size,
+      color: `rgba(${brightness}, ${brightness}, ${brightness}, ${Math.min(0.16, alpha)})`,
+      lineWidth,
+      prominence: eased,
+    } satisfies GridLevelVisual;
+  });
+
+  const fineLevels = GRID_LEVELS.filter((size) => size <= 10).map((size, index, arr) => {
+    const progress = 1 - index / Math.max(1, arr.length - 1);
+    const alpha = 0.018 + progress * 0.026;
+    const brightness = Math.round(124 + progress * 20);
+
+    return {
+      size,
+      color: `rgba(${brightness}, ${brightness}, ${brightness}, ${Math.min(0.065, alpha)})`,
+      lineWidth: 1,
+      prominence: 0.16 + progress * 0.12,
+    } satisfies GridLevelVisual;
+  });
+
+  const merged = new Map<number, GridLevelVisual>();
+  for (const level of fineLevels) merged.set(level.size, level);
+  for (const level of majorLevels) {
+    const existing = merged.get(level.size);
+    if (!existing || existing.prominence < level.prominence) {
+      merged.set(level.size, level);
+    }
+  }
+
+  return [...merged.values()];
+}
 
 interface CanvasProps {
   agents: Map<string, AgentInstanceInfo>;
@@ -22,11 +102,9 @@ interface CanvasProps {
    *  flip rather than as an overlay. App.tsx decides based on window
    *  fullscreen state. */
   isFullscreen: boolean;
-  /** Callback to open the Add Agent modal from empty-state CTA. */
-  onAddAgent?: () => void;
 }
 
-function Canvas({ agents, agentStatuses, isFullscreen, onAddAgent }: CanvasProps) {
+function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
   const expandedCardId = useAgentStore((s) => s.expandedCardId);
   const cards = useWorkspaceStore((s) => s.cards);
   const layoutMode = useWorkspaceStore((s) => s.layoutMode);
@@ -41,23 +119,117 @@ function Canvas({ agents, agentStatuses, isFullscreen, onAddAgent }: CanvasProps
   const autoArrange = useWorkspaceStore((s) => s.autoArrange);
   const { triggerAutoPack } = useWorkspaceLayout();
   const [pinnedFilter, setPinnedFilter] = useState(false);
+  const knownCardCount = useMemo(
+    () => cards.filter((card) => agents.has(card.instance_id)).length,
+    [agents, cards]
+  );
+  const pinnedCards = useMemo(
+    () =>
+      cards.filter((card) => {
+        const agentInfo = agents.get(card.instance_id);
+        return agentInfo?.is_pinned === true;
+      }),
+    [agents, cards]
+  );
+  const shouldFailOpenPinnedFilter = shouldDisablePinnedFilter({
+    pinnedFilter,
+    totalCardCount: cards.length,
+    knownCardCount,
+    visiblePinnedCardCount: pinnedCards.length,
+  });
+  const shouldRenderAllForPinnedFilter =
+    pinnedFilter && cards.length > 0 && pinnedCards.length === 0;
+  const visibleCards =
+    pinnedFilter && !shouldRenderAllForPinnedFilter ? pinnedCards : cards;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const transformLayerRef = useRef<HTMLDivElement>(null);
+  const worldGridRef = useRef<HTMLCanvasElement>(null);
   const zoomIndicatorRef = useRef<HTMLSpanElement>(null);
 
-  // Live zoom/pan refs — mutated during interaction, no re-render
+  // Live zoom/pan refs - mutated during interaction, no re-render
   const liveZoom = useRef(storeZoom);
   const livePan = useRef({ x: storePan.x, y: storePan.y });
   const spaceHeldRef = useRef(false);
   const commitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const zoomRafRef = useRef<number | null>(null);
+  const previousCardCountRef = useRef(visibleCards.length);
 
-  // Sync refs from store on external changes
-  useEffect(() => { liveZoom.current = storeZoom; }, [storeZoom]);
-  useEffect(() => { livePan.current = { x: storePan.x, y: storePan.y }; }, [storePan.x, storePan.y]);
+  useEffect(() => {
+    liveZoom.current = storeZoom;
+  }, [storeZoom]);
 
-  // Briefly enable zoom transition via data-attribute, then remove after rAF
+  useEffect(() => {
+    livePan.current = { x: storePan.x, y: storePan.y };
+  }, [storePan.x, storePan.y]);
+
+  const drawGrid = useCallback(() => {
+    const canvas = worldGridRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
+
+    const rect = container.getBoundingClientRect();
+    const width = Math.max(1, Math.floor(rect.width));
+    const height = Math.max(1, Math.floor(rect.height));
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+
+    if (canvas.width !== Math.floor(width * dpr) || canvas.height !== Math.floor(height * dpr)) {
+      canvas.width = Math.floor(width * dpr);
+      canvas.height = Math.floor(height * dpr);
+    }
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.scale(dpr, dpr);
+
+    const levels = resolveGridVisuals(liveZoom.current)
+      .sort((a, b) => a.size - b.size)
+      .map((level) => ({
+        ...level,
+        pixelSize: level.size * liveZoom.current,
+      }))
+      .filter((level) => level.pixelSize >= 2.5);
+
+    for (const level of levels) {
+      const worldSpacing = level.size;
+      const worldLeft = -livePan.current.x / liveZoom.current;
+      const worldTop = -livePan.current.y / liveZoom.current;
+      const worldRight = (width - livePan.current.x) / liveZoom.current;
+      const worldBottom = (height - livePan.current.y) / liveZoom.current;
+
+      const startWorldX = Math.floor(worldLeft / worldSpacing) * worldSpacing;
+      const startWorldY = Math.floor(worldTop / worldSpacing) * worldSpacing;
+
+      ctx.beginPath();
+      ctx.strokeStyle = level.color;
+      ctx.lineWidth = level.lineWidth;
+      ctx.shadowBlur = level.prominence > 0.95 ? 0.55 : 0;
+      ctx.shadowColor = level.prominence > 0.95 ? "rgba(255,255,255,0.035)" : "transparent";
+
+      for (let worldX = startWorldX; worldX <= worldRight + worldSpacing; worldX += worldSpacing) {
+        const screenX = livePan.current.x + worldX * liveZoom.current;
+        const alignedX = Math.round(screenX) + 0.5;
+        ctx.moveTo(alignedX, 0);
+        ctx.lineTo(alignedX, height);
+      }
+
+      for (let worldY = startWorldY; worldY <= worldBottom + worldSpacing; worldY += worldSpacing) {
+        const screenY = livePan.current.y + worldY * liveZoom.current;
+        const alignedY = Math.round(screenY) + 0.5;
+        ctx.moveTo(0, alignedY);
+        ctx.lineTo(width, alignedY);
+      }
+
+      ctx.globalAlpha = 1;
+      ctx.shadowBlur = 0;
+      ctx.shadowColor = "transparent";
+      ctx.stroke();
+    }
+  }, []);
+
   const enableZoomTransition = useCallback(() => {
     const el = transformLayerRef.current;
     if (!el) return;
@@ -70,11 +242,14 @@ function Canvas({ agents, agentStatuses, isFullscreen, onAddAgent }: CanvasProps
     });
   }, []);
 
-  // Direct DOM update for transform layer
   const applyTransform = useCallback(() => {
     const el = transformLayerRef.current;
     if (el) {
       el.style.transform = `translate(${livePan.current.x}px,${livePan.current.y}px) scale(${liveZoom.current})`;
+    }
+    const gridEl = worldGridRef.current;
+    if (gridEl) {
+      drawGrid();
     }
     const zi = zoomIndicatorRef.current;
     if (zi) {
@@ -82,7 +257,6 @@ function Canvas({ agents, agentStatuses, isFullscreen, onAddAgent }: CanvasProps
     }
   }, []);
 
-  // Debounced commit to store (for selectors that depend on zoom/pan)
   const scheduleCommit = useCallback(() => {
     if (commitTimer.current) clearTimeout(commitTimer.current);
     commitTimer.current = setTimeout(() => {
@@ -91,7 +265,6 @@ function Canvas({ agents, agentStatuses, isFullscreen, onAddAgent }: CanvasProps
     }, 100);
   }, [setZoom, setPan]);
 
-  // ===== Space key tracking =====
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.code === "Space" && !e.repeat) {
@@ -114,14 +287,11 @@ function Canvas({ agents, agentStatuses, isFullscreen, onAddAgent }: CanvasProps
     };
   }, []);
 
-  // ===== Wheel zoom (native event for passive:false) =====
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
 
     const onWheel = (e: WheelEvent) => {
-      // Zoom only when Ctrl/⌘ is held (mac touchpad pinch emits ctrlKey=true).
-      // Otherwise let wheel bubble naturally so xterm / panels can scroll.
       if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
       const rect = el.getBoundingClientRect();
@@ -130,7 +300,10 @@ function Canvas({ agents, agentStatuses, isFullscreen, onAddAgent }: CanvasProps
       const worldX = (cursorX - livePan.current.x) / liveZoom.current;
       const worldY = (cursorY - livePan.current.y) / liveZoom.current;
       const delta = -e.deltaY * ZOOM_SENSITIVITY;
-      const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, liveZoom.current * (1 + delta)));
+      const newZoom = Math.max(
+        MIN_ZOOM,
+        Math.min(MAX_ZOOM, liveZoom.current * (1 + delta))
+      );
       liveZoom.current = newZoom;
       livePan.current = {
         x: cursorX - worldX * newZoom,
@@ -145,7 +318,6 @@ function Canvas({ agents, agentStatuses, isFullscreen, onAddAgent }: CanvasProps
     return () => el.removeEventListener("wheel", onWheel);
   }, [applyTransform, scheduleCommit, enableZoomTransition]);
 
-  // ===== Pan start =====
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
       const isMiddle = e.button === 1;
@@ -176,7 +348,11 @@ function Canvas({ agents, agentStatuses, isFullscreen, onAddAgent }: CanvasProps
       };
 
       const onUp = (ue: PointerEvent) => {
-        try { (ue.target as HTMLElement).releasePointerCapture(ue.pointerId); } catch { /* ok */ }
+        try {
+          (ue.target as HTMLElement).releasePointerCapture(ue.pointerId);
+        } catch {
+          // ignore
+        }
         containerRef.current?.classList.remove("cursor-grabbing");
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
@@ -194,7 +370,6 @@ function Canvas({ agents, agentStatuses, isFullscreen, onAddAgent }: CanvasProps
     if (!el) return;
     const rect = el.getBoundingClientRect();
     fitAll(rect.width, rect.height);
-    // Also sync live refs so subsequent scroll zoom continues from the new state
     const state = useWorkspaceStore.getState();
     liveZoom.current = state.zoom;
     livePan.current = { x: state.pan.x, y: state.pan.y };
@@ -202,139 +377,157 @@ function Canvas({ agents, agentStatuses, isFullscreen, onAddAgent }: CanvasProps
     applyTransform();
   }, [fitAll, applyTransform, enableZoomTransition]);
 
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || typeof ResizeObserver === "undefined") {
+      drawGrid();
+      return;
+    }
+
+    const observer = new ResizeObserver(() => {
+      drawGrid();
+    });
+    observer.observe(container);
+    drawGrid();
+
+    return () => observer.disconnect();
+  }, [drawGrid]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || typeof ResizeObserver === "undefined") {
+      drawGrid();
+      return;
+    }
+
+    const observer = new ResizeObserver(() => {
+      drawGrid();
+    });
+    observer.observe(container);
+    drawGrid();
+
+    return () => observer.disconnect();
+  }, [drawGrid]);
+
+  useEffect(() => {
+    if (shouldFailOpenPinnedFilter) {
+      setPinnedFilter(false);
+    }
+  }, [shouldFailOpenPinnedFilter]);
+
+  useEffect(() => {
+    const previousCardCount = previousCardCountRef.current;
+    previousCardCountRef.current = visibleCards.length;
+    const el = containerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const shouldFit =
+      shouldAutoFitOnCardsRestored(previousCardCount, visibleCards.length) ||
+      shouldFitCardsIntoViewport({
+        previousCardCount,
+        cards: visibleCards,
+        pan: livePan.current,
+        zoom: liveZoom.current,
+        viewportWidth: rect.width,
+        viewportHeight: rect.height,
+      });
+
+    if (!shouldFit) {
+      return;
+    }
+
+    const nextViewport = fitCardsIntoViewport({
+      cards: visibleCards,
+      viewportWidth: rect.width,
+      viewportHeight: rect.height,
+    });
+    if (!nextViewport) {
+      return;
+    }
+
+    liveZoom.current = nextViewport.zoom;
+    livePan.current = nextViewport.pan;
+    setZoom(nextViewport.zoom);
+    setPan(nextViewport.pan);
+    enableZoomTransition();
+    applyTransform();
+  }, [applyTransform, enableZoomTransition, setPan, setZoom, visibleCards]);
+
   return (
     <div
       ref={containerRef}
-      className="relative w-full h-full overflow-hidden rounded-xl"
+      className="canvas-shell relative w-full h-full overflow-hidden rounded-xl"
       style={{
         background: "#050507",
         border: "1px solid rgba(255,255,255,0.082)",
       }}
       onPointerDown={handlePointerDown}
     >
-      {/* Empty-state fallback — shown when no cards exist */}
-      {cards.length === 0 ? (
-        <div
-          style={{
-            position: "absolute",
-            top: "50%",
-            left: "50%",
-            transform: "translate(-50%, -50%)",
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            gap: 16,
-            pointerEvents: "auto",
-          }}
-        >
-          <div
-            style={{
-              width: 64,
-              height: 64,
-              borderRadius: "50%",
-              background: "rgba(255,255,255,0.07)",
-              border: "1px solid rgba(255,255,255,0.08)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <span style={{ fontSize: 28, color: "#6B7280" }}>+</span>
-          </div>
-          <span
-            style={{
-              fontFamily: "'Fraunces Variable', Georgia, serif",
-              fontSize: 24,
-              fontWeight: 600,
-              color: "#B8B3B0",
-            }}
-          >
-            No agents yet
-          </span>
-          <span
-            style={{
-              fontFamily: "'Geist Sans', sans-serif",
-              fontSize: 14,
-              color: "rgba(107,114,128,0.56)",
-            }}
-          >
-            Add your first agent to get started
-          </span>
-          <button
-            onClick={() => onAddAgent?.()}
-            style={{
-              fontFamily: "'Geist Sans', sans-serif",
-              fontSize: 14,
-              fontWeight: 600,
-              color: "#050507",
-              background: "#B8D4E3",
-              border: "none",
-              borderRadius: 9999,
-              padding: "10px 20px",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-            }}
-          >
-            <span>+</span> Add Agent
-          </button>
-        </div>
-      ) : (
-        /* Transformed canvas layer */
-        <div
-          ref={transformLayerRef}
-          className="absolute top-0 left-0 origin-top-left canvas-transform-layer"
-          style={{
-            transform: `translate(${storePan.x}px,${storePan.y}px) scale(${storeZoom})`,
-            width: 0,
-            height: 0,
-          }}
-        >
-          {cards.map((card) => {
-            const agentInfo = agents.get(card.instance_id);
-            // Pinned filter: hide non-pinned cards when filter is active
-            if (pinnedFilter && !agentInfo?.is_pinned) return null;
-            const agentStatus = agentStatuses.get(card.instance_id) ?? "idle";
-            const agentName = agentInfo
-              ? (agentInfo.display_name ? `${agentInfo.adapter_name} · ${agentInfo.display_name}` : agentInfo.adapter_name)
-              : "Unknown Agent";
-            const adapterBadge = agentInfo?.adapter_id ?? "---";
+      <canvas
+        aria-hidden="true"
+        ref={worldGridRef}
+        className="canvas-grid-layer"
+        data-layout-mode={layoutMode}
+        style={{
+          width: "100%",
+          height: "100%",
+        } as CSSProperties}
+      />
+      <div aria-hidden="true" className="canvas-vignette-layer" />
 
-            const isFlipped =
-              isFullscreen && expandedCardId === card.instance_id;
-            const isDimmed =
-              isFullscreen &&
-              expandedCardId !== null &&
-              expandedCardId !== card.instance_id;
-            return (
-              <AgentCard
-                key={card.instance_id}
-                card={card}
-                agentName={agentName}
-                adapterBadge={adapterBadge}
-                status={agentStatus}
-                isSelected={selectedCardId === card.instance_id}
-                isPinned={agentInfo?.is_pinned ?? false}
-                layoutMode={layoutMode}
-                zoom={liveZoom.current}
-                fileCount={0}
-                lastActivity={agentInfo?.created_at ?? 0}
-                isFlipped={isFlipped}
-                isDimmed={isDimmed}
-                onTogglePin={() => {
-                  useAgentStore.getState().togglePin(card.instance_id);
-                  togglePinInstance(card.instance_id).catch(() => {});
-                }}
-              />
-            );
-          })}
-        </div>
-      )}
+      <div
+        ref={transformLayerRef}
+        className="absolute top-0 left-0 origin-top-left canvas-transform-layer"
+        style={{
+          transform: `translate(${storePan.x}px,${storePan.y}px) scale(${storeZoom})`,
+          width: 0,
+          height: 0,
+          ["--world-grid-scale" as const]: String(storeZoom),
+        } as CSSProperties}
+      >
+        {visibleCards.map((card) => {
+          const agentInfo = agents.get(card.instance_id);
+          const agentStatus = agentStatuses.get(card.instance_id) ?? "idle";
+          const agentName = agentInfo
+            ? agentInfo.display_name
+              ? `${agentInfo.adapter_name} - ${agentInfo.display_name}`
+              : agentInfo.adapter_name
+            : "Unknown Agent";
+          const adapterBadge = agentInfo?.adapter_id ?? "---";
+
+          const isFlipped = isFullscreen && expandedCardId === card.instance_id;
+          const isDimmed =
+            isFullscreen &&
+            expandedCardId !== null &&
+            expandedCardId !== card.instance_id;
+
+          return (
+            <AgentCard
+              key={card.instance_id}
+              card={card}
+              agentName={agentName}
+              adapterBadge={adapterBadge}
+              status={agentStatus}
+              isSelected={selectedCardId === card.instance_id}
+              isPinned={agentInfo?.is_pinned ?? false}
+              layoutMode={layoutMode}
+              zoom={liveZoom.current}
+              fileCount={null}
+              lastActivity={agentInfo?.last_activity_at ?? 0}
+              isFlipped={isFlipped}
+              isDimmed={isDimmed}
+              onTogglePin={() => {
+                useAgentStore.getState().togglePin(card.instance_id);
+                togglePinInstance(card.instance_id).catch(() => {});
+              }}
+            />
+          );
+        })}
+      </div>
 
       <LayoutManager onAutoPack={triggerAutoPack} />
 
-      {/* Zoom indicator + Fit All */}
       <div className="absolute bottom-4 left-4 z-20 flex items-center gap-2">
         <span
           ref={zoomIndicatorRef}
@@ -348,7 +541,16 @@ function Canvas({ agents, agentStatuses, isFullscreen, onAddAgent }: CanvasProps
           onClick={handleFitAll}
           title="Fit all cards in view"
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
             <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
           </svg>
         </button>
@@ -358,19 +560,46 @@ function Canvas({ agents, agentStatuses, isFullscreen, onAddAgent }: CanvasProps
           onClick={autoArrange}
           title="Auto-arrange cards"
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <rect x="3" y="3" width="7" height="7" rx="1" />
+            <rect x="14" y="3" width="7" height="7" rx="1" />
+            <rect x="3" y="14" width="7" height="7" rx="1" />
+            <rect x="14" y="14" width="7" height="7" rx="1" />
           </svg>
         </button>
         <button
           className={`glass rounded-md px-2 py-1 text-[10px] font-mono transition-colors flex items-center gap-1 ${
-            pinnedFilter ? "text-accent bg-accent/15" : "text-white/40 hover:text-white/70"
+            pinnedFilter
+              ? "text-accent bg-accent/15"
+              : "text-white/40 hover:text-white/70"
           }`}
           style={{ cursor: "pointer", border: "none" }}
-          onClick={() => setPinnedFilter((v) => !v)}
-          title={pinnedFilter ? "Show all cards (currently filtering pinned only)" : "Filter: show only pinned cards"}
+          onClick={() => setPinnedFilter((value) => !value)}
+          title={
+            pinnedFilter
+              ? "Show all cards (currently filtering pinned only)"
+              : "Filter: show only pinned cards"
+          }
         >
-          <svg width="11" height="11" viewBox="0 0 24 24" fill={pinnedFilter ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg
+            width="11"
+            height="11"
+            viewBox="0 0 24 24"
+            fill={pinnedFilter ? "currentColor" : "none"}
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
             <path d="M12 17v5" />
             <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" />
           </svg>

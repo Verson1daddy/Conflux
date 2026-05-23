@@ -1,25 +1,36 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import App from "./App";
+import { FloatPanelWindowApp } from "./components/island/FloatPanelWindowApp";
+import { IslandWindowApp } from "./components/island/IslandWindowApp";
 
-// eslint-disable-next-line no-console
-console.log("[conflux] main.tsx: loading fonts...");
-
-// Self-hosted fonts — bundled locally via @fontsource to avoid Google Fonts CDN blocks
-// Explicit /index.css paths to avoid Vite dev-mode export-map ambiguity
 import "@fontsource-variable/fraunces/index.css";
 import "@fontsource/geist-sans/latin.css";
 import "@fontsource-variable/jetbrains-mono/index.css";
-
-// eslint-disable-next-line no-console
-console.log("[conflux] main.tsx: fonts loaded, importing App...");
-
-import App from "./App";
 import "./index.css";
 
-// eslint-disable-next-line no-console
-console.log("[conflux] main.tsx: mounting React...");
+function resolveWindowLabel(): "main" | "island" | "float_panel" {
+  const hintedWindowLabel = new URLSearchParams(window.location.search).get("confluxWindow");
+  if (hintedWindowLabel === "island" || hintedWindowLabel === "float_panel") {
+    return hintedWindowLabel;
+  }
 
-// Restore persisted accent color before React mounts so the first paint uses it
+  try {
+    const label = getCurrentWindow().label;
+    if (label === "island" || label === "float_panel") {
+      return label;
+    }
+    return "main";
+  } catch {
+    const pathname = window.location.pathname;
+    if (pathname === "/float_panel" || pathname.endsWith("/float_panel")) {
+      return "float_panel";
+    }
+    return pathname === "/island" || pathname.endsWith("/island") ? "island" : "main";
+  }
+}
+
 const savedAccent = localStorage.getItem("conflux.accentColor");
 if (savedAccent) {
   document.documentElement.style.setProperty("--accent-primary", savedAccent);
@@ -30,16 +41,23 @@ if (!rootEl) {
   throw new Error("[conflux] #root element not found in index.html");
 }
 
+const windowLabel = resolveWindowLabel();
+document.documentElement.dataset.windowLabel = windowLabel;
+document.body.dataset.windowLabel = windowLabel;
+
+const RootComponent =
+  windowLabel === "island"
+    ? IslandWindowApp
+    : windowLabel === "float_panel"
+      ? FloatPanelWindowApp
+      : App;
+
 try {
   ReactDOM.createRoot(rootEl).render(
     <React.StrictMode>
-      <App />
+      <RootComponent />
     </React.StrictMode>
   );
-  // eslint-disable-next-line no-console
-  console.log("[conflux] main.tsx: React mounted ✓");
 } catch (err) {
-  // eslint-disable-next-line no-console
-  console.error("[conflux] React mount failed:", err);
   rootEl.innerHTML = `<pre style="color:#FF3B30;padding:20px;font-family:monospace;white-space:pre-wrap">${String(err)}</pre>`;
 }

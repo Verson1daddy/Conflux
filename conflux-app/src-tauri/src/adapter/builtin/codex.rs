@@ -3,6 +3,7 @@
 
 use async_trait::async_trait;
 use regex::Regex;
+use std::path::{Path, PathBuf};
 
 use crate::adapter::traits::{AgentAdapter, AgentInstance};
 use crate::core::{
@@ -61,10 +62,8 @@ impl CodexAdapter {
                 .expect("内置 codex thinking 正则编译失败"),
             coding: Regex::new(r"(?i)Writing|Editing|--- a/|\+\+\+|^> ")
                 .expect("内置 codex coding 正则编译失败"),
-            done: Regex::new(r"(?i)Done|Completed|Finished")
-                .expect("内置 codex done 正则编译失败"),
-            error: Regex::new(r"(?i)Error|Failed|error:")
-                .expect("内置 codex error 正则编译失败"),
+            done: Regex::new(r"(?i)Done|Completed|Finished").expect("内置 codex done 正则编译失败"),
+            error: Regex::new(r"(?i)Error|Failed|error:").expect("内置 codex error 正则编译失败"),
         };
 
         Self {
@@ -102,7 +101,9 @@ impl AgentAdapter for CodexAdapter {
         _working_dir: &str,
         _args: &[String],
     ) -> Result<Box<dyn AgentInstance>, ConfluxError> {
-        todo!("Codex spawn via PtyManager")
+        Err(ConfluxError::InvalidConfig {
+            message: "CodexAdapter::spawn is not a runnable path; use create_agent_instance/PtyManager::spawn".to_string(),
+        })
     }
 
     fn parse_output(&self, raw_line: &str) -> Option<ConfluxEvent> {
@@ -156,8 +157,13 @@ impl AgentAdapter for CodexAdapter {
     }
 
     async fn detect_auth(&self) -> Result<(), String> {
-        // Check OPENAI_API_KEY env var
-        if std::env::var("OPENAI_API_KEY").is_ok() {
+        if codex_env_has_api_key() {
+            return Ok(());
+        }
+        if default_codex_auth_path()
+            .as_deref()
+            .is_some_and(codex_auth_file_has_credentials)
+        {
             return Ok(());
         }
         // Check if binary exists
@@ -173,7 +179,7 @@ impl AgentAdapter for CodexAdapter {
         match cmd.spawn() {
             Ok(child) => match child.wait_with_output() {
                 Ok(output) if output.status.success() => {
-                    Err("Codex CLI is installed but OPENAI_API_KEY is not set. Set it in your environment.".to_string())
+                    Err("Codex CLI is installed but no Codex auth was found. Run: codex login or set OPENAI_API_KEY.".to_string())
                 }
                 _ => Err("Codex CLI may not be properly installed. Run: npm install -g @openai/codex".to_string()),
             },
@@ -182,5 +188,96 @@ impl AgentAdapter for CodexAdapter {
             }
             Err(e) => Err(format!("Failed to check Codex CLI: {}", e)),
         }
+    }
+}
+
+fn codex_env_has_api_key() -> bool {
+    std::env::var("OPENAI_API_KEY")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn default_codex_auth_path() -> Option<PathBuf> {
+    if let Some(codex_home) = std::env::var_os("CODEX_HOME") {
+        return Some(PathBuf::from(codex_home).join("auth.json"));
+    }
+    if let Some(user_profile) = std::env::var_os("USERPROFILE") {
+        return Some(PathBuf::from(user_profile).join(".codex").join("auth.json"));
+    }
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex").join("auth.json"))
+}
+
+fn codex_auth_file_has_credentials(path: &Path) -> bool {
+    match std::fs::read_to_string(path) {
+        Ok(raw) => codex_auth_json_has_credentials(&raw),
+        Err(_) => false,
+    }
+}
+
+fn codex_auth_json_has_credentials(raw: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return false;
+    };
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+
+    object
+        .get("OPENAI_API_KEY")
+        .is_some_and(json_value_has_non_empty_string)
+        || object
+            .get("tokens")
+            .is_some_and(codex_tokens_have_credentials)
+}
+
+fn codex_tokens_have_credentials(value: &serde_json::Value) -> bool {
+    let Some(tokens) = value.as_object() else {
+        return false;
+    };
+    ["access_token", "refresh_token", "id_token"]
+        .iter()
+        .any(|key| {
+            tokens
+                .get(*key)
+                .is_some_and(json_value_has_non_empty_string)
+        })
+}
+
+fn json_value_has_non_empty_string(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(value) => !value.trim().is_empty(),
+        serde_json::Value::Array(values) => values.iter().any(json_value_has_non_empty_string),
+        serde_json::Value::Object(values) => values.values().any(json_value_has_non_empty_string),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::codex_auth_json_has_credentials;
+
+    #[test]
+    fn codex_auth_json_accepts_api_key_auth() {
+        assert!(codex_auth_json_has_credentials(
+            r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-test"}"#
+        ));
+    }
+
+    #[test]
+    fn codex_auth_json_accepts_chatgpt_tokens() {
+        assert!(codex_auth_json_has_credentials(
+            r#"{"auth_mode":"chatgpt","tokens":{"access_token":"token"}}"#
+        ));
+    }
+
+    #[test]
+    fn codex_auth_json_rejects_empty_or_invalid_credentials() {
+        assert!(!codex_auth_json_has_credentials(
+            r#"{"auth_mode":"apikey","OPENAI_API_KEY":"   ","tokens":{}}"#
+        ));
+        assert!(!codex_auth_json_has_credentials(
+            r#"{"auth_mode":"chatgpt","tokens":{"account_id":"acct-only"}}"#
+        ));
+        assert!(!codex_auth_json_has_credentials("not-json"));
     }
 }

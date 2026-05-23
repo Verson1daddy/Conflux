@@ -82,10 +82,9 @@ struct TomlCapabilities {
 /// content: TOML 格式的字符串内容
 /// 返回解析后的 AdapterConfig 或错误
 pub fn parse_adapter_toml(content: &str) -> Result<AdapterConfig, ConfluxError> {
-    let root: TomlRoot =
-        toml::from_str(content).map_err(|e| ConfluxError::InvalidConfig {
-            message: format!("TOML 解析失败: {}", e),
-        })?;
+    let root: TomlRoot = toml::from_str(content).map_err(|e| ConfluxError::InvalidConfig {
+        message: format!("TOML 解析失败: {}", e),
+    })?;
 
     // 验证必填字段
     let name = root.name.ok_or_else(|| ConfluxError::InvalidConfig {
@@ -203,10 +202,7 @@ pub fn load_adapter_toml(path: &str) -> Result<AdapterConfig, ConfluxError> {
 }
 
 /// 验证可选的正则模式是否合法
-fn validate_optional_regex(
-    pattern: &Option<String>,
-    field_name: &str,
-) -> Result<(), ConfluxError> {
+fn validate_optional_regex(pattern: &Option<String>, field_name: &str) -> Result<(), ConfluxError> {
     if let Some(p) = pattern {
         regex::Regex::new(p).map_err(|e| ConfluxError::InvalidConfig {
             message: format!("正则模式无效 ({}): '{}' — {}", field_name, p, e),

@@ -69,7 +69,23 @@ describe("Canvas grid layer", () => {
     vi.clearAllMocks();
   });
 
-  it("renders the world grid layer with explicit viewport-sized geometry", async () => {
+  it("keeps the free-mode grid visibly present while still tagging the active layout mode", async () => {
+    vi.doMock("@/stores/workspaceStore", () => ({
+      useWorkspaceStore: (selector: (state: any) => unknown) =>
+        selector({
+          cards: [],
+          layoutMode: "free",
+          selectedCardId: null,
+          zoom: 1,
+          pan: { x: 0, y: 0 },
+          selectCard: vi.fn(),
+          setZoom: vi.fn(),
+          setPan: vi.fn(),
+          fitAll: vi.fn(),
+          autoArrange: vi.fn(),
+        }),
+    }));
+
     const { Canvas } = await import("./Canvas");
     const renderer = TestRenderer.create(
       createElement(Canvas, {
@@ -80,6 +96,8 @@ describe("Canvas grid layer", () => {
     );
 
     const grid = renderer.root.findByProps({ className: "canvas-grid-layer" });
+    expect(grid.props["data-layout-mode"]).toBe("free");
+    expect(grid.type).toBe("canvas");
     expect(grid.props.style.width).toBe("100%");
     expect(grid.props.style.height).toBe("100%");
 

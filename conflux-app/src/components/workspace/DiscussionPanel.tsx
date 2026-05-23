@@ -1,12 +1,17 @@
-// ===== DiscussionPanel — 4-step wizard + chatroom =====
+// ===== DiscussionPanel: 4-step wizard + chatroom =====
 // Light-theme side panel (480 wide) that slides in from the right.
-// Step 1: Direction  → Step 2: Rules  → Step 3: Participants  → Step 4: Chatroom
+// Step 1: Direction -> Step 2: Rules -> Step 3: Participants -> Step 4: Chatroom
 // Mirrors design/conflux.pen frames (wizard steps replacing legacy 6MjvR).
 // ESC priority: capture-phase handler stops propagation so ExpandedAgentCard
 // underneath doesn't collapse. ESC on step 1-3 closes the wizard; on step 4
 // (chatroom) closes only after End Discussion confirmation.
 
 import { type FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getLiveAgentInstances } from "@/lib/workspace-status";
+import {
+  buildDiscussionReviewSnapshot,
+  saveDiscussionReviewSnapshot,
+} from "@/lib/discussion-review";
 import { useAgentStore } from "@/stores/agentStore";
 import type {
   DiscussionMessage,
@@ -14,11 +19,11 @@ import type {
   MessageStyle,
   TurnOrder,
 } from "@/stores/agentStore";
-import type { AgentInstanceInfo } from "@/types";
+import type { AgentInstanceInfo, DiscussionSummary } from "@/types";
 import { MessageRenderer } from "./MessageRenderer";
 import { ArtifactsDrawer } from "./ArtifactsDrawer";
 
-// ===== Palette (light theme — intentionally contrasts the dark workspace) =====
+// ===== Palette (light theme; intentionally contrasts the dark workspace) =====
 
 const COLORS = {
   surfacePanel:   "#FAF8F5",
@@ -334,7 +339,7 @@ const StepDirection: FC = () => {
             fontFamily: "'Geist Sans', sans-serif",
             fontSize: 11, fontWeight: 400, color: COLORS.textMuted,
           }}>
-            Required · 1–2 sentences
+            Required - 1-2 sentences
           </span>
           <textarea
             ref={directionRef}
@@ -370,7 +375,7 @@ const StepDirection: FC = () => {
             fontFamily: "'Geist Sans', sans-serif",
             fontSize: 11, fontWeight: 400, color: COLORS.textMuted,
           }}>
-            Optional · hard limits, deadlines, out-of-scope items
+            Optional - hard limits, deadlines, out-of-scope items
           </span>
           <textarea
             value={requirements}
@@ -415,7 +420,7 @@ const StepRules: FC = () => {
       style={{ padding: "8px 24px 24px", background: COLORS.surfacePanel }}
     >
       <div className="flex flex-col" style={{ gap: 14 }}>
-        {/* Rule 1 — expanded turn order radio */}
+        {/* Rule 1: expanded turn order radio */}
         <div
           className="flex flex-col"
           style={{
@@ -463,7 +468,7 @@ const StepRules: FC = () => {
                     fontSize: 12, fontWeight: 500,
                     color: selected ? COLORS.textPrimary : COLORS.textBody,
                   }}>
-                    {opt.label}  ·  {opt.sub}
+                    {opt.label} - {opt.sub}
                   </span>
                 </button>
               );
@@ -471,11 +476,11 @@ const StepRules: FC = () => {
           </div>
         </div>
 
-        {/* Rule 2 — Max rounds preset + custom input */}
+        {/* Rule 2: Max rounds preset + custom input */}
         <MaxRoundsRule current={rules.maxRounds} onChange={(v) => setRules({ maxRounds: v })} />
-        {/* Rule 3 — Turn timeout preset + custom input (store in seconds, UI in minutes) */}
+        {/* Rule 3: Turn timeout preset + custom input (store in seconds, UI in minutes) */}
         <TurnTimeoutRule current={rules.turnTimeoutSec} onChange={(v) => setRules({ turnTimeoutSec: v })} />
-        {/* Rule 4 — Auto-end toggle */}
+        {/* Rule 4: Auto-end toggle */}
         <div
           className="flex items-center"
           style={{
@@ -512,10 +517,10 @@ const StepRules: FC = () => {
             <div style={{ width: 16, height: 16, borderRadius: 9999, background: "#FFFFFF" }} />
           </button>
         </div>
-        {/* Rule 5 — Message style chip */}
+        {/* Rule 5: Message style chip */}
         <ChipRow
           label="Message style"
-          value={rules.messageStyle === "concise" ? "Concise · ≤200 chars" : "Deep dive · unlimited"}
+          value={rules.messageStyle === "concise" ? "Concise - <=500 chars" : "Deep dive - unlimited"}
           onClick={() => setRules({
             messageStyle: (rules.messageStyle === "concise" ? "deep_dive" : "concise") as MessageStyle,
           })}
@@ -548,7 +553,7 @@ const PresetChip: FC<{ label: string; active: boolean; onClick: () => void }> = 
   </button>
 );
 
-// ===== Max rounds rule — 3 presets + Unlimited + custom input =====
+// ===== Max rounds rule: 3 presets + Unlimited + custom input =====
 
 const MAX_ROUNDS_PRESETS = [4, 8, 16];
 const MAX_ROUNDS_MIN = 1;
@@ -607,7 +612,7 @@ const MaxRoundsRule: FC<{ current: number; onChange: (v: number) => void }> = ({
           max={MAX_ROUNDS_MAX}
           value={draft}
           disabled={isUnlimited}
-          placeholder={isUnlimited ? "—" : ""}
+          placeholder={isUnlimited ? "-" : ""}
           onChange={(e) => {
             setDraft(e.target.value);
             const n = parseInt(e.target.value, 10);
@@ -639,7 +644,7 @@ const MaxRoundsRule: FC<{ current: number; onChange: (v: number) => void }> = ({
   );
 };
 
-// ===== Turn timeout rule — 3 presets + No limit + custom input (minutes) =====
+// ===== Turn timeout rule: 3 presets + No limit + custom input (minutes) =====
 // Store unit is seconds; UI unit is minutes.
 
 const TURN_TIMEOUT_PRESETS_MIN = [2, 5, 15];
@@ -704,7 +709,7 @@ const TurnTimeoutRule: FC<{ current: number; onChange: (v: number) => void }> = 
           max={TURN_TIMEOUT_MAX}
           value={draft}
           disabled={isUnlimited}
-          placeholder={isUnlimited ? "—" : ""}
+          placeholder={isUnlimited ? "-" : ""}
           onChange={(e) => {
             setDraft(e.target.value);
             const n = parseInt(e.target.value, 10);
@@ -776,10 +781,11 @@ const StepParticipants: FC = () => {
 
   const rows = useMemo(() => {
     const arr: AgentInstanceInfo[] = [];
+    const liveInstances = getLiveAgentInstances(instances);
     // Primary first, then rest in insertion order
-    const primary = Array.from(instances.values()).find((i) => i.is_pinned);
+    const primary = liveInstances.find((i) => i.is_pinned);
     if (primary) arr.push(primary);
-    instances.forEach((info) => {
+    liveInstances.forEach((info) => {
       if (!primary || info.instance_id !== primary.instance_id) arr.push(info);
     });
     return arr;
@@ -841,14 +847,14 @@ const StepParticipants: FC = () => {
                   fontSize: 13, fontWeight: 600,
                   color: isSelected ? COLORS.textPrimary : COLORS.textBody,
                 }}>
-                  {info.display_name ? `${info.adapter_name} · ${info.display_name}` : info.adapter_name}
+                  {info.display_name ? `${info.adapter_name} - ${info.display_name}` : info.adapter_name}
                 </span>
                 <span style={{
                   fontFamily: "'Geist Sans', sans-serif",
                   fontSize: 11, fontWeight: 400,
                   color: isPrimary ? COLORS.accent : COLORS.textMuted,
                 }}>
-                  {isPrimary ? "Primary  ·  required" : info.status}
+                  {isPrimary ? "Primary - required" : info.status}
                 </span>
               </div>
               {isSelected ? (
@@ -878,7 +884,7 @@ const StepParticipants: FC = () => {
             fontSize: 11, fontWeight: 500, color: COLORS.textMuted,
           }}
         >
-          {participating} of {rows.length} agents participating  ·  including you as observer
+          {participating} of {rows.length} agents participating - including you as observer
         </div>
       </div>
     </div>
@@ -926,7 +932,7 @@ const ChatroomHeader: FC<{
           fontSize: 11, fontWeight: 500, color: COLORS.textMuted,
           whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
         }}>
-          Round {round} of {maxRounds}  ·  {paused ? "Paused" : orderLabel}
+          Round {round} of {maxRounds} - {paused ? "Paused" : orderLabel}
         </span>
       </div>
       <button
@@ -1026,8 +1032,25 @@ const ChatroomBody: FC<{ messages: DiscussionMessage[] }> = ({ messages }) => {
                   fontFamily: "'Geist Sans', sans-serif",
                   fontSize: 11, fontWeight: 600, color: headerColor,
                 }}>
-                  {msg.authorName}  ·  {msg.interject ? `Interjected during Round ${msg.round}` : `Round ${msg.round}`}  ·  {relativeTime(msg.time)}
+                  {msg.authorName} - {msg.interject ? `Interjected during Round ${msg.round}` : `Round ${msg.round}`} - {relativeTime(msg.time)}
                 </span>
+                {deliveryLabel(msg) && (
+                  <span
+                    style={{
+                      fontFamily: "'Geist Sans', sans-serif",
+                      fontSize: 10,
+                      fontWeight: 500,
+                      color:
+                        msg.deliveryState === "failed"
+                          ? COLORS.dangerText
+                          : msg.deliveryState === "pending"
+                            ? COLORS.warningText
+                            : COLORS.textMuted,
+                    }}
+                  >
+                    {deliveryLabel(msg)}
+                  </span>
+                )}
                 <MessageRenderer body={msg.body} codeBlocks={msg.codeBlocks} />
               </div>
             </div>
@@ -1048,6 +1071,16 @@ function relativeTime(ts: number): string {
   if (min < 60) return `${min}m ago`;
   const hr = Math.floor(min / 60);
   return `${hr}h ago`;
+}
+
+function deliveryLabel(msg: DiscussionMessage): string | null {
+  if (!msg.interject) return null;
+  if (msg.deliveryState === "pending") return "Sending to agents…";
+  if (msg.deliveryState === "failed") {
+    return msg.deliveryError ?? "Failed to reach the agents.";
+  }
+  if (msg.deliveryState === "confirmed") return "Delivered";
+  return null;
 }
 
 const ChatroomFooter: FC<{
@@ -1077,8 +1110,8 @@ const ChatroomFooter: FC<{
   };
 
   const placeholder = paused
-    ? `Talk to ${primaryName} (paused)…`
-    : `Interject to ${primaryName}…`;
+    ? `Talk to ${primaryName} (paused)...`
+    : `Interject to ${primaryName}...`;
 
   return (
     <div
@@ -1094,7 +1127,7 @@ const ChatroomFooter: FC<{
         fontFamily: "'Geist Sans', sans-serif",
         fontSize: 10, fontWeight: 500, color: COLORS.textMuted,
       }}>
-        {paused ? "Agents are frozen — your message goes directly to the primary" : "Ctrl+Enter interjects without interrupting the current turn"}
+        {paused ? "Agents are frozen; your message goes directly to the primary" : "Ctrl+Enter sends an interject with visible delivery status"}
       </span>
       <div className="flex items-center" style={{ gap: 10 }}>
         <div
@@ -1153,7 +1186,10 @@ const DiscussionPanel: FC = () => {
   const direction = useAgentStore((s) => s.discussion.direction);
   const rules = useAgentStore((s) => s.discussion.rules);
   const participantIds = useAgentStore((s) => s.discussion.participantIds);
+  const backendState = useAgentStore((s) => s.discussion.backendState);
+  const backendError = useAgentStore((s) => s.discussion.backendError);
   const messages = useAgentStore((s) => s.discussion.messages);
+  const artifacts = useAgentStore((s) => s.discussion.artifacts);
   const currentRound = useAgentStore((s) => s.discussion.currentRound);
   const paused = useAgentStore((s) => s.discussion.paused);
   const instances = useAgentStore((s) => s.instances);
@@ -1164,9 +1200,14 @@ const DiscussionPanel: FC = () => {
   const resume = useAgentStore((s) => s.resumeDiscussion);
   const endAction = useAgentStore((s) => s.endDiscussion);
   const interject = useAgentStore((s) => s.interjectDiscussion);
+  const toggleArtifactPin = useAgentStore((s) => s.toggleDiscussionArtifactPin);
 
   const [showEndConfirm, setShowEndConfirm] = useState(false);
   const [artifactsDrawerVisible, setArtifactsDrawerVisible] = useState(false);
+  const [endingDiscussion, setEndingDiscussion] = useState(false);
+  const [endError, setEndError] = useState<string | null>(null);
+  const [lastSummary, setLastSummary] = useState<DiscussionSummary | null>(null);
+  const [endArtifactReviewVisible, setEndArtifactReviewVisible] = useState(false);
   const toggleArtifacts = useCallback(() => setArtifactsDrawerVisible((v) => !v), []);
 
   // Capture-phase ESC handler so the wizard beats ExpandedAgentCard underneath.
@@ -1177,6 +1218,9 @@ const DiscussionPanel: FC = () => {
       if (e.key !== "Escape") return;
       e.stopImmediatePropagation();
       if (step === 4) {
+        setEndError(null);
+        setLastSummary(null);
+        setEndArtifactReviewVisible(false);
         setShowEndConfirm(true);
       } else {
         close();
@@ -1187,17 +1231,41 @@ const DiscussionPanel: FC = () => {
   }, [open, step, close]);
 
   const primaryInstance = useMemo(() => {
-    for (const info of instances.values()) {
+    const liveInstances = getLiveAgentInstances(instances);
+    for (const info of liveInstances) {
       if (info.is_pinned) return info;
     }
-    return instances.values().next().value ?? null;
+    return liveInstances[0] ?? null;
   }, [instances]);
   const primaryName = primaryInstance
-    ? (primaryInstance.display_name ? `${primaryInstance.adapter_name} · ${primaryInstance.display_name}` : primaryInstance.adapter_name)
+    ? (primaryInstance.display_name ? `${primaryInstance.adapter_name} - ${primaryInstance.display_name}` : primaryInstance.adapter_name)
     : "Primary agent";
 
   const directionFilled = direction.trim().length > 0;
-  const participantCount = participantIds.size;
+  const participantCount = useMemo(() => {
+    return getLiveAgentInstances(instances).filter((info) =>
+      participantIds.has(info.instance_id)
+    ).length;
+  }, [instances, participantIds]);
+  const pinnedArtifacts = useMemo(
+    () => artifacts.filter((artifact) => artifact.status === "pinned"),
+    [artifacts]
+  );
+
+  const saveEndedDiscussion = useCallback(() => {
+    if (!lastSummary) return;
+    const snapshot = buildDiscussionReviewSnapshot({
+      summary: lastSummary,
+      artifacts,
+      messages,
+    });
+    saveDiscussionReviewSnapshot(localStorage, snapshot);
+    close();
+  }, [artifacts, close, lastSummary, messages]);
+
+  const discardEndedDiscussion = useCallback(() => {
+    close();
+  }, [close]);
 
   const handleNext = useCallback(() => {
     if (step === 1 && directionFilled) setStep(2);
@@ -1210,12 +1278,28 @@ const DiscussionPanel: FC = () => {
     else if (step === 3) setStep(2);
   }, [step, setStep]);
 
-  const confirmEnd = () => {
-    setShowEndConfirm(false);
-setArtifactsDrawerVisible(false);
-    endAction();
+  const confirmEnd = async () => {
+    setEndingDiscussion(true);
+    setEndError(null);
+    try {
+      const summary = await endAction();
+      setLastSummary(summary);
+      setEndArtifactReviewVisible(false);
+      setShowEndConfirm(false);
+      setArtifactsDrawerVisible(false);
+    } catch (error) {
+      console.warn("[DiscussionPanel] endDiscussion failed:", error);
+      setEndError(error instanceof Error ? error.message : "Failed to end discussion.");
+    } finally {
+      setEndingDiscussion(false);
+    }
   };
-  const cancelEnd = () => setShowEndConfirm(false);
+  const cancelEnd = () => {
+    if (endingDiscussion) return;
+    setEndError(null);
+    setEndArtifactReviewVisible(false);
+    setShowEndConfirm(false);
+  };
 
   if (!open) return null;
 
@@ -1259,18 +1343,27 @@ setArtifactsDrawerVisible(false);
               round={currentRound}
               maxRounds={rules.maxRounds}
               turnOrder={rules.turnOrder}
-              paused={paused}
+              paused={paused || backendState === "failed"}
               onPauseToggle={paused ? resume : pauseAction}
-              onEnd={() => setShowEndConfirm(true)}
+              onEnd={() => {
+                setEndError(null);
+                setLastSummary(null);
+                setEndArtifactReviewVisible(false);
+                setShowEndConfirm(true);
+              }}
               onToggleArtifacts={toggleArtifacts}
               artifactsVisible={artifactsDrawerVisible}
             />
             <ChatroomBody messages={messages} />
             {artifactsDrawerVisible && (
-              <ArtifactsDrawer messages={messages} onClose={() => setArtifactsDrawerVisible(false)} />
+              <ArtifactsDrawer
+                artifacts={artifacts}
+                onTogglePin={toggleArtifactPin}
+                onClose={() => setArtifactsDrawerVisible(false)}
+              />
             )}
             <ChatroomFooter
-              paused={paused}
+              paused={paused || backendState === "failed"}
               primaryName={primaryName}
               onInterject={interject}
             />
@@ -1297,6 +1390,206 @@ setArtifactsDrawerVisible(false);
               rightOnClick={handleNext}
             />
           </>
+        )}
+
+        {lastSummary && !showEndConfirm && (
+          <div
+            className="absolute inset-0 z-40 flex items-center justify-center"
+            style={{ background: "rgba(26,26,26,0.42)", backdropFilter: "blur(3px)" }}
+          >
+            <div
+              className="flex flex-col"
+              style={{
+                width: 360,
+                padding: 22,
+                gap: 14,
+                borderRadius: 16,
+                background: COLORS.surfacePanel,
+                border: `1px solid ${COLORS.border}`,
+                boxShadow: "0 12px 32px rgba(0,0,0,0.30)",
+              }}
+            >
+              <div className="flex flex-col" style={{ gap: 6 }}>
+                <h3 style={{
+                  fontFamily: "'Fraunces Variable', Georgia, serif",
+                  fontSize: 18,
+                  fontWeight: 700,
+                  color: COLORS.textPrimary,
+                  margin: 0,
+                }}>
+                  Discussion ended
+                </h3>
+                <p style={{
+                  margin: 0,
+                  fontFamily: "'Geist Sans', sans-serif",
+                  fontSize: 12,
+                  lineHeight: 1.5,
+                  color: COLORS.textBody,
+                }}>
+                  {lastSummary.summary_text}
+                </p>
+              </div>
+
+              <div
+                style={{
+                  padding: 10,
+                  borderRadius: 12,
+                  background: COLORS.surfaceInputBg,
+                  border: `1px solid ${COLORS.border}`,
+                  fontFamily: "'Geist Sans', sans-serif",
+                  fontSize: 11,
+                  lineHeight: 1.5,
+                  color: COLORS.textBody,
+                }}
+              >
+                {artifacts.length} artifact{artifacts.length !== 1 ? "s" : ""} -{" "}
+                {pinnedArtifacts.length} pinned - {messages.length} messages
+              </div>
+
+              {endArtifactReviewVisible && (
+                <div
+                  style={{
+                    maxHeight: 150,
+                    overflowY: "auto",
+                    padding: 10,
+                    borderRadius: 12,
+                    background: COLORS.surfaceCardBg,
+                    border: `1px solid ${COLORS.border}`,
+                  }}
+                >
+                  {artifacts.length === 0 ? (
+                    <p style={{
+                      margin: 0,
+                      fontFamily: "'Geist Sans', sans-serif",
+                      fontSize: 11,
+                      lineHeight: 1.5,
+                      color: COLORS.textMuted,
+                    }}>
+                      No artifacts captured.
+                    </p>
+                  ) : (
+                    <div className="flex flex-col" style={{ gap: 8 }}>
+                      {artifacts.map((artifact) => {
+                        const isPinned = artifact.status === "pinned";
+                        const preview = artifact.content.split("\n").slice(0, 2).join("\n");
+                        return (
+                          <div
+                            key={artifact.id}
+                            style={{
+                              display: "flex",
+                              gap: 8,
+                              alignItems: "flex-start",
+                              padding: "8px 10px",
+                              borderRadius: 10,
+                              background: COLORS.surfaceInputBg,
+                              border: `1px solid ${isPinned ? COLORS.warning : COLORS.border}`,
+                            }}
+                          >
+                            <div className="flex flex-col flex-1 min-w-0" style={{ gap: 4 }}>
+                              <span style={{
+                                fontFamily: "'Geist Sans', sans-serif",
+                                fontSize: 11,
+                                fontWeight: 700,
+                                color: COLORS.textPrimary,
+                              }}>
+                                {(artifact.lang || "Code").toUpperCase()} - {artifact.authorName} R{artifact.round}
+                              </span>
+                              <pre style={{
+                                margin: 0,
+                                fontFamily: "'JetBrains Mono', monospace",
+                                fontSize: 10,
+                                lineHeight: 1.35,
+                                color: COLORS.textBody,
+                                whiteSpace: "pre-wrap",
+                                wordBreak: "break-word",
+                              }}>
+                                {preview || "(empty artifact)"}
+                              </pre>
+                            </div>
+                            <button
+                              onClick={() => toggleArtifactPin(artifact.id)}
+                              title={isPinned ? "Mark as draft" : "Pin artifact"}
+                              style={{
+                                height: 26,
+                                padding: "0 10px",
+                                borderRadius: 9999,
+                                background: isPinned ? COLORS.warningBg : COLORS.surfacePanel,
+                                border: `1px solid ${isPinned ? COLORS.warning : COLORS.border}`,
+                                color: isPinned ? COLORS.warningText : COLORS.textMuted,
+                                fontFamily: "'Geist Sans', sans-serif",
+                                fontSize: 10,
+                                fontWeight: 700,
+                                cursor: "pointer",
+                              }}
+                            >
+                              {isPinned ? "Pinned" : "Draft"}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center" style={{ gap: 8, justifyContent: "flex-end" }}>
+                <button
+                  onClick={() => setEndArtifactReviewVisible((visible) => !visible)}
+                  title="Review artifacts"
+                  style={{
+                    height: 34,
+                    padding: "0 14px",
+                    borderRadius: 9999,
+                    background: COLORS.surfaceInputBg,
+                    border: `1px solid ${COLORS.border}`,
+                    fontFamily: "'Geist Sans', sans-serif",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: COLORS.textBody,
+                    cursor: "pointer",
+                  }}
+                >
+                  {endArtifactReviewVisible ? "Hide artifacts" : "Review artifacts"}
+                </button>
+                <button
+                  onClick={discardEndedDiscussion}
+                  title="Discard discussion review"
+                  style={{
+                    height: 34,
+                    padding: "0 14px",
+                    borderRadius: 9999,
+                    background: COLORS.surfacePanel,
+                    border: `1px solid ${COLORS.border}`,
+                    fontFamily: "'Geist Sans', sans-serif",
+                    fontSize: 12,
+                    fontWeight: 500,
+                    color: COLORS.textMuted,
+                    cursor: "pointer",
+                  }}
+                >
+                  Discard
+                </button>
+                <button
+                  onClick={saveEndedDiscussion}
+                  title="Save summary and close"
+                  style={{
+                    height: 34,
+                    padding: "0 16px",
+                    borderRadius: 9999,
+                    background: COLORS.textPrimary,
+                    border: "none",
+                    fontFamily: "'Geist Sans', sans-serif",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: COLORS.surfacePanel,
+                    cursor: "pointer",
+                  }}
+                >
+                  Save & close
+                </button>
+              </div>
+            </div>
+          </div>
         )}
 
         {/* End confirmation overlay (chatroom only) */}
@@ -1330,13 +1623,77 @@ setArtifactsDrawerVisible(false);
                   fontSize: 12, lineHeight: 1.5,
                   color: COLORS.textBody, margin: 0,
                 }}>
-                  All agents will stop speaking and the chatroom will close.
-                  You can always start a new discussion from the top bar.
+                  {backendState === "failed"
+                    ? "The backend discussion session failed to start or end cleanly. You can still review the local transcript and artifacts before closing."
+                    : backendState === "starting"
+                      ? "Conflux is starting the backend discussion session. You can already review the local transcript while the sandbox agents come online."
+                      : "All agents will stop speaking and the chatroom will close. You can always start a new discussion from the top bar."}
                 </p>
+                {backendError && (
+                  <div
+                    style={{
+                      padding: 10,
+                      borderRadius: 12,
+                      background: COLORS.dangerBg,
+                      border: `1px solid ${COLORS.danger}`,
+                    }}
+                  >
+                    <p style={{
+                      margin: 0,
+                      fontFamily: "'Geist Sans', sans-serif",
+                      fontSize: 11,
+                      lineHeight: 1.5,
+                      color: COLORS.dangerText,
+                    }}>
+                      Backend status: {backendError}
+                    </p>
+                  </div>
+                )}
+                {lastSummary && !endError && (
+                  <div
+                    style={{
+                      padding: 10,
+                      borderRadius: 12,
+                      background: COLORS.accentSoft,
+                      border: `1px solid ${COLORS.border}`,
+                    }}
+                  >
+                    <p style={{
+                      margin: 0,
+                      fontFamily: "'Geist Sans', sans-serif",
+                      fontSize: 11,
+                      lineHeight: 1.5,
+                      color: COLORS.textBody,
+                    }}>
+                      Last summary: {lastSummary.summary_text}
+                    </p>
+                  </div>
+                )}
+                {endError && (
+                  <div
+                    style={{
+                      padding: 10,
+                      borderRadius: 12,
+                      background: COLORS.dangerBg,
+                      border: `1px solid ${COLORS.danger}`,
+                    }}
+                  >
+                    <p style={{
+                      margin: 0,
+                      fontFamily: "'Geist Sans', sans-serif",
+                      fontSize: 11,
+                      lineHeight: 1.5,
+                      color: COLORS.dangerText,
+                    }}>
+                      {endError}
+                    </p>
+                  </div>
+                )}
               </div>
               <div className="flex items-center" style={{ gap: 10, justifyContent: "flex-end" }}>
                 <button
                   onClick={cancelEnd}
+                  disabled={endingDiscussion}
                   title="Continue the discussion"
                   style={{
                     height: 36, padding: "0 16px",
@@ -1345,13 +1702,15 @@ setArtifactsDrawerVisible(false);
                     border: `1px solid ${COLORS.border}`,
                     fontFamily: "'Geist Sans', sans-serif",
                     fontSize: 13, fontWeight: 500, color: COLORS.textBody,
-                    cursor: "pointer",
+                    cursor: endingDiscussion ? "not-allowed" : "pointer",
+                    opacity: endingDiscussion ? 0.5 : 1,
                   }}
                 >
                   Keep going
                 </button>
                 <button
                   onClick={confirmEnd}
+                  disabled={endingDiscussion}
                   title="End discussion and close chatroom"
                   style={{
                     height: 36, padding: "0 18px",
@@ -1360,10 +1719,11 @@ setArtifactsDrawerVisible(false);
                     border: "none",
                     fontFamily: "'Geist Sans', sans-serif",
                     fontSize: 13, fontWeight: 600, color: "#FFFFFF",
-                    cursor: "pointer",
+                    cursor: endingDiscussion ? "not-allowed" : "pointer",
+                    opacity: endingDiscussion ? 0.7 : 1,
                   }}
                 >
-                  End discussion
+                  {endingDiscussion ? "Ending..." : "End discussion"}
                 </button>
               </div>
             </div>

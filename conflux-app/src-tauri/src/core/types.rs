@@ -80,6 +80,8 @@ pub struct AgentStateDetail {
     pub created_at: i64,
     /// 最后活动时间（Unix 时间戳 ms）
     pub last_activity_at: i64,
+    /// 结束时间（Unix 时间戳 ms）；仍在运行时为 None
+    pub ended_at: Option<i64>,
     /// 运行模式（B3.1 Contract 3）
     pub mode: AgentMode,
     /// 是否为隐藏实例（B3.1 Contract 3）
@@ -555,7 +557,7 @@ pub struct AdapterInfo {
 pub struct AdapterAuthStatus {
     /// 适配器 ID
     pub adapter_id: String,
-    /// 是否已就绪（已登录/已配置 API key）
+    /// 是否已就绪（保持兼容；V1 中等同于 runnable）
     pub ready: bool,
     /// 状态消息（"Ready" 或具体错误说明）
     pub message: String,
@@ -563,6 +565,22 @@ pub struct AdapterAuthStatus {
     pub login_command: Option<String>,
     /// 文档链接
     pub docs_url: Option<String>,
+    /// CLI binary 是否可在当前 PATH 或显式路径中找到
+    pub installed: bool,
+    /// 登录/API key 是否就绪
+    pub authenticated: bool,
+    /// 是否允许创建真实 session
+    pub runnable: bool,
+    /// 是否支持 V1 session restore/playback 语义
+    pub session_supported: bool,
+    /// 安装状态说明
+    pub install_message: Option<String>,
+    /// 认证状态说明
+    pub auth_message: Option<String>,
+    /// 可运行状态说明
+    pub runtime_message: Option<String>,
+    /// session 支持说明
+    pub session_message: Option<String>,
 }
 
 /// Agent 实例列表展示信息
@@ -584,6 +602,10 @@ pub struct AgentInstanceInfo {
     pub is_pinned: bool,
     /// 创建时间（Unix 时间戳 ms）
     pub created_at: i64,
+    /// 最后活动时间（Unix 时间戳 ms）
+    pub last_activity_at: i64,
+    /// 结束时间（Unix 时间戳 ms）；仍在运行时为 None
+    pub ended_at: Option<i64>,
     /// 运行模式（B3.1 Contract 1）
     pub mode: AgentMode,
     /// 是否为隐藏实例（讨论 sandbox 创建的，B3.1 Contract 1）
@@ -631,7 +653,7 @@ impl Default for StdinInjectionPolicy {
                 "rm -rf ~".to_string(),
                 "mkfs".to_string(),
                 "dd if=".to_string(),
-                ":(){:|:&};:".to_string(),     // fork bomb
+                ":(){:|:&};:".to_string(), // fork bomb
                 "DROP TABLE".to_string(),
                 "DROP DATABASE".to_string(),
                 "DELETE FROM".to_string(),

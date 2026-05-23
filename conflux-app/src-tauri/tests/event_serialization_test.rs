@@ -225,11 +225,26 @@ mod event_serialization_tests {
         assert_eq!(restored, AgentStatus::WaitingPermission);
 
         // 其他状态值验证
-        assert_eq!(serde_json::to_string(&AgentStatus::Idle).unwrap(), "\"idle\"");
-        assert_eq!(serde_json::to_string(&AgentStatus::Thinking).unwrap(), "\"thinking\"");
-        assert_eq!(serde_json::to_string(&AgentStatus::Coding).unwrap(), "\"coding\"");
-        assert_eq!(serde_json::to_string(&AgentStatus::Done).unwrap(), "\"done\"");
-        assert_eq!(serde_json::to_string(&AgentStatus::Error).unwrap(), "\"error\"");
+        assert_eq!(
+            serde_json::to_string(&AgentStatus::Idle).unwrap(),
+            "\"idle\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentStatus::Thinking).unwrap(),
+            "\"thinking\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentStatus::Coding).unwrap(),
+            "\"coding\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentStatus::Done).unwrap(),
+            "\"done\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentStatus::Error).unwrap(),
+            "\"error\""
+        );
     }
 
     /// 测试 3: PermissionRequested 事件（附录 B3 扩展字段）

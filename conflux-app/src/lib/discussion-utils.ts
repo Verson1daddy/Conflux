@@ -4,17 +4,9 @@
 
 import type { AgentInstanceInfo, DiscussionMessage as BackendDiscussionMessage, CodeBlock } from "@/types";
 import type { DiscussionMessage as FrontendDiscussionMessage } from "@/stores/agentStore";
+import { adapterIdentityColor, DEFAULT_ADAPTER_IDENTITY_COLOR } from "@/lib/agent-visuals";
 
 // ===== Adapter avatar colors =====
-// Mirrors the palette in agentStore.ts colorOfAdapter and DiscussionPanel.tsx AVATAR_BY_ADAPTER.
-const AVATAR_COLORS: Record<string, string> = {
-  "claude-code": "#B8D4E3",
-  codex: "#FFB800",
-  aider: "#8EA4B8",
-  opencode: "#C9B894",
-};
-
-const DEFAULT_AVATAR_COLOR = "#8A8A8A";
 
 // ===== Code block extraction =====
 
@@ -85,8 +77,8 @@ export function toFrontendMessage(
     authorName = info?.adapter_name ?? "Agent";
     initials = initialsOf(authorName);
     avatarBg = info
-      ? (AVATAR_COLORS[info.adapter_id] ?? DEFAULT_AVATAR_COLOR)
-      : DEFAULT_AVATAR_COLOR;
+      ? adapterIdentityColor(info.adapter_id)
+      : DEFAULT_ADAPTER_IDENTITY_COLOR;
   } else {
     // System message
     authorInstanceId = "user"; // System messages render as system, not agent

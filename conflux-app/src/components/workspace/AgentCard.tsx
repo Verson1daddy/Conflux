@@ -4,15 +4,28 @@
 // Free resize via corner handle, no min size constraint for manual operations.
 // Content adapts to card dimensions.
 
-import { useCallback, useRef, useLayoutEffect, useMemo, useState, useEffect } from "react";
+import { Suspense, lazy, useCallback, useRef, useLayoutEffect, useMemo, useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useAgentStore } from "@/stores/agentStore";
 import { destroyAgentInstance, renameAgentInstance } from "@/lib/tauri-bridge";
+import {
+  CARD_COLOR_PRESETS,
+  resolveCardAccentColor,
+  resolveCardStatusMeta,
+} from "@/lib/agent-visuals";
 import { SNAP_GRID_PX } from "@/types/layout";
 import type { CardLayout, AgentStatus, Position, LayoutMode } from "@/types";
-import { XtermTerminal } from "./XtermTerminal";
-import { ExpandedAgentCard } from "./ExpandedAgentCard";
+const XtermTerminal = lazy(() =>
+  import("./XtermTerminal").then((module) => ({
+    default: module.XtermTerminal,
+  }))
+);
+const ExpandedAgentCard = lazy(() =>
+  import("./ExpandedAgentCard").then((module) => ({
+    default: module.ExpandedAgentCard,
+  }))
+);
 
 // ===== C2-A4 Shield permission tier =====
 
@@ -40,14 +53,6 @@ const ADAPTER_VENDOR: Record<string, string> = {
   codex: "openai",
   aider: "paul-gauthier",
   opencode: "opencode",
-};
-
-// Default card accent colors per adapter, used when user hasn't picked a custom color.
-const ADAPTER_DEFAULT_COLORS: Record<string, string> = {
-  "claude-code": "#B8D4E3",
-  "codex": "#FFB800",
-  "aider": "#8EA4B8",
-  "opencode": "#C9B894",
 };
 
 // ===== Demo terminal content =====
@@ -99,6 +104,52 @@ const DEMO_FOOTER: Record<string, { time: string; detail: string }> = {
   opencode: { time: "0m 38s", detail: "" },
 };
 
+const STATUS_FOOTER_LABEL: Record<AgentStatus, string> = {
+  idle: "idle",
+  thinking: "thinking",
+  coding: "coding",
+  waiting_permission: "awaiting approval",
+  done: "done",
+  error: "error",
+};
+
+export function formatCardElapsed(startedAt: number, now = Date.now()): string {
+  if (startedAt <= 0) return "";
+
+  const elapsedMs = Math.max(0, now - startedAt);
+  const totalSeconds = Math.floor(elapsedMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+}
+
+export function resolveCardFooterInfo(input: {
+  isDemo: boolean;
+  adapterBadge: string;
+  status: AgentStatus;
+  fileCount: number | null;
+  lastActivity: number;
+  now?: number;
+}) {
+  if (input.isDemo) {
+    return {
+      ...(DEMO_FOOTER[input.adapterBadge] ?? { time: "", detail: "" }),
+      detailKind: "demo" as const,
+    };
+  }
+
+  const fileCount = input.fileCount ?? 0;
+  const hasActivityDetail = fileCount > 0;
+  return {
+    time: formatCardElapsed(input.lastActivity, input.now),
+    detail: hasActivityDetail
+        ? `${fileCount} file${fileCount === 1 ? "" : "s"} changed`
+        : STATUS_FOOTER_LABEL[input.status] ?? "",
+    detailKind: hasActivityDetail ? ("activity" as const) : ("status" as const),
+  };
+}
+
 // ===== Snap helper =====
 
 function snapToGrid(value: number): number {
@@ -116,7 +167,7 @@ interface AgentCardProps {
   isPinned: boolean;
   layoutMode: LayoutMode;
   zoom: number;
-  fileCount: number;
+  fileCount: number | null;
   lastActivity: number;
   /** When true, the card flips in place to reveal the expanded agent view on
    *  its back face. Used in fullscreen mode; non-fullscreen uses an overlay
@@ -135,10 +186,11 @@ const HEADER_H = 42;
 const FOOTER_H = 32;
 const MIN_TERM_H = 40;
 
-// Minimum card dimensions. Lowered from 580x380 so cards can be made compact
-// on the canvas. Font scaling in XtermTerminal adapts to the narrower width.
-const MIN_CARD_W = 320;
-const MIN_CARD_H = 220;
+// Minimum card dimensions for the compact canvas layout.
+// Keep preview terminals wide enough for the current zoom range so xterm
+// doesn't collapse into unreadable dense glyph columns after resize/refit.
+const MIN_CARD_W = 360;
+const MIN_CARD_H = 240;
 
 // ===== Apple-style magnetic snap with hysteresis =====
 //
@@ -238,6 +290,8 @@ function AgentCard({
   isPinned,
   layoutMode,
   zoom,
+  fileCount,
+  lastActivity,
   isFlipped = false,
   isDimmed = false,
   onTogglePin,
@@ -263,9 +317,8 @@ function AgentCard({
   // C2-A4b Card color — read from store, fallback to adapter default color
   const cardColors = useAgentStore((s) => s.cardColors);
   const agentInfo = useAgentStore((s) => s.instances.get(card.instance_id));
-  const cardColor = cardColors.get(card.instance_id)
-    ?? ADAPTER_DEFAULT_COLORS[agentInfo?.adapter_id ?? ""]
-    ?? "#6B7280";
+  const cardColor = resolveCardAccentColor(card.instance_id, cardColors);
+  const statusMeta = resolveCardStatusMeta(_status);
   const setCardColorStore = useAgentStore((s) => s.setCardColor);
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
   const colorPickerRef = useRef<HTMLDivElement>(null);
@@ -338,6 +391,8 @@ function AgentCard({
   // out cleanly; unmount ~660ms after isFlipped becomes false to free the
   // xterm instance.
   const [showBack, setShowBack] = useState(isFlipped);
+  const [termRefreshKey, setTermRefreshKey] = useState(0);
+  const termRefreshTimerRef = useRef<number | null>(null);
   useEffect(() => {
     if (isFlipped) {
       setShowBack(true);
@@ -347,24 +402,50 @@ function AgentCard({
     }
   }, [isFlipped, showBack]);
 
-  // Track whether the overlay ExpandedAgentCard is/was open for this card.
-  // When expanded closes, increment termRefreshKey so the card-preview's
-  // XtermTerminal remounts — it re-fetches PTY history at the card's
-  // (smaller) grid size, re-sends initial resize, and renders correctly.
-  // Without this the card preview keeps showing content formatted for the
-  // expanded terminal's (larger) column count → visual corruption.
-  const isExpandedOverlay = useAgentStore(
-    (s) => !isFlipped && s.expandedCardId === card.instance_id
-  );
-  const [termRefreshKey, setTermRefreshKey] = useState(0);
-  const wasExpandedRef = useRef(isExpandedOverlay);
+  const isCardExpanded = useAgentStore((s) => s.expandedCardId === card.instance_id);
+  const [replayPreviewHistory, setReplayPreviewHistory] = useState(true);
+  const wasExpandedRef = useRef(isCardExpanded);
+
   useEffect(() => {
-    if (wasExpandedRef.current && !isExpandedOverlay) {
-      // Expanded just closed → force xterm remount
-      setTermRefreshKey((k) => k + 1);
+    if (termRefreshTimerRef.current !== null) {
+      window.clearTimeout(termRefreshTimerRef.current);
+      termRefreshTimerRef.current = null;
     }
-    wasExpandedRef.current = isExpandedOverlay;
-  }, [isExpandedOverlay]);
+
+    if (showBack || isCardExpanded) {
+      return;
+    }
+
+    termRefreshTimerRef.current = window.setTimeout(() => {
+      setReplayPreviewHistory(false);
+      setTermRefreshKey((value) => value + 1);
+      termRefreshTimerRef.current = null;
+    }, 120);
+
+    return () => {
+      if (termRefreshTimerRef.current !== null) {
+        window.clearTimeout(termRefreshTimerRef.current);
+        termRefreshTimerRef.current = null;
+      }
+    };
+  }, [card.size.width, card.size.height, layoutMode, isCardExpanded, showBack]);
+
+  // Track whether the overlay ExpandedAgentCard is/was open for this card.
+  useEffect(() => {
+    if (!wasExpandedRef.current || isCardExpanded) {
+      wasExpandedRef.current = isCardExpanded;
+      return;
+    }
+
+    const refreshDelayMs = showBack ? 660 : 0;
+    const timer = window.setTimeout(() => {
+      setReplayPreviewHistory(false);
+      setTermRefreshKey((k) => k + 1);
+    }, refreshDelayMs);
+
+    wasExpandedRef.current = isCardExpanded;
+    return () => window.clearTimeout(timer);
+  }, [isCardExpanded, showBack]);
 
   const cardRef = useRef<HTMLDivElement>(null);
 
@@ -380,7 +461,19 @@ function AgentCard({
     () => (isDemo ? (DEMO_TERMINAL_ANSI[adapterBadge] ?? "") : ""),
     [adapterBadge, isDemo]
   );
-  const footerInfo = DEMO_FOOTER[adapterBadge] ?? { time: "", detail: "" };
+  const [footerNow, setFooterNow] = useState(() => Date.now());
+  const footerInfo = useMemo(
+    () =>
+      resolveCardFooterInfo({
+        isDemo,
+        adapterBadge,
+        status: _status,
+        fileCount,
+        lastActivity,
+        now: footerNow,
+      }),
+    [adapterBadge, fileCount, footerNow, isDemo, lastActivity, _status]
+  );
 
   // Content adaptation based on card size
   const h = card.size.height;
@@ -407,6 +500,18 @@ function AgentCard({
     liveSize.current = { width: card.size.width, height: card.size.height };
     applyTransform();
   }, [card.position.x, card.position.y, card.size.width, card.size.height, applyTransform]);
+
+  useEffect(() => {
+    if (isDemo || lastActivity <= 0 || !showFooter) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      setFooterNow(Date.now());
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [isDemo, lastActivity, showFooter]);
 
   // ===== Card click: select + bring to front =====
 
@@ -651,17 +756,15 @@ function AgentCard({
                 display: "flex", flexWrap: "wrap", gap: 6, width: 130,
               }}
             >
-              {[
-                "#B8D4E3", "#FFB800", "#5FD47F", "#FF6B6B",
-                "#C8B5E3", "#E3C0A8", "#D4C88A", "#7FC8FF",
-              ].map((c) => (
+              {CARD_COLOR_PRESETS.map((preset) => (
                 <button
-                  key={c}
-                  onClick={(e) => { e.stopPropagation(); setCardColorStore(card.instance_id, c); setColorPickerOpen(false); }}
+                  key={preset.id}
+                  onClick={(e) => { e.stopPropagation(); setCardColorStore(card.instance_id, preset.color); setColorPickerOpen(false); }}
+                  title={preset.name}
                   style={{
                     width: 22, height: 22, borderRadius: 9999,
-                    background: c, padding: 0, cursor: "pointer",
-                    border: cardColor === c ? "2px solid #F2F2F2" : "2px solid transparent",
+                    background: preset.color, padding: 0, cursor: "pointer",
+                    border: cardColor === preset.color ? "2px solid #F2F2F2" : "2px solid transparent",
                   }}
                 />
               ))}
@@ -819,7 +922,8 @@ function AgentCard({
           }}
           onPointerDown={(e) => e.stopPropagation()}
           onClick={handleExpand}
-          title="Expand (double-click card)"
+          title="Expand card to focused view (double-click also works)"
+          aria-label="Expand card to focused view"
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
@@ -875,13 +979,17 @@ function AgentCard({
           className="flex-1 min-h-0 overflow-hidden"
           style={{ padding: "10px 14px 6px 14px" }}
         >
-          <XtermTerminal
-            key={`${card.instance_id}-${termRefreshKey}`}
-            instanceId={card.instance_id}
-            content={isDemo ? demoContent : undefined}
-            subscribeToPty={!isDemo}
-            cardWidth={card.size.width}
-          />
+          <Suspense fallback={null}>
+            <XtermTerminal
+              key={`${card.instance_id}-${termRefreshKey}`}
+              instanceId={card.instance_id}
+              content={isDemo ? demoContent : undefined}
+              subscribeToPty={!isDemo}
+              replayHistory={isDemo ? true : replayPreviewHistory}
+              allowPreviewResizeSync={!isDemo && !isCardExpanded && !showBack}
+              cardWidth={card.size.width}
+            />
+          </Suspense>
         </div>
       )}
 
@@ -902,8 +1010,32 @@ function AgentCard({
           )}
           <div className="flex-1" />
           {footerInfo.detail && (
-            <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 10, color: "#6B7280" }}>
-              {footerInfo.detail}
+            <span
+              style={{
+                fontFamily: "'Geist Sans',sans-serif",
+                fontSize: 10,
+                color: footerInfo.detailKind === "status" ? statusMeta.color : "#6B7280",
+                background: footerInfo.detailKind === "status" ? statusMeta.background : "transparent",
+                border: footerInfo.detailKind === "status" ? `1px solid ${statusMeta.border}` : "none",
+                borderRadius: 9999,
+                padding: footerInfo.detailKind === "status" ? "2px 7px" : 0,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {footerInfo.detailKind === "status" && (
+                <span
+                  style={{
+                    width: 5,
+                    height: 5,
+                    borderRadius: 9999,
+                    background: statusMeta.color,
+                  }}
+                />
+              )}
+              {footerInfo.detailKind === "status" ? statusMeta.label : footerInfo.detail}
             </span>
           )}
         </div>
@@ -941,7 +1073,9 @@ function AgentCard({
             borderRadius: 12,
           }}
         >
-          <ExpandedAgentCard instanceId={card.instance_id} embedded />
+          <Suspense fallback={null}>
+            <ExpandedAgentCard instanceId={card.instance_id} embedded />
+          </Suspense>
         </div>
       )}
       </div>

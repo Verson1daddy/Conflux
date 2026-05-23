@@ -61,6 +61,8 @@ export interface AgentStateDetail {
   created_at: number;
   /** 最后活动时间（Unix 时间戳 ms） */
   last_activity_at: number;
+  /** 结束时间（Unix 时间戳 ms），null 表示仍在运行 */
+  ended_at: number | null;
 }
 
 /**
@@ -186,6 +188,14 @@ export interface AdapterAuthStatus {
   message: string;
   login_command: string | null;
   docs_url: string | null;
+  installed: boolean;
+  authenticated: boolean;
+  runnable: boolean;
+  session_supported: boolean;
+  install_message: string | null;
+  auth_message: string | null;
+  runtime_message: string | null;
+  session_message: string | null;
 }
 
 /**
@@ -209,6 +219,10 @@ export interface AgentInstanceInfo {
   is_pinned: boolean;
   /** 创建时间（Unix 时间戳 ms） */
   created_at: number;
+  /** 最后活动时间（Unix 时间戳 ms） */
+  last_activity_at: number;
+  /** 结束时间（Unix 时间戳 ms），null 表示仍在运行 */
+  ended_at: number | null;
   /** 运行模式 */
   mode: AgentMode;
   /** 是否为隐藏实例（讨论 sandbox 创建的） */

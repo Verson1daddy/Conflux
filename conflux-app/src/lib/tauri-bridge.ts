@@ -43,6 +43,10 @@ import type {
  * 创建 Agent 实例 — 根据 adapter_id 启动一个新 PTY 进程
  * 对应 Rust: create_agent_instance(adapter_id, working_dir, args)
  */
+export async function getDefaultWorkingDir(): Promise<string> {
+  return invoke<string>("get_default_working_dir");
+}
+
 export async function createAgentInstance(
   adapterId: AdapterId,
   workingDir?: string,
@@ -491,6 +495,128 @@ export async function switchIslandMode(mode: IslandMode): Promise<void> {
   return invoke<void>("switch_island_mode", {
     mode,
   });
+}
+
+export async function showIslandWindow(): Promise<void> {
+  return invoke<void>("show_island_window");
+}
+
+export async function showWorkspaceOnly(): Promise<void> {
+  return invoke<void>("show_workspace_only");
+}
+
+export async function showCompactModeOnly(mode: IslandMode): Promise<void> {
+  return invoke<void>("show_compact_mode_only", {
+    mode,
+  });
+}
+
+export async function setIslandDetailPresentation(
+  detail:
+    | "none"
+    | "top_island_expanded"
+    | "top_island_popover"
+    | "float_ball_panel"
+    | "sidebar_expanded"
+    | "sidebar_floating",
+  mode?: IslandMode
+): Promise<void> {
+  const args: {
+    detail:
+      | "none"
+      | "top_island_expanded"
+      | "top_island_popover"
+      | "float_ball_panel"
+      | "sidebar_expanded"
+      | "sidebar_floating";
+    mode?: IslandMode;
+  } = { detail };
+
+  if (mode) {
+    args.mode = mode;
+  }
+
+  return invoke<void>("set_island_detail_presentation", args);
+}
+
+export async function setTopIslandPopoverHeight(height: number): Promise<void> {
+  return invoke<void>("set_top_island_popover_height", {
+    height,
+  });
+}
+
+export async function showFloatBallPanelWindow(): Promise<void> {
+  return invoke<void>("show_float_ball_panel_window");
+}
+
+export async function hideFloatBallPanelWindow(): Promise<void> {
+  return invoke<void>("hide_float_ball_panel_window");
+}
+
+export async function markIslandWindowReady(): Promise<void> {
+  return invoke<void>("mark_island_window_ready");
+}
+
+export interface IslandWindowGeometrySnapshot {
+  mode: IslandMode;
+  detail: string;
+  detail_presentation: string;
+  pending_compact_show: boolean;
+  island_window_ready: boolean;
+  window_exists: boolean;
+  visible: boolean | null;
+  app_monitor: {
+    width: number;
+    height: number;
+    origin_x: number;
+    origin_y: number;
+  };
+  window_monitor: {
+    width: number;
+    height: number;
+    origin_x: number;
+    origin_y: number;
+  } | null;
+  expected_config: {
+    width: number;
+    height: number;
+    placement: string;
+    always_on_top: boolean;
+  };
+  expected_geometry: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  actual_outer_position_physical: {
+    x: number;
+    y: number;
+  } | null;
+  actual_outer_size_physical: {
+    width: number;
+    height: number;
+  } | null;
+  actual_inner_size_physical: {
+    width: number;
+    height: number;
+  } | null;
+}
+
+export async function debugIslandWindowGeometry(): Promise<IslandWindowGeometrySnapshot> {
+  return invoke<IslandWindowGeometrySnapshot>("debug_island_window_geometry");
+}
+
+export async function hideIslandWindow(): Promise<void> {
+  return invoke<void>("hide_island_window");
+}
+
+/**
+ * 真正退出整个应用进程，而不是只销毁当前窗口。
+ * 对应 Rust: quit_application()
+ */
+export async function quitApplication(): Promise<void> {
+  return invoke<void>("quit_application");
 }
 
 /**

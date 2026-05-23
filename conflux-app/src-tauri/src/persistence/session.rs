@@ -90,11 +90,14 @@ pub fn query_session_events(
         params_vec.push(Box::new(lim as i64));
     }
 
-    let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+    let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+        params_vec.iter().map(|p| p.as_ref()).collect();
 
-    let mut stmt = conn.prepare(&sql).map_err(|e| ConfluxError::DatabaseError {
-        message: format!("session_events 查询准备失败: {}", e),
-    })?;
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| ConfluxError::DatabaseError {
+            message: format!("session_events 查询准备失败: {}", e),
+        })?;
 
     let rows = stmt
         .query_map(params_refs.as_slice(), |row| {
@@ -218,10 +221,7 @@ pub fn insert_agent_instance(
 /// # 参数
 /// - `conn`: SQLite 数据库连接引用
 /// - `instance_id`: 要标记结束的实例 ID
-pub fn close_agent_instance(
-    conn: &Connection,
-    instance_id: &str,
-) -> Result<(), ConfluxError> {
+pub fn close_agent_instance(conn: &Connection, instance_id: &str) -> Result<(), ConfluxError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -319,8 +319,7 @@ mod tests {
 
         insert_session_event(&conn, &event).expect("无 instance_id 的事件插入也应成功");
 
-        let results =
-            query_session_events(&conn, "system", None, None, None).expect("查询应成功");
+        let results = query_session_events(&conn, "system", None, None, None).expect("查询应成功");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].event_type, "DiscussionMessage");
     }

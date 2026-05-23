@@ -102,7 +102,9 @@ impl AgentAdapter for AiderAdapter {
         _working_dir: &str,
         _args: &[String],
     ) -> Result<Box<dyn AgentInstance>, ConfluxError> {
-        todo!("Aider spawn via PtyManager")
+        Err(ConfluxError::InvalidConfig {
+            message: "AiderAdapter::spawn is not a runnable path; use create_agent_instance/PtyManager::spawn".to_string(),
+        })
     }
 
     fn parse_output(&self, raw_line: &str) -> Option<ConfluxEvent> {

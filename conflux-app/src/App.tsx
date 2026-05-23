@@ -1,66 +1,120 @@
-import { useState, useCallback, useEffect } from "react";
-import "@/lib/i18n"; // Initialize i18next
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
+import "@/lib/i18n";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import {
+  loadDiscussionReviewSnapshot,
+  type DiscussionReviewSnapshot,
+} from "./lib/discussion-review";
+import {
+  quitApplication,
+  showCompactModeOnly,
+} from "./lib/tauri-bridge";
+import { TOP_BAR_COMPACT_MODE } from "./lib/workspace-compact-mode";
 import { CloseConfirmModal } from "./components/workspace/CloseConfirmModal";
 import { Canvas } from "./components/workspace/Canvas";
 import { TopBar } from "./components/workspace/TopBar";
 import { StatusBar } from "./components/workspace/StatusBar";
-import { AddAgentModal } from "./components/workspace/AddAgentModal";
-import { SearchPalette } from "./components/workspace/SearchPalette";
-import { SettingsPanel } from "./components/workspace/SettingsPanel";
-import { ExpandedAgentCard } from "./components/workspace/ExpandedAgentCard";
-import { DiscussionPanel } from "./components/workspace/DiscussionPanel";
-import { SessionPlayback } from "./components/session/SessionPlayback";
-import { SendToPanel } from "./components/workspace/SendToPanel";
-import { OnboardingWizard } from "./components/workspace/OnboardingWizard";
-import { QuickTour } from "./components/workspace/QuickTour";
-import { FloatBall } from "./components/island/FloatBall";
-import { Sidebar } from "./components/island/Sidebar";
-import { NotificationTray } from "./components/island/NotificationTray";
 import { useAgentInstances } from "./hooks/useAgentInstances";
 import { useIslandMode } from "./hooks/useIslandMode";
 import { useIsFullscreen } from "./hooks/useIsFullscreen";
 import { useAgentStore } from "./stores/agentStore";
 import { useIslandStore } from "./stores/islandStore";
-import { onTaskCompleted, onErrorOccurred } from "./lib/event-listener";
-import type { IslandMode, AgentInstanceInfo, AgentStatus } from "./types";
+import type { AgentInstanceInfo, AgentStatus, CloseAction } from "./types";
 
-/**
- * Conflux 根组件
- *
- * 单窗口架构（设计稿 1440×900）：
- * - TopBar (h:52, glass, 内嵌灵动岛胶囊)
- * - Canvas (flex-1, Agent 卡片画布)
- * - StatusBar (h:30, glass, 状态摘要)
- * - Sidebar (右侧滑出 420px 面板)
- */
+const AddAgentModal = lazy(() =>
+  import("./components/workspace/AddAgentModal").then((module) => ({
+    default: module.AddAgentModal,
+  }))
+);
+const SearchPalette = lazy(() =>
+  import("./components/workspace/SearchPalette").then((module) => ({
+    default: module.SearchPalette,
+  }))
+);
+const SettingsPanel = lazy(() =>
+  import("./components/workspace/SettingsPanel").then((module) => ({
+    default: module.SettingsPanel,
+  }))
+);
+const DiscussionPanel = lazy(() =>
+  import("./components/workspace/DiscussionPanel").then((module) => ({
+    default: module.DiscussionPanel,
+  }))
+);
+const DiscussionReviewModal = lazy(() =>
+  import("./components/workspace/DiscussionReviewModal").then((module) => ({
+    default: module.DiscussionReviewModal,
+  }))
+);
+const SendToPanel = lazy(() =>
+  import("./components/workspace/SendToPanel").then((module) => ({
+    default: module.SendToPanel,
+  }))
+);
+const ExpandedAgentCard = lazy(() =>
+  import("./components/workspace/ExpandedAgentCard").then((module) => ({
+    default: module.ExpandedAgentCard,
+  }))
+);
+const SessionPlayback = lazy(() =>
+  import("./components/session/SessionPlayback").then((module) => ({
+    default: module.SessionPlayback,
+  }))
+);
+
 export default function App() {
-  const { instances, statuses } = useAgentInstances();
+  const { instances, statuses } = useAgentInstances({ hydrateTrees: false });
   useIslandMode();
+  const setIslandMode = useIslandStore((s) => s.setMode);
   const isFullscreen = useIsFullscreen();
-  const islandMode = useIslandStore((s) => s.mode) as IslandMode;
 
   const expandedCardId = useAgentStore((s) => s.expandedCardId);
+  const discussionOpen = useAgentStore((s) => s.discussion.open);
   const openDiscussionWizard = useAgentStore((s) => s.openDiscussionWizard);
-  const addNotification = useIslandStore((s) => s.addNotification);
 
-  // Onboarding wizard guard — show once per fresh install
-  const [onboarded, setOnboarded] = useState(
-    () => localStorage.getItem("conflux.onboarded.v1") === "true"
-  );
-  const handleOnboardingComplete = useCallback(() => setOnboarded(true), []);
-
-  const [sidebarVisible, setSidebarVisible] = useState(false);
-  const [trayVisible, setTrayVisible] = useState(false);
-  const [sendToVisible, setSendToVisible] = useState(false);
   const [addAgentOpen, setAddAgentOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [sendToOpen, setSendToOpen] = useState(false);
   const [sessionVisible, setSessionVisible] = useState(false);
+  const [discussionReviewVisible, setDiscussionReviewVisible] = useState(false);
+  const [discussionReviewSnapshot, setDiscussionReviewSnapshot] =
+    useState<DiscussionReviewSnapshot | null>(null);
   const [closeModalVisible, setCloseModalVisible] = useState(false);
+  const quittingRef = useRef(false);
 
-  // F11 — toggle OS fullscreen via Tauri window API.
-  // Ctrl+K — open search palette (standard command-palette shortcut).
+  const readSavedCloseAction = useCallback((): CloseAction | null => {
+    const saved = localStorage.getItem("conflux.closeAction");
+    if (
+      saved === "quit" ||
+      saved === "top_island" ||
+      saved === "sidebar"
+    ) {
+      return saved;
+    }
+    return null;
+  }, []);
+
+  const applyCloseAction = useCallback(
+    async (action: CloseAction) => {
+      if (action === "quit") {
+        quittingRef.current = true;
+        try {
+          await quitApplication();
+        } catch (error) {
+          quittingRef.current = false;
+          throw error;
+        }
+        return;
+      }
+
+      setIslandMode(action);
+      await showCompactModeOnly(action);
+      return;
+    },
+    [setIslandMode]
+  );
+
   useEffect(() => {
     const onKey = async (e: KeyboardEvent) => {
       if (e.key === "F11") {
@@ -69,115 +123,89 @@ export default function App() {
           const win = getCurrentWindow();
           const isFull = await win.isFullscreen();
           await win.setFullscreen(!isFull);
-        } catch { /* non-Tauri dev */ }
+        } catch {
+          // Non-Tauri dev environment.
+        }
       }
       if (e.key === "k" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
-        setSearchOpen((v) => !v);
+        setSearchOpen((visible) => !visible);
       }
     };
+
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // 订阅后端真事件生成通知（race-safe）
-  useEffect(() => {
-    let mounted = true;
-    const unsubs: (() => void)[] = [];
-    onTaskCompleted((payload) => {
-      const inst = useAgentStore.getState().instances.get(payload.instance_id);
-      addNotification({
-        id: crypto.randomUUID(),
-        level: "info",
-        source_instance_id: payload.instance_id,
-        source_adapter_name: inst ? (inst.display_name ? `${inst.adapter_name} · ${inst.display_name}` : inst.adapter_name) : "Agent",
-        content: payload.summary || "Task completed",
-        actions: [],
-        created_at: Date.now(),
-        read: false,
-      });
-    }).then((fn) => { if (mounted) unsubs.push(fn); else fn(); });
-    onErrorOccurred((payload) => {
-      const inst = useAgentStore.getState().instances.get(payload.instance_id);
-      addNotification({
-        id: crypto.randomUUID(),
-        level: "warning",
-        source_instance_id: payload.instance_id,
-        source_adapter_name: inst ? (inst.display_name ? `${inst.adapter_name} · ${inst.display_name}` : inst.adapter_name) : "Agent",
-        content: payload.error_message || "An error occurred",
-        actions: [],
-        created_at: Date.now(),
-        read: false,
-      });
-    }).then((fn) => { if (mounted) unsubs.push(fn); else fn(); });
-    return () => { mounted = false; unsubs.forEach((fn) => fn()); };
-  }, [addNotification]);
-
-  // Intercept native window close request (Alt+F4 / taskbar close)
   useEffect(() => {
     const appWindow = getCurrentWindow();
     const unlistenPromise = appWindow.onCloseRequested(async (event) => {
+      if (quittingRef.current) {
+        return;
+      }
       event.preventDefault();
-      const saved = localStorage.getItem("conflux.closeAction");
-      if (saved === "tray") {
-        await appWindow.hide();
-      } else if (saved === "quit") {
-        await appWindow.destroy();
+      const saved = readSavedCloseAction();
+      if (saved) {
+        await applyCloseAction(saved);
       } else {
         setCloseModalVisible(true);
       }
     });
-    return () => { unlistenPromise.then(fn => fn()); };
-  }, []);
 
-  // Handle close from custom TopBar button
+    return () => {
+      unlistenPromise.then((fn) => fn());
+    };
+  }, [applyCloseAction, readSavedCloseAction]);
+
   const handleClose = useCallback(() => {
-    const saved = localStorage.getItem("conflux.closeAction");
-    if (saved === "tray") { getCurrentWindow().hide(); }
-    else if (saved === "quit") { getCurrentWindow().destroy(); }
-    else { setCloseModalVisible(true); }
-  }, []);
-
-  // Handle modal confirm
-  const handleCloseConfirm = useCallback(async (action: "tray" | "quit", remember: boolean) => {
-    if (remember) localStorage.setItem("conflux.closeAction", action);
-    setCloseModalVisible(false);
-    const appWindow = getCurrentWindow();
-    if (action === "tray") {
-      await appWindow.hide();
+    const saved = readSavedCloseAction();
+    if (saved) {
+      void applyCloseAction(saved);
     } else {
-      await appWindow.destroy();
+      setCloseModalVisible(true);
+    }
+  }, [applyCloseAction, readSavedCloseAction]);
+
+  const handleCloseConfirm = useCallback(
+    async (action: CloseAction, remember: boolean) => {
+      if (remember) {
+        localStorage.setItem("conflux.closeAction", action);
+      }
+      setCloseModalVisible(false);
+      await applyCloseAction(action);
+    },
+    [applyCloseAction]
+  );
+
+  const handleIslandOpen = useCallback(() => {
+    setIslandMode(TOP_BAR_COMPACT_MODE);
+    void showCompactModeOnly(TOP_BAR_COMPACT_MODE);
+  }, [setIslandMode]);
+
+  const handleMinimize = useCallback(() => {
+    setIslandMode(TOP_BAR_COMPACT_MODE);
+    void showCompactModeOnly(TOP_BAR_COMPACT_MODE);
+  }, [setIslandMode]);
+
+  const handleDiscussionOpen = useCallback(() => {
+    openDiscussionWizard();
+  }, [openDiscussionWizard]);
+
+  const handleToggleFullscreen = useCallback(async () => {
+    try {
+      const win = getCurrentWindow();
+      const isFull = await win.isFullscreen();
+      await win.setFullscreen(!isFull);
+    } catch {
+      // Non-Tauri dev environment.
     }
   }, []);
 
-  const handleIslandClick = useCallback(() => {
-    setSidebarVisible((v) => !v);
+  const handleDiscussionReviewOpen = useCallback(() => {
+    setDiscussionReviewSnapshot(loadDiscussionReviewSnapshot(localStorage));
+    setDiscussionReviewVisible(true);
   }, []);
 
-  const handleSidebarCollapse = useCallback(() => {
-    setSidebarVisible(false);
-  }, []);
-
-  const handleTrayOpen = useCallback(() => setTrayVisible(true), []);
-  const handleTrayClose = useCallback(() => setTrayVisible(false), []);
-
-  const handleSendToOpen = useCallback(() => setSendToVisible(true), []);
-  const handleSendToClose = useCallback(() => setSendToVisible(false), []);
-
-  // Global Discussion wizard entry — no sourceInstanceId means "fresh start"
-  const handleDiscussionOpen = useCallback(
-    () => openDiscussionWizard(),
-    [openDiscussionWizard]
-  );
-
-  const handleAddAgentOpen = useCallback(() => setAddAgentOpen(true), []);
-  const handleAddAgentClose = useCallback(() => setAddAgentOpen(false), []);
-  const handleSearchOpen = useCallback(() => setSearchOpen(true), []);
-  const handleSearchClose = useCallback(() => setSearchOpen(false), []);
-  const handleSettingsOpen = useCallback(() => setSettingsOpen(true), []);
-  const handleSettingsClose = useCallback(() => setSettingsOpen(false), []);
-
-  // 构建 Canvas 需要的 Map
   const agentMap = new Map<string, AgentInstanceInfo>();
   instances.forEach((info, id) => agentMap.set(id, info));
 
@@ -187,55 +215,61 @@ export default function App() {
   return (
     <div className="flex flex-col w-screen h-screen overflow-hidden canvas-gradient">
       <TopBar
-        onIslandClick={handleIslandClick}
-        onTrayOpen={handleTrayOpen}
-        onSendToOpen={handleSendToOpen}
+        onIslandOpen={handleIslandOpen}
+        onMinimize={handleMinimize}
+        onQuickReplyOpen={() => setSendToOpen(true)}
         onDiscussionOpen={handleDiscussionOpen}
-        onAddAgent={handleAddAgentOpen}
-        onSearch={handleSearchOpen}
-        onSettings={handleSettingsOpen}
+        onAddAgent={() => setAddAgentOpen(true)}
+        onSearch={() => setSearchOpen(true)}
+        onSettings={() => setSettingsOpen(true)}
+        onToggleFullscreen={handleToggleFullscreen}
         onClose={handleClose}
       />
+
       <div className="flex-1 min-h-0 relative">
         <Canvas
           agents={agentMap}
           agentStatuses={statusMap}
           isFullscreen={isFullscreen}
-          onAddAgent={handleAddAgentOpen}
         />
-        {/* Non-fullscreen: show overlay panel.
-            Fullscreen: each card flips in place via AgentCard's isFlipped. */}
-        {expandedCardId && !isFullscreen && (
-          <ExpandedAgentCard instanceId={expandedCardId} />
-        )}
+        <Suspense fallback={null}>
+          {expandedCardId && !isFullscreen && (
+            <ExpandedAgentCard key={expandedCardId} instanceId={expandedCardId} />
+          )}
+        </Suspense>
       </div>
+
       <StatusBar onOpenSession={() => setSessionVisible(true)} />
-      <Sidebar visible={sidebarVisible} onCollapse={handleSidebarCollapse} />
-      <NotificationTray visible={trayVisible} onClose={handleTrayClose} />
-      <SendToPanel visible={sendToVisible} onClose={handleSendToClose} />
-      <AddAgentModal visible={addAgentOpen} onClose={handleAddAgentClose} />
-      <SearchPalette
-        visible={searchOpen}
-        onClose={handleSearchClose}
-        onAddAgent={handleAddAgentOpen}
-        onSettings={handleSettingsOpen}
-        onDiscussion={handleDiscussionOpen}
-      />
-      <SettingsPanel visible={settingsOpen} onClose={handleSettingsClose} />
-      <DiscussionPanel />
-      {/* C2-A5 FloatBall — visible when island mode is "float_ball" */}
-      {islandMode === "float_ball" && (
-        <FloatBall onExpand={() => setSidebarVisible(true)} />
-      )}
-      {!onboarded && (
-        <OnboardingWizard onComplete={handleOnboardingComplete} />
-      )}
-      <QuickTour
-        visible={onboarded && !expandedCardId}
-        onDismiss={() => {}}
-        onStart={() => {}}
-      />
-      {/* C2-Δ2b Session Playback overlay */}
+      <Suspense fallback={null}>
+        {addAgentOpen && (
+          <AddAgentModal visible={addAgentOpen} onClose={() => setAddAgentOpen(false)} />
+        )}
+        {searchOpen && (
+          <SearchPalette
+            visible={searchOpen}
+            onClose={() => setSearchOpen(false)}
+            onAddAgent={() => setAddAgentOpen(true)}
+            onSettings={() => setSettingsOpen(true)}
+            onDiscussion={handleDiscussionOpen}
+            onDiscussionReview={handleDiscussionReviewOpen}
+          />
+        )}
+        {settingsOpen && (
+          <SettingsPanel visible={settingsOpen} onClose={() => setSettingsOpen(false)} />
+        )}
+        {sendToOpen && (
+          <SendToPanel visible={sendToOpen} onClose={() => setSendToOpen(false)} />
+        )}
+        {discussionOpen && <DiscussionPanel />}
+        {discussionReviewVisible && (
+          <DiscussionReviewModal
+            visible={discussionReviewVisible}
+            snapshot={discussionReviewSnapshot}
+            onClose={() => setDiscussionReviewVisible(false)}
+          />
+        )}
+      </Suspense>
+
       {sessionVisible && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center"
@@ -253,20 +287,22 @@ export default function App() {
               background: "#1A1A1A",
             }}
           >
-            {/* Close button */}
             <button
               onClick={() => setSessionVisible(false)}
               className="absolute top-4 right-4 z-10 flex items-center justify-center w-8 h-8 rounded-lg hover:bg-[#3A3A3A] text-[#B8B3B0] hover:text-[#F2F2F2] transition-colors"
               aria-label="Close session playback"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M18 6 6 18M6 6l12 12"/>
+                <path d="M18 6 6 18M6 6l12 12" />
               </svg>
             </button>
-            <SessionPlayback />
+            <Suspense fallback={null}>
+              <SessionPlayback />
+            </Suspense>
           </div>
         </div>
       )}
+
       <CloseConfirmModal
         visible={closeModalVisible}
         onConfirm={handleCloseConfirm}

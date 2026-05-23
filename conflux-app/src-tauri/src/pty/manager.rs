@@ -21,7 +21,7 @@
 use std::collections::HashMap;
 use std::io::Read as IoRead;
 use std::io::Write as IoWrite;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -32,8 +32,8 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
 use crate::adapter::traits::AgentAdapter;
 use crate::core::{
-    AdapterId, AgentInstanceInfo, AgentMode, AgentStateDetail, AgentStatus, AgentTree, ConfluxError,
-    ConfluxEvent, InstanceId, SubAgentInfo,
+    AdapterId, AgentInstanceInfo, AgentMode, AgentStateDetail, AgentStatus, AgentTree,
+    ConfluxError, ConfluxEvent, InstanceId, SubAgentInfo,
 };
 use crate::pty::buffer::{OutputBuffer, DEFAULT_BUFFER_CAPACITY};
 use crate::pty::parser::PtyOutputParser;
@@ -78,8 +78,7 @@ fn resolve_windows_command(command: &str) -> String {
         return command.to_string();
     }
 
-    let pathext = std::env::var("PATHEXT")
-        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
     let extensions: Vec<String> = pathext
         .split(';')
         .filter(|s| !s.is_empty())
@@ -108,10 +107,7 @@ fn resolve_windows_command(command: &str) -> String {
             .collect()
     };
 
-    let basename = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(command);
+    let basename = path.file_stem().and_then(|s| s.to_str()).unwrap_or(command);
 
     for dir in &candidate_dirs {
         for ext in &extensions {
@@ -154,6 +150,10 @@ struct PtyProcess {
     buffer: Arc<RwLock<OutputBuffer>>,
     /// 创建时间（Unix 时间戳 ms）
     created_at: i64,
+    /// 最后活动时间（Unix 时间戳 ms），由 reader/input/status 路径更新
+    last_activity_at: Arc<AtomicI64>,
+    /// 结束时间（Unix 时间戳 ms）；0 表示仍在运行
+    ended_at: Arc<AtomicI64>,
     /// 适配器 ID
     adapter_id: String,
     /// 适配器名称
@@ -187,6 +187,13 @@ fn now_millis() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+fn atomic_optional_timestamp(value: &AtomicI64) -> Option<i64> {
+    match value.load(Ordering::Acquire) {
+        0 => None,
+        timestamp => Some(timestamp),
+    }
 }
 
 impl PtyManager {
@@ -303,11 +310,7 @@ impl PtyManager {
         //    避开 npm-global 下的 bash shim（见 resolve_windows_command 文档）。
         let resolved_command = resolve_windows_command(command);
         if resolved_command != command {
-            log::debug!(
-                "PTY spawn 路径解析: {} -> {}",
-                command,
-                resolved_command
-            );
+            log::debug!("PTY spawn 路径解析: {} -> {}", command, resolved_command);
         }
         let mut cmd = CommandBuilder::new(&resolved_command);
         for arg in args {
@@ -350,10 +353,15 @@ impl PtyManager {
         })?;
 
         // 6. 创建输出缓冲区 + exit 标记
+        let created_at = now_millis();
         let buffer = Arc::new(RwLock::new(OutputBuffer::new(DEFAULT_BUFFER_CAPACITY)));
         let buffer_clone = Arc::clone(&buffer);
         let reader_done = Arc::new(AtomicBool::new(false));
         let reader_done_clone = Arc::clone(&reader_done);
+        let last_activity_at = Arc::new(AtomicI64::new(created_at));
+        let last_activity_at_clone = Arc::clone(&last_activity_at);
+        let ended_at = Arc::new(AtomicI64::new(0));
+        let ended_at_clone = Arc::clone(&ended_at);
         let thread_instance_id = instance_id.clone();
         let thread_adapter_id = adapter_id.to_string();
 
@@ -361,7 +369,8 @@ impl PtyManager {
         //
         // B3 契约 2：parser 需要在主线程和读取线程之间共享——
         // 读取线程 feed 数据，主线程通过 get_agent_tree 查询 AgentTree。
-        let shared_parser: Option<Arc<parking_lot::Mutex<PtyOutputParser>>> = adapter.as_ref()
+        let shared_parser: Option<Arc<parking_lot::Mutex<PtyOutputParser>>> = adapter
+            .as_ref()
             .filter(|_| dispatch.is_some())
             .map(|adapter_arc| {
                 Arc::new(parking_lot::Mutex::new(PtyOutputParser::new(
@@ -380,10 +389,7 @@ impl PtyManager {
         // XtermTerminal 的 subscribeToPty 模式会订阅它逐块 write。
         // 测试路径：adapter/dispatch 任一为 None 时只写 OutputBuffer（旧行为）。
         std::thread::spawn(move || {
-            log::debug!(
-                "PTY 输出读取线程启动: instance_id={}",
-                thread_instance_id
-            );
+            log::debug!("PTY 输出读取线程启动: instance_id={}", thread_instance_id);
 
             let mut chunk = vec![0u8; READ_CHUNK_SIZE];
             // Tracks the reason the reader loop finally exits so we can
@@ -400,6 +406,8 @@ impl PtyManager {
                         break "normal";
                     }
                     Ok(n) => {
+                        let now_ms = now_millis();
+                        last_activity_at_clone.store(now_ms, Ordering::Release);
                         {
                             let mut buf = buffer_clone.write();
                             buf.write(&chunk[..n]);
@@ -411,7 +419,6 @@ impl PtyManager {
                         if let Some(dispatch_ref) = dispatch.as_ref() {
                             // 1. 原始 PTY 输出（XtermTerminal subscribeToPty 使用）
                             let encoded = BASE64.encode(&chunk[..n]);
-                            let now_ms = now_millis();
                             let pty_output_event = ConfluxEvent::PtyOutput {
                                 instance_id: InstanceId(thread_instance_id.clone()),
                                 data: encoded,
@@ -441,6 +448,10 @@ impl PtyManager {
                 }
             };
 
+            let ended_ms = now_millis();
+            last_activity_at_clone.store(ended_ms, Ordering::Release);
+            ended_at_clone.store(ended_ms, Ordering::Release);
+
             // C2-T1: surface the exit to the frontend so ExitOverlay can
             // offer Restart / Open Shell / Close Card. We can't easily
             // wait(&mut child) from here because the child handle lives in
@@ -458,7 +469,7 @@ impl PtyManager {
                     adapter_id: thread_adapter_id.clone(),
                     exit_code: None,
                     signal,
-                    timestamp: now_millis(),
+                    timestamp: ended_ms,
                 };
                 dispatch_ref(&exit_event);
             }
@@ -480,7 +491,9 @@ impl PtyManager {
             writer: parking_lot::Mutex::new(writer),
             buffer,
             reader_done,
-            created_at: now_millis(),
+            created_at,
+            last_activity_at,
+            ended_at,
             adapter_id: adapter_id.to_string(),
             adapter_name: adapter_name.to_string(),
             display_name,
@@ -509,12 +522,16 @@ impl PtyManager {
         display_name: Option<String>,
     ) -> Result<(), ConfluxError> {
         let mut processes = self.processes.write();
-        let process = processes.get_mut(instance_id).ok_or_else(|| {
-            ConfluxError::InstanceNotFound {
-                instance_id: instance_id.to_string(),
-            }
-        })?;
+        let process =
+            processes
+                .get_mut(instance_id)
+                .ok_or_else(|| ConfluxError::InstanceNotFound {
+                    instance_id: instance_id.to_string(),
+                })?;
         process.display_name = display_name;
+        process
+            .last_activity_at
+            .store(now_millis(), Ordering::Release);
         Ok(())
     }
 
@@ -524,11 +541,11 @@ impl PtyManager {
     /// 调用者负责在 input 末尾添加换行符（如果需要）。
     pub fn inject_stdin(&self, instance_id: &str, input: &str) -> Result<(), ConfluxError> {
         let processes = self.processes.read();
-        let process = processes.get(instance_id).ok_or_else(|| {
-            ConfluxError::InstanceNotFound {
+        let process = processes
+            .get(instance_id)
+            .ok_or_else(|| ConfluxError::InstanceNotFound {
                 instance_id: instance_id.to_string(),
-            }
-        })?;
+            })?;
 
         let mut writer = process.writer.lock();
         writer
@@ -540,6 +557,10 @@ impl PtyManager {
         writer.flush().map_err(|e| ConfluxError::PtyError {
             message: format!("stdin flush 失败 (instance_id={}): {}", instance_id, e),
         })?;
+
+        process
+            .last_activity_at
+            .store(now_millis(), Ordering::Release);
 
         log::debug!(
             "inject_stdin 完成: instance_id={}, length={}",
@@ -554,11 +575,12 @@ impl PtyManager {
     /// 通知 conpty 后端调整窗口大小，使终端应用能正确重排输出。
     pub fn resize(&self, instance_id: &str, cols: u16, rows: u16) -> Result<(), ConfluxError> {
         let mut processes = self.processes.write();
-        let process = processes.get_mut(instance_id).ok_or_else(|| {
-            ConfluxError::InstanceNotFound {
-                instance_id: instance_id.to_string(),
-            }
-        })?;
+        let process =
+            processes
+                .get_mut(instance_id)
+                .ok_or_else(|| ConfluxError::InstanceNotFound {
+                    instance_id: instance_id.to_string(),
+                })?;
 
         let new_size = PtySize {
             cols,
@@ -579,6 +601,9 @@ impl PtyManager {
         drop(master);
 
         process.pty_size = new_size;
+        process
+            .last_activity_at
+            .store(now_millis(), Ordering::Release);
 
         log::debug!(
             "resize 完成: instance_id={}, cols={}, rows={}",
@@ -699,6 +724,8 @@ impl PtyManager {
                 working_dir: proc.working_dir.clone(),
                 is_pinned: false, // 由 AppState 层管理，list_agent_instances 会 merge
                 created_at: proc.created_at,
+                last_activity_at: proc.last_activity_at.load(Ordering::Acquire),
+                ended_at: atomic_optional_timestamp(&proc.ended_at),
                 mode: proc.mode.clone(),
                 hidden: proc.hidden,
             })
@@ -708,16 +735,13 @@ impl PtyManager {
     /// 获取指定实例的状态详情
     ///
     /// is_pinned 字段始终为 false（由上层 AppState 管理）。
-    pub fn get_instance_state(
-        &self,
-        instance_id: &str,
-    ) -> Result<AgentStateDetail, ConfluxError> {
+    pub fn get_instance_state(&self, instance_id: &str) -> Result<AgentStateDetail, ConfluxError> {
         let processes = self.processes.read();
-        let process = processes.get(instance_id).ok_or_else(|| {
-            ConfluxError::InstanceNotFound {
+        let process = processes
+            .get(instance_id)
+            .ok_or_else(|| ConfluxError::InstanceNotFound {
                 instance_id: instance_id.to_string(),
-            }
-        })?;
+            })?;
 
         Ok(AgentStateDetail {
             instance_id: InstanceId(instance_id.to_string()),
@@ -728,20 +752,27 @@ impl PtyManager {
             working_dir: process.working_dir.clone(),
             is_pinned: false, // 由 AppState 层管理
             created_at: process.created_at,
-            last_activity_at: now_millis(), // 查询时刷新
+            last_activity_at: process.last_activity_at.load(Ordering::Acquire),
+            ended_at: atomic_optional_timestamp(&process.ended_at),
             mode: process.mode.clone(),
             hidden: process.hidden,
-            sub_agents: self.get_agent_tree(instance_id).map(|tree| {
-                fn recurse(node: &crate::core::types::AgentTree, out: &mut Vec<crate::core::SubAgentInfo>) {
-                    for child in &node.children {
-                        out.push(child.root.clone());
-                        recurse(child, out);
+            sub_agents: self
+                .get_agent_tree(instance_id)
+                .map(|tree| {
+                    fn recurse(
+                        node: &crate::core::types::AgentTree,
+                        out: &mut Vec<crate::core::SubAgentInfo>,
+                    ) {
+                        for child in &node.children {
+                            out.push(child.root.clone());
+                            recurse(child, out);
+                        }
                     }
-                }
-                let mut result = Vec::new();
-                recurse(&tree, &mut result);
-                result
-            }).unwrap_or_default(),
+                    let mut result = Vec::new();
+                    recurse(&tree, &mut result);
+                    result
+                })
+                .unwrap_or_default(),
         })
     }
 
@@ -751,11 +782,11 @@ impl PtyManager {
     /// 如果没有 parser（shell 模式），返回仅含 root 节点的单节点树。
     pub fn get_agent_tree(&self, instance_id: &str) -> Result<AgentTree, ConfluxError> {
         let processes = self.processes.read();
-        let process = processes.get(instance_id).ok_or_else(|| {
-            ConfluxError::InstanceNotFound {
+        let process = processes
+            .get(instance_id)
+            .ok_or_else(|| ConfluxError::InstanceNotFound {
                 instance_id: instance_id.to_string(),
-            }
-        })?;
+            })?;
 
         match &process.parser {
             Some(parser_arc) => {
@@ -783,11 +814,12 @@ impl PtyManager {
         status: AgentStatus,
     ) -> Result<(), ConfluxError> {
         let mut processes = self.processes.write();
-        let process = processes.get_mut(instance_id).ok_or_else(|| {
-            ConfluxError::InstanceNotFound {
-                instance_id: instance_id.to_string(),
-            }
-        })?;
+        let process =
+            processes
+                .get_mut(instance_id)
+                .ok_or_else(|| ConfluxError::InstanceNotFound {
+                    instance_id: instance_id.to_string(),
+                })?;
 
         log::debug!(
             "状态更新: instance_id={}, {:?} -> {:?}",
@@ -796,22 +828,22 @@ impl PtyManager {
             status
         );
         process.status = status;
+        process
+            .last_activity_at
+            .store(now_millis(), Ordering::Release);
         Ok(())
     }
 
     /// 获取实例的输出缓冲区引用（用于终端渲染）
     ///
     /// 返回 Arc<RwLock<OutputBuffer>> 的克隆，调用者可以直接读取缓冲区内容。
-    pub fn get_buffer(
-        &self,
-        instance_id: &str,
-    ) -> Result<Arc<RwLock<OutputBuffer>>, ConfluxError> {
+    pub fn get_buffer(&self, instance_id: &str) -> Result<Arc<RwLock<OutputBuffer>>, ConfluxError> {
         let processes = self.processes.read();
-        let process = processes.get(instance_id).ok_or_else(|| {
-            ConfluxError::InstanceNotFound {
+        let process = processes
+            .get(instance_id)
+            .ok_or_else(|| ConfluxError::InstanceNotFound {
                 instance_id: instance_id.to_string(),
-            }
-        })?;
+            })?;
 
         Ok(Arc::clone(&process.buffer))
     }
@@ -834,11 +866,12 @@ impl PtyManager {
         // Fast path: reader already signaled done (no lock upgrade needed)
         {
             let processes = self.processes.read();
-            let process = processes.get(instance_id).ok_or_else(|| {
-                ConfluxError::InstanceNotFound {
-                    instance_id: instance_id.to_string(),
-                }
-            })?;
+            let process =
+                processes
+                    .get(instance_id)
+                    .ok_or_else(|| ConfluxError::InstanceNotFound {
+                        instance_id: instance_id.to_string(),
+                    })?;
             if process.reader_done.load(Ordering::Acquire) {
                 return Ok(true);
             }
@@ -846,11 +879,12 @@ impl PtyManager {
 
         // Slow path: ask the OS directly via try_wait (needs write lock)
         let mut processes = self.processes.write();
-        let process = processes.get_mut(instance_id).ok_or_else(|| {
-            ConfluxError::InstanceNotFound {
-                instance_id: instance_id.to_string(),
-            }
-        })?;
+        let process =
+            processes
+                .get_mut(instance_id)
+                .ok_or_else(|| ConfluxError::InstanceNotFound {
+                    instance_id: instance_id.to_string(),
+                })?;
 
         match process.child.try_wait() {
             Ok(Some(_exit_status)) => {
@@ -858,14 +892,17 @@ impl PtyManager {
                 // take the fast path. The reader thread may still be stuck
                 // in ConPTY's ReadFile — it'll eventually unblock when we
                 // kill/drop the PtyProcess during respawn or close.
+                let ended_ms = now_millis();
                 process.reader_done.store(true, Ordering::Release);
+                process.ended_at.store(ended_ms, Ordering::Release);
+                process.last_activity_at.store(ended_ms, Ordering::Release);
                 log::info!(
                     "is_process_exited: child exited (try_wait), instance_id={}",
                     instance_id
                 );
                 Ok(true)
             }
-            Ok(None) => Ok(false),   // still running
+            Ok(None) => Ok(false), // still running
             Err(e) => {
                 log::warn!(
                     "is_process_exited: try_wait error (treating as alive): {}",

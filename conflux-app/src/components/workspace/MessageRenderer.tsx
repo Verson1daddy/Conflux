@@ -8,7 +8,7 @@
 import { type FC, type ComponentPropsWithoutRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { SyntaxHighlighter } from "@/lib/syntax-highlighter";
 import type { CodeBlock } from "@/types/discussion";
 
 // Palette matches DiscussionPanel.tsx light theme

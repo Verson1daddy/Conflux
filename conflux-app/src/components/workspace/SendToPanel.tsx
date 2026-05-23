@@ -15,6 +15,7 @@
 
 import { type FC, useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useAgentStore } from "@/stores/agentStore";
+import { getLiveAgentInstances } from "@/lib/workspace-status";
 import { injectStdin } from "@/lib/tauri-bridge";
 import { PTY_ENTER } from "@/lib/constants";
 import type { AgentInstanceInfo, AgentStatus } from "@/types";
@@ -60,7 +61,7 @@ const SendToPanel: FC<SendToPanelProps> = ({ visible, onClose }) => {
 
   // Derive ordered agent list — primary first, then by created_at desc.
   const agentList: AgentInstanceInfo[] = useMemo(() => {
-    const arr = Array.from(instances.values());
+    const arr = getLiveAgentInstances(instances);
     arr.sort((a, b) => {
       if (a.is_pinned !== b.is_pinned) {
         return a.is_pinned ? -1 : 1;

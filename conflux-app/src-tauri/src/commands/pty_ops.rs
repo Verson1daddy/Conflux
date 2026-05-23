@@ -4,16 +4,26 @@
 
 use tauri::{AppHandle, State};
 
-use crate::AppState;
 use crate::core::event_emit::emit_conflux_event;
-use crate::core::{ConfluxError, ConfluxEvent, InstanceId, InjectionSource, PermissionDecision};
+use crate::core::{ConfluxError, ConfluxEvent, InjectionSource, InstanceId, PermissionDecision};
+use crate::AppState;
+
+fn should_enforce_stdin_injection_policy(source: &InjectionSource) -> bool {
+    matches!(
+        source,
+        InjectionSource::OrchestrationAuto | InjectionSource::DiscussionUserMessage
+    )
+}
 
 /// 向 Agent 实例的 stdin 注入内容
 ///
-/// 注入前执行 StdinInjectionPolicy 安全检查：
+/// 自动/批量注入前执行 StdinInjectionPolicy 安全检查：
 /// 1. 内容长度不超过 max_injection_length
 /// 2. 速率不超过 rate_limit_per_minute
 /// 3. 不包含 forbidden_patterns 中的模式
+///
+/// 用户在展开终端里直接打字（UserDirect）不走该策略；否则逐键输入会
+/// 被自动注入的限速误伤。
 ///
 /// # 参数
 /// - `instance_id`: 目标实例标识
@@ -39,8 +49,10 @@ pub async fn inject_stdin(
         }
     }
 
+    let enforce_policy = should_enforce_stdin_injection_policy(&source_resolved);
+
     // 2. 执行 StdinInjectionPolicy 安全检查
-    {
+    if enforce_policy {
         let policy = state.stdin_policy.read();
 
         // 长度检查
@@ -65,7 +77,7 @@ pub async fn inject_stdin(
     }
 
     // 3. 速率限制检查
-    {
+    if enforce_policy {
         let mut counter = state.injection_rate_counter.write();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -90,9 +102,7 @@ pub async fn inject_stdin(
     }
 
     // 4. 执行注入
-    state
-        .pty_manager
-        .inject_stdin(&instance_id.0, &input)?;
+    state.pty_manager.inject_stdin(&instance_id.0, &input)?;
 
     // 5. B3 契约 1：emit StdinInjected 事件
     // UTF-8 安全截断：避免在多字节字符中间切断导致 panic
@@ -210,4 +220,37 @@ pub async fn respond_to_permission(
     emit_conflux_event(&app, &event);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_direct_bypasses_automated_injection_policy() {
+        assert!(!should_enforce_stdin_injection_policy(
+            &InjectionSource::UserDirect
+        ));
+    }
+
+    #[test]
+    fn permission_response_bypasses_automated_injection_policy() {
+        assert!(!should_enforce_stdin_injection_policy(
+            &InjectionSource::PermissionResponse
+        ));
+    }
+
+    #[test]
+    fn orchestration_auto_keeps_automated_injection_policy() {
+        assert!(should_enforce_stdin_injection_policy(
+            &InjectionSource::OrchestrationAuto
+        ));
+    }
+
+    #[test]
+    fn discussion_user_message_keeps_bulk_injection_policy() {
+        assert!(should_enforce_stdin_injection_policy(
+            &InjectionSource::DiscussionUserMessage
+        ));
+    }
 }

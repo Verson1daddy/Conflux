@@ -15,6 +15,8 @@ import type { InstanceId } from "./agent";
  */
 export type IslandMode = "top_island" | "sidebar" | "float_ball";
 
+export type CloseAction = "quit" | "top_island" | "sidebar";
+
 // ===== 通知级别 =====
 
 /**

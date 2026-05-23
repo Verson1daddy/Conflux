@@ -9,6 +9,7 @@
 
 import { type FC, useCallback, useEffect, useMemo, useState } from "react";
 import { createAgentInstance, detectAdapterAuth } from "@/lib/tauri-bridge";
+import { getCreateDisabledReason } from "@/lib/adapter-runtime";
 import { useAgentStore } from "@/stores/agentStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import type { AdapterAuthStatus } from "@/types";
@@ -28,6 +29,24 @@ const BUILTIN_ADAPTERS: BuiltinAdapter[] = [
   { id: "aider", name: "Aider", desc: "Pair programming agent", color: "#8EA4B8" },
   { id: "opencode", name: "OpenCode", desc: "Open-source CLI agent", color: "#C9B894" },
 ];
+
+function blockedAdapterStatus(adapterId: string, message: string): AdapterAuthStatus {
+  return {
+    adapter_id: adapterId,
+    ready: false,
+    message,
+    login_command: null,
+    docs_url: null,
+    installed: false,
+    authenticated: false,
+    runnable: false,
+    session_supported: false,
+    install_message: message,
+    auth_message: "Auth not checked because runtime detection failed",
+    runtime_message: message,
+    session_message: "Session restore support is pending for V1 hardening",
+  };
+}
 
 // ===== Inline SVG icons =====
 
@@ -112,13 +131,7 @@ const OnboardingWizard: FC<OnboardingWizardProps> = ({ visible = true, onComplet
       })
       .catch(() => {
         if (!cancelled) {
-          setAuthStatus({
-            adapter_id: createAdapterId,
-            ready: false,
-            message: "Could not detect auth status",
-            login_command: null,
-            docs_url: null,
-          });
+          setAuthStatus(blockedAdapterStatus(createAdapterId, "Could not detect adapter runtime"));
         }
       })
       .finally(() => {
@@ -176,6 +189,11 @@ const OnboardingWizard: FC<OnboardingWizardProps> = ({ visible = true, onComplet
 
   const handleCreate = useCallback(async () => {
     if (!createAdapterId || creating) return;
+    const disabledReason = getCreateDisabledReason(authStatus ?? undefined, false);
+    if (disabledReason) {
+      setCreateError(disabledReason);
+      return;
+    }
     setCreating(true);
     setCreateError(null);
 
@@ -226,6 +244,10 @@ const OnboardingWizard: FC<OnboardingWizardProps> = ({ visible = true, onComplet
   const canNext2 = primary !== null;
 
   const currentAdapter = BUILTIN_ADAPTERS.find((a) => a.id === createAdapterId);
+  const createDisabledReason = createAdapterId
+    ? getCreateDisabledReason(authStatus ?? undefined, false)
+    : "Choose an adapter";
+  const createDisabled = creating || createDisabledReason !== null;
 
   return (
     <div
@@ -748,9 +770,9 @@ const OnboardingWizard: FC<OnboardingWizardProps> = ({ visible = true, onComplet
               disabled={
                 (step === 1 && !canNext1) ||
                 (step === 2 && !canNext2) ||
-                (step === 3 && (!createAdapterId || creating))
+                (step === 3 && createDisabled)
               }
-              title={step === 1 ? "Continue to adapter selection" : step === 2 ? "Continue to agent creation" : creating ? "Creating agent..." : "Create a new agent instance"}
+              title={step === 1 ? "Continue to adapter selection" : step === 2 ? "Continue to agent creation" : creating ? "Creating agent..." : createDisabledReason ?? "Create a new agent instance"}
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -766,13 +788,13 @@ const OnboardingWizard: FC<OnboardingWizardProps> = ({ visible = true, onComplet
                 opacity:
                   (step === 1 && !canNext1) ||
                   (step === 2 && !canNext2) ||
-                  (step === 3 && (!createAdapterId || creating))
+                  (step === 3 && createDisabled)
                     ? 0.4
                     : 1,
                 cursor:
                   (step === 1 && !canNext1) ||
                   (step === 2 && !canNext2) ||
-                  (step === 3 && (!createAdapterId || creating))
+                  (step === 3 && createDisabled)
                     ? "not-allowed"
                     : "pointer",
                 transition: "opacity 0.15s",

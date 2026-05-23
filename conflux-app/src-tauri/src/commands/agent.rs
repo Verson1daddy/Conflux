@@ -7,25 +7,81 @@ use std::sync::Arc;
 
 use tauri::State;
 
-use crate::AppState;
 use crate::core::event_emit::emit_conflux_event;
 use crate::core::{
     AdapterId, AgentInstanceInfo, AgentMode, AgentStateDetail, AgentStatus, AgentTree,
     ConfluxError, ConfluxEvent, InstanceId,
 };
+use crate::AppState;
 
-/// 创建 Agent 实例
-///
-/// 根据 adapter_id 查找已注册的适配器，通过该适配器启动一个新的 PTY 进程，
-/// 并将实例信息记录到全局状态中。
-///
-/// # 参数
-/// - `adapter_id`: 要使用的适配器标识
-/// - `working_dir`: 工作目录（可选，默认使用当前目录）
-/// - `args`: 额外启动参数（可选）
-///
-/// # 返回
-/// 新创建的 Agent 实例信息
+fn trimmed_non_empty(value: Option<String>) -> Option<String> {
+    value
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn default_working_dir_from(
+    env_var: impl Fn(&str) -> Option<String>,
+    current_dir: impl Fn() -> Option<String>,
+) -> String {
+    if let Some(user_profile) = trimmed_non_empty(env_var("USERPROFILE")) {
+        return user_profile;
+    }
+
+    let home_drive = trimmed_non_empty(env_var("HOMEDRIVE"));
+    let home_path = trimmed_non_empty(env_var("HOMEPATH"));
+    if let (Some(drive), Some(path)) = (home_drive, home_path) {
+        let drive = drive.trim_end_matches(|c| c == '\\' || c == '/');
+        if path.starts_with('\\') || path.starts_with('/') {
+            return format!("{drive}{path}");
+        }
+        return format!("{drive}\\{path}");
+    }
+
+    if let Some(home) = trimmed_non_empty(env_var("HOME")) {
+        return home;
+    }
+
+    current_dir().unwrap_or_else(|| ".".to_string())
+}
+
+fn default_working_dir() -> String {
+    default_working_dir_from(
+        |key| std::env::var(key).ok(),
+        || {
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+        },
+    )
+}
+
+fn resolve_working_dir_from(
+    working_dir: Option<String>,
+    env_var: impl Fn(&str) -> Option<String>,
+    current_dir: impl Fn() -> Option<String>,
+) -> String {
+    trimmed_non_empty(working_dir).unwrap_or_else(|| default_working_dir_from(env_var, current_dir))
+}
+
+fn resolve_working_dir(working_dir: Option<String>) -> String {
+    resolve_working_dir_from(
+        working_dir,
+        |key| std::env::var(key).ok(),
+        || {
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+        },
+    )
+}
+
+#[tauri::command]
+pub async fn get_default_working_dir() -> Result<String, ConfluxError> {
+    Ok(default_working_dir())
+}
+
+/// Create an Agent instance and start its PTY process.
 #[tauri::command]
 pub async fn create_agent_instance(
     state: State<'_, AppState>,
@@ -38,28 +94,24 @@ pub async fn create_agent_instance(
     display_name: Option<String>,
 ) -> Result<AgentInstanceInfo, ConfluxError> {
     // 1. 查找适配器配置 + 获取 adapter trait 对象
-    let (adapter_config, adapter_arc) = {
+    let (adapter_config, adapter_arc, adapter_is_builtin) = {
         let registry = state.adapter_registry.read();
-        let config = registry
-            .get_config(&adapter_id.0)
-            .cloned()
-            .ok_or_else(|| ConfluxError::AdapterNotFound {
-                adapter_id: adapter_id.0.clone(),
-            })?;
-        let adapter = registry.get(&adapter_id.0).ok_or_else(|| {
+        let config = registry.get_config(&adapter_id.0).cloned().ok_or_else(|| {
             ConfluxError::AdapterNotFound {
                 adapter_id: adapter_id.0.clone(),
             }
         })?;
-        (config, adapter)
+        let adapter = registry
+            .get(&adapter_id.0)
+            .ok_or_else(|| ConfluxError::AdapterNotFound {
+                adapter_id: adapter_id.0.clone(),
+            })?;
+        let is_builtin = registry.is_builtin(&adapter_id.0);
+        (config, adapter, is_builtin)
     };
 
     // 2. 确定工作目录
-    let work_dir = working_dir.unwrap_or_else(|| {
-        std::env::current_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| ".".to_string())
-    });
+    let work_dir = resolve_working_dir(working_dir);
 
     // 3. 确定运行模式（B3.1 Contract 1）
     let agent_mode = mode.unwrap_or(AgentMode::Full);
@@ -75,14 +127,23 @@ pub async fn create_agent_instance(
         spawn_args.extend(extra_args);
     }
 
+    {
+        let conn = state.db.lock();
+        crate::persistence::schema::ensure_adapter_config(
+            &conn,
+            &adapter_id.0,
+            &adapter_config,
+            adapter_is_builtin,
+        )?;
+    }
+
     // 5. 构造事件派发器——PTY 读取线程内的 parser 会通过它把解析出的
     //    ConfluxEvent 路由到 Tauri 前端。AppHandle clone 进闭包，让线程可以
     //    在 command 函数返回后继续使用。
     let app_handle = app.clone();
-    let dispatcher: crate::pty::manager::EventDispatcher =
-        Arc::new(move |event: &ConfluxEvent| {
-            emit_conflux_event(&app_handle, event);
-        });
+    let dispatcher: crate::pty::manager::EventDispatcher = Arc::new(move |event: &ConfluxEvent| {
+        emit_conflux_event(&app_handle, event);
+    });
 
     // 6. 通过 PtyManager 启动 PTY 进程（带事件流）
     // Normalize: treat empty string as None
@@ -119,9 +180,23 @@ pub async fn create_agent_instance(
     {
         let conn = state.db.lock();
         if let Err(e) = crate::persistence::session::insert_agent_instance(
-            &conn, &instance_id.0, &adapter_id.0, &adapter_config.name, &work_dir, now_ms,
+            &conn,
+            &instance_id.0,
+            &adapter_id.0,
+            &adapter_config.name,
+            &work_dir,
+            now_ms,
         ) {
-            log::warn!("agent_instances 写入失败: {e}");
+            {
+                let mut map = state.instance_adapter_map.write();
+                map.remove(&instance_id.0);
+            }
+            if let Err(kill_err) = state.pty_manager.kill(&instance_id.0) {
+                log::warn!("rollback PTY kill failed after DB insert error: {kill_err}");
+            }
+            return Err(ConfluxError::DatabaseError {
+                message: format!("Failed to persist agent instance: {e}"),
+            });
         }
     }
 
@@ -134,6 +209,8 @@ pub async fn create_agent_instance(
         working_dir: work_dir,
         is_pinned: false,
         created_at: now_ms,
+        last_activity_at: now_ms,
+        ended_at: None,
         mode: agent_mode,
         hidden: is_hidden,
     })
@@ -242,7 +319,9 @@ pub async fn rename_agent_instance(
     }
 
     let normalized = display_name.filter(|s| !s.trim().is_empty());
-    state.pty_manager.rename_instance(&instance_id.0, normalized)?;
+    state
+        .pty_manager
+        .rename_instance(&instance_id.0, normalized)?;
 
     log::debug!("Agent 实例重命名: {}", instance_id.0);
     Ok(())
@@ -324,6 +403,7 @@ pub async fn get_agent_state(
         is_pinned,
         created_at: detail.created_at,
         last_activity_at: detail.last_activity_at,
+        ended_at: detail.ended_at,
         mode: detail.mode,
         hidden: detail.hidden,
         sub_agents,
@@ -410,23 +490,26 @@ pub async fn respawn_agent_instance(
     // 1b. 先读取旧实例的 working_dir / mode / hidden —— 必须在 pty_manager.respawn 之前读，
     //     因为 respawn 内部会先 kill 旧实例，之后 get_instance_state 就查
     //     不到原 cwd 了。C2-T1 review 发现的 bug（先拿再删）。
-    let preserved_detail = state
-        .pty_manager
-        .get_instance_state(&instance_id.0)
-        .ok();
+    let preserved_detail = state.pty_manager.get_instance_state(&instance_id.0).ok();
     let preserved_work_dir = preserved_detail.as_ref().map(|d| d.working_dir.clone());
-    let preserved_mode = preserved_detail.as_ref().map(|d| d.mode.clone()).unwrap_or(AgentMode::Full);
+    let preserved_mode = preserved_detail
+        .as_ref()
+        .map(|d| d.mode.clone())
+        .unwrap_or(AgentMode::Full);
     let preserved_hidden = preserved_detail.as_ref().map(|d| d.hidden).unwrap_or(false);
-    let preserved_display_name = preserved_detail.as_ref().and_then(|d| d.display_name.clone());
+    let preserved_display_name = preserved_detail
+        .as_ref()
+        .and_then(|d| d.display_name.clone());
 
     // 2. 根据模式确定 command / args / adapter_id / adapter_name / adapter_trait
     let (command, args, new_adapter_id, new_adapter_name, adapter_arc_opt) = match mode {
         RespawnMode::Restart => {
-            let orig = original_adapter_id.clone().ok_or_else(|| {
-                ConfluxError::InstanceNotFound {
-                    instance_id: instance_id.0.clone(),
-                }
-            })?;
+            let orig =
+                original_adapter_id
+                    .clone()
+                    .ok_or_else(|| ConfluxError::InstanceNotFound {
+                        instance_id: instance_id.0.clone(),
+                    })?;
             let (config, adapter_arc) = {
                 let registry = state.adapter_registry.read();
                 let config = registry.get_config(&orig).cloned().ok_or_else(|| {
@@ -434,11 +517,11 @@ pub async fn respawn_agent_instance(
                         adapter_id: orig.clone(),
                     }
                 })?;
-                let adapter = registry.get(&orig).ok_or_else(|| {
-                    ConfluxError::AdapterNotFound {
+                let adapter = registry
+                    .get(&orig)
+                    .ok_or_else(|| ConfluxError::AdapterNotFound {
                         adapter_id: orig.clone(),
-                    }
-                })?;
+                    })?;
                 (config, adapter)
             };
             (
@@ -471,11 +554,7 @@ pub async fn respawn_agent_instance(
     // 3. 工作目录：延续原实例的 cwd（respawn 是"就地复活"语义）。
     //    如果 1b 没拿到（旧实例已经被前端 kill 或 ProcessExited 后 reap），
     //    fallback 到 Conflux 进程自己的 cwd。
-    let work_dir = preserved_work_dir.unwrap_or_else(|| {
-        std::env::current_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| ".".to_string())
-    });
+    let work_dir = trimmed_non_empty(preserved_work_dir).unwrap_or_else(default_working_dir);
 
     // 4. 构造 dispatcher——和 create_agent_instance 一致
     let app_handle = app.clone();
@@ -520,6 +599,8 @@ pub async fn respawn_agent_instance(
         working_dir: work_dir,
         is_pinned: false,
         created_at: now_ms,
+        last_activity_at: now_ms,
+        ended_at: None,
         mode: preserved_mode,
         hidden: preserved_hidden,
     })
@@ -550,11 +631,11 @@ pub async fn set_agent_mode(
     // 1. Look up adapter_id from instance_adapter_map
     let adapter_id = {
         let map = state.instance_adapter_map.read();
-        map.get(&instance_id.0).cloned().ok_or_else(|| {
-            ConfluxError::InstanceNotFound {
+        map.get(&instance_id.0)
+            .cloned()
+            .ok_or_else(|| ConfluxError::InstanceNotFound {
                 instance_id: instance_id.0.clone(),
-            }
-        })?
+            })?
     };
 
     // 2. Get adapter config + trait object
@@ -565,11 +646,11 @@ pub async fn set_agent_mode(
                 adapter_id: adapter_id.clone(),
             }
         })?;
-        let adapter = registry.get(&adapter_id).ok_or_else(|| {
-            ConfluxError::AdapterNotFound {
+        let adapter = registry
+            .get(&adapter_id)
+            .ok_or_else(|| ConfluxError::AdapterNotFound {
                 adapter_id: adapter_id.clone(),
-            }
-        })?;
+            })?;
         (config, adapter)
     };
 
@@ -578,7 +659,7 @@ pub async fn set_agent_mode(
     let work_dir = detail
         .as_ref()
         .map(|d| d.working_dir.clone())
-        .unwrap_or_else(|| ".".to_string());
+        .unwrap_or_else(default_working_dir);
     let is_hidden = detail.as_ref().map(|d| d.hidden).unwrap_or(false);
     let preserved_name = detail.as_ref().and_then(|d| d.display_name.clone());
 
@@ -591,10 +672,9 @@ pub async fn set_agent_mode(
 
     // 5. Build dispatcher
     let app_handle = app.clone();
-    let dispatcher: crate::pty::manager::EventDispatcher =
-        Arc::new(move |event: &ConfluxEvent| {
-            emit_conflux_event(&app_handle, event);
-        });
+    let dispatcher: crate::pty::manager::EventDispatcher = Arc::new(move |event: &ConfluxEvent| {
+        emit_conflux_event(&app_handle, event);
+    });
 
     // 6. Respawn with same instance_id but new args
     state.pty_manager.respawn(
@@ -626,6 +706,8 @@ pub async fn set_agent_mode(
         working_dir: work_dir,
         is_pinned: false,
         created_at: now_ms,
+        last_activity_at: now_ms,
+        ended_at: None,
         mode,
         hidden: is_hidden,
     })
@@ -673,4 +755,34 @@ pub async fn get_pty_history(
     let buffer = buffer_arc.read();
     let bytes = buffer.read_all();
     Ok(BASE64.encode(&bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_working_dir_from;
+
+    #[test]
+    fn blank_create_working_dir_prefers_user_profile_over_process_cwd() {
+        let resolved = resolve_working_dir_from(
+            Some("   ".to_string()),
+            |key| match key {
+                "USERPROFILE" => Some(r"C:\Users\zwm".to_string()),
+                _ => None,
+            },
+            || Some(r"D:\Trae_rela_pro\Conflux\conflux-app\src-tauri".to_string()),
+        );
+
+        assert_eq!(resolved, r"C:\Users\zwm");
+    }
+
+    #[test]
+    fn explicit_create_working_dir_is_preserved_after_trimming() {
+        let resolved = resolve_working_dir_from(
+            Some("  D:\\Projects\\target-app  ".to_string()),
+            |_| Some(r"C:\Users\zwm".to_string()),
+            || Some(r"D:\Trae_rela_pro\Conflux\conflux-app\src-tauri".to_string()),
+        );
+
+        assert_eq!(resolved, r"D:\Projects\target-app");
+    }
 }

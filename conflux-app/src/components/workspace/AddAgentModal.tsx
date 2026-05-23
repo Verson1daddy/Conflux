@@ -3,37 +3,32 @@
 // Matches design/conflux.pen frame "AddAgent 弹窗" (FLo0j).
 
 import { type FC, useCallback, useEffect, useState } from "react";
-import { createAgentInstance, listAdapters, detectAdapterAuth } from "@/lib/tauri-bridge";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import {
+  createAgentInstance,
+  detectAdapterAuth,
+  getDefaultWorkingDir,
+  listAdapters,
+} from "@/lib/tauri-bridge";
+import {
+  buildAdapterRuntimeBadges,
+  getCreateDisabledReason,
+} from "@/lib/adapter-runtime";
+import {
+  CARD_COLOR_PRESETS,
+  DEFAULT_CARD_ACCENT_COLOR,
+} from "@/lib/agent-visuals";
+import { pickWorkingDirectory } from "@/lib/working-directory";
 import { useAgentStore } from "@/stores/agentStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import type { AdapterInfo, AdapterAuthStatus, AdapterId, AgentInstanceInfo, CardLayout } from "@/types";
-
-// ===== C2-A4b Card color presets =====
-
-const CARD_COLOR_PRESETS = [
-  { id: "ice-blue",  color: "#B8D4E3", name: "Ice Blue" },
-  { id: "amber",     color: "#FFB800", name: "Amber" },
-  { id: "mint",      color: "#5FD47F", name: "Mint" },
-  { id: "rose",      color: "#FF6B6B", name: "Rose" },
-  { id: "lavender",  color: "#C8B5E3", name: "Lavender" },
-  { id: "peach",     color: "#E3C0A8", name: "Peach" },
-  { id: "gold",      color: "#D4C88A", name: "Gold" },
-  { id: "sky",       color: "#7FC8FF", name: "Sky" },
-];
-
-const DEFAULT_ADAPTER_COLORS: Record<string, string> = {
-  "claude-code": "#B8D4E3",
-  codex:         "#FFB800",
-  aider:         "#8EA4B8",
-  opencode:      "#C9B894",
-};
 
 // ===== Smart placement for new cards =====
 //
 // Walks a coarse grid looking for the first spot where a new card of the
 // given size wouldn't overlap any existing card (with a small gap). Falls
 // back to a cascading diagonal if every grid slot is taken (which only
-// happens past ~100 cards — acceptable for the cascade fallback). This is
+// happens past ~100 cards - acceptable for the cascade fallback). This is
 // intentionally simple (no bin-packing) because the backend auto-pack
 // command handles the ideal layout; we only need to guarantee new cards
 // don't land on top of existing ones.
@@ -73,7 +68,7 @@ function findFreeSpot(
       if (!collides) return { x, y };
     }
   }
-  // Fallback — every grid slot is taken. Cascade past the last card.
+  // Fallback - every grid slot is taken. Cascade past the last card.
   const n = cards.length;
   return { x: 24 + n * 30, y: 24 + n * 30 };
 }
@@ -128,13 +123,6 @@ const ICON_FOLDER = ({ size, color }: { size: number; color: string }) => (
   </svg>
 );
 
-const ICON_HOME = ({ size, color }: { size: number; color: string }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" />
-    <path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-  </svg>
-);
-
 const ICON_X = ({ size, color }: { size: number; color: string }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M18 6 6 18M6 6l12 12" />
@@ -148,16 +136,16 @@ const ICON_ARROW_RIGHT = ({ size, color }: { size: number; color: string }) => (
 );
 
 const VENDOR_META: Record<string, VendorMeta> = {
-  "claude-code": { vendor: "anthropic", caption: "anthropic · flagship agent framework", icon: ICON_SPARKLES },
-  codex: { vendor: "openai", caption: "openai · code-focused reasoning", icon: ICON_TERMINAL },
-  aider: { vendor: "paul-gauthier", caption: "paul-gauthier · git-aware pair programmer", icon: ICON_GIT_BRANCH },
-  opencode: { vendor: "opencode", caption: "opencode · PR review & codebase triage", icon: ICON_SQUARE_CODE },
+  "claude-code": { vendor: "anthropic", caption: "anthropic - flagship agent framework", icon: ICON_SPARKLES },
+  codex: { vendor: "openai", caption: "openai - code-focused reasoning", icon: ICON_TERMINAL },
+  aider: { vendor: "paul-gauthier", caption: "paul-gauthier - git-aware pair programmer", icon: ICON_GIT_BRANCH },
+  opencode: { vendor: "opencode", caption: "opencode - PR review & codebase triage", icon: ICON_SQUARE_CODE },
 };
 
 function metaFor(adapterId: string): VendorMeta {
   return VENDOR_META[adapterId] ?? {
     vendor: adapterId,
-    caption: `${adapterId} · custom adapter`,
+    caption: `${adapterId} - custom adapter`,
     icon: ICON_BOX,
   };
 }
@@ -193,14 +181,28 @@ function formatBackendError(err: unknown): string {
   return String(err);
 }
 
-// Best-effort default working dir.
-// Windows: HOMEDRIVE + HOMEPATH → e.g. "C:\Users\zwm"
-// Fallback: empty string (backend fallback to process cwd)
-function guessDefaultWorkingDir(): string {
+function getRememberedWorkingDir(): string | null {
   const remembered = localStorage.getItem("conflux.lastWorkingDir");
   if (remembered && remembered.trim().length > 0) return remembered;
-  // Browsers don't expose process env; leave empty so backend uses cwd
-  return "";
+  return null;
+}
+
+function blockedAdapterStatus(adapterId: string, message: string): AdapterAuthStatus {
+  return {
+    adapter_id: adapterId,
+    ready: false,
+    message,
+    login_command: null,
+    docs_url: null,
+    installed: false,
+    authenticated: false,
+    runnable: false,
+    session_supported: false,
+    install_message: message,
+    auth_message: "Auth not checked because runtime detection failed",
+    runtime_message: message,
+    session_message: "Session restore support is pending for V1 hardening",
+  };
 }
 
 const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
@@ -213,7 +215,7 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
   const [selectedId, setSelectedId] = useState<AdapterId | null>(null);
   const [workingDir, setWorkingDir] = useState<string>("");
   const [displayName, setDisplayName] = useState<string>("");
-  const [cardColor, setCardColor] = useState<string>(CARD_COLOR_PRESETS[0].color);
+  const [cardColor, setCardColor] = useState<string>(DEFAULT_CARD_ACCENT_COLOR);
   const setCardColorStore = useAgentStore((s) => s.setCardColor);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -221,18 +223,34 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
   const [authStatuses, setAuthStatuses] = useState<Map<string, AdapterAuthStatus>>(new Map());
   const [authGuide, setAuthGuide] = useState<AdapterAuthStatus | null>(null);
   const [showAllExpanded, setShowAllExpanded] = useState(false);
+  const [backendPreviewOnly, setBackendPreviewOnly] = useState(false);
 
   // Restore last-used working dir + reset expand state
   useEffect(() => {
     if (!visible) return;
-    setWorkingDir(guessDefaultWorkingDir());
+    const remembered = getRememberedWorkingDir();
+    if (remembered) {
+      setWorkingDir(remembered);
+    } else {
+      setWorkingDir("");
+      getDefaultWorkingDir()
+        .then((dir) => {
+          const trimmed = dir.trim();
+          if (!trimmed) return;
+          setWorkingDir((current) => current.trim().length > 0 ? current : trimmed);
+        })
+        .catch(() => {
+          // Backend may be unavailable in preview-only mode; create still
+          // falls back to the backend default when possible.
+        });
+    }
     setShowAllExpanded(false);
   }, [visible]);
 
   // When adapter selection changes, auto-set color to adapter default
   useEffect(() => {
     if (selectedId) {
-      setCardColor(DEFAULT_ADAPTER_COLORS[selectedId] ?? CARD_COLOR_PRESETS[0].color);
+      setCardColor(DEFAULT_CARD_ACCENT_COLOR);
     }
   }, [selectedId]);
 
@@ -242,8 +260,11 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
     setLoading(true);
     setError(null);
     setAuthGuide(null);
+    setBackendPreviewOnly(false);
+    setAuthStatuses(new Map());
     listAdapters()
       .then((list) => {
+        setBackendPreviewOnly(false);
         setAdapters(list);
         if (list.length > 0 && selectedId === null) {
           // Default to primary adapter if favorites are configured, else first adapter
@@ -264,25 +285,34 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
               });
             })
             .catch(() => {
-              // Detection failed — treat as unknown (no badge)
+              setAuthStatuses((prev) => {
+                const next = new Map(prev);
+                next.set(
+                  adapter.id,
+                  blockedAdapterStatus(adapter.id, "Could not detect adapter runtime")
+                );
+                return next;
+              });
+              // Detection failed - treat as unknown (no badge)
             });
         }
       })
       .catch(() => {
-        // Backend unavailable — show built-in demo list so user still sees the modal.
+        // Backend unavailable - show built-in demo list so user still sees the modal.
         const demo: AdapterInfo[] = [
           { id: "claude-code", name: "Claude Code", command: "claude", capabilities: { can_coordinate: true, coordination_template: null, can_parse_tree: true, can_detect_permission: true }, is_builtin: true },
           { id: "codex", name: "Codex", command: "codex", capabilities: { can_coordinate: false, coordination_template: null, can_parse_tree: false, can_detect_permission: false }, is_builtin: true },
           { id: "aider", name: "Aider", command: "aider", capabilities: { can_coordinate: false, coordination_template: null, can_parse_tree: false, can_detect_permission: false }, is_builtin: true },
           { id: "opencode", name: "OpenCode", command: "opencode", capabilities: { can_coordinate: false, coordination_template: null, can_parse_tree: false, can_detect_permission: false }, is_builtin: true },
         ];
+        setBackendPreviewOnly(true);
         setAdapters(demo);
         if (favoriteAdapters.size > 0 && primaryAdapterId && demo.some((a) => a.id === primaryAdapterId)) {
           setSelectedId(primaryAdapterId);
         } else {
           setSelectedId(demo[0].id);
         }
-        setError("Backend unavailable — showing built-in adapter list (preview only).");
+        setError("Backend unavailable - showing built-in adapter list (preview only).");
       })
       .finally(() => setLoading(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -298,12 +328,28 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
     return () => window.removeEventListener("keydown", onKey);
   }, [visible, onClose]);
 
+  const handlePickWorkingDir = useCallback(async () => {
+    setError(null);
+    try {
+      const pickedDir = await pickWorkingDirectory(openDialog, workingDir);
+      if (pickedDir) setWorkingDir(pickedDir);
+    } catch (err) {
+      console.error("[AddAgent] open working directory picker failed:", err);
+      setError("Could not open folder picker. You can paste a folder path manually.");
+    }
+  }, [workingDir]);
+
   const handleCreate = useCallback(async () => {
     if (!selectedId || creating) return;
+    const disabledReason = getCreateDisabledReason(authStatuses.get(selectedId), backendPreviewOnly);
+    if (disabledReason) {
+      setError(disabledReason);
+      return;
+    }
     setCreating(true);
     setError(null);
     try {
-      // Pass workingDir iff user provided one; empty string → undefined so
+      // Pass workingDir iff user provided one; empty string -> undefined so
       // backend falls back to std::env::current_dir().
       const trimmedDir = workingDir.trim();
       const dirArg = trimmedDir.length > 0 ? trimmedDir : undefined;
@@ -318,9 +364,9 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
       addInstance(instance);
       // Save user-picked card color
       setCardColorStore(instance.instance_id, cardColor);
-      // Size must be >= MIN_CARD_W/H (580x380) enforced by AgentCard.
-      // Using a slightly larger default (620x420) so the card has breathing
-      // room for the header/footer chrome and a few terminal rows.
+      // Size should stay comfortably above the compact minimum (320x220)
+      // enforced by AgentCard. Using 620x420 keeps room for header/footer
+      // chrome and a few terminal rows.
       const width = 620;
       const height = 420;
       // Place the card on the first empty grid slot so it doesn't land on
@@ -342,7 +388,7 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
       const errorMsg = formatBackendError(err);
       console.error("[AddAgent] create_agent_instance failed:", err);
 
-      // Check if this is an auth/login related error — if so, show the
+      // Check if this is an auth/login related error - if so, show the
       // guidance modal instead of a plain error toast.
       const authKeywords = ["auth", "login", "api key", "credential", "not authorized", "401", "not found", "not logged in"];
       const lowerMsg = errorMsg.toLowerCase();
@@ -355,13 +401,7 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
           setAuthGuide(cached);
         } else {
           // Construct a minimal guide from the error message
-          setAuthGuide({
-            adapter_id: selectedId,
-            ready: false,
-            message: errorMsg,
-            login_command: null,
-            docs_url: null,
-          });
+          setAuthGuide(blockedAdapterStatus(selectedId, errorMsg));
         }
       } else {
         setError(errorMsg);
@@ -369,9 +409,15 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
     } finally {
       setCreating(false);
     }
-  }, [selectedId, creating, workingDir, displayName, cardColor, addInstance, addCard, setCardColorStore, onClose, authStatuses]);
+  }, [selectedId, creating, workingDir, displayName, cardColor, addInstance, addCard, setCardColorStore, onClose, authStatuses, backendPreviewOnly]);
 
   if (!visible) return null;
+
+  const selectedRuntimeStatus = selectedId ? authStatuses.get(selectedId) : undefined;
+  const createDisabledReason = selectedId
+    ? getCreateDisabledReason(selectedRuntimeStatus, backendPreviewOnly)
+    : "Select an adapter";
+  const createDisabled = creating || createDisabledReason !== null;
 
   return (
     <div
@@ -478,6 +524,7 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
               const meta = metaFor(adapter.id);
               const IconComp = meta.icon;
               const authStatus = authStatuses.get(adapter.id);
+              const runtimeBadges = buildAdapterRuntimeBadges(authStatus, backendPreviewOnly);
               return (
                 <button
                   key={adapter.id}
@@ -518,25 +565,6 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
                       >
                         {adapter.name}
                       </span>
-                      {/* Auth badge */}
-                      {authStatus && (
-                        <span
-                          style={{
-                            fontFamily: "'Geist Sans',sans-serif",
-                            fontSize: 9,
-                            fontWeight: 600,
-                            padding: "2px 7px",
-                            borderRadius: 9999,
-                            letterSpacing: 0.3,
-                            background: authStatus.ready ? "rgba(52,199,89,0.15)" : "rgba(255,184,0,0.15)",
-                            color: authStatus.ready ? "#34C759" : "#FFB800",
-                            border: `1px solid ${authStatus.ready ? "rgba(52,199,89,0.3)" : "rgba(255,184,0,0.3)"}`,
-                            whiteSpace: "nowrap" as const,
-                          }}
-                        >
-                          {authStatus.ready ? "Ready" : "Setup needed"}
-                        </span>
-                      )}
                     </div>
                     <span
                       className="truncate"
@@ -548,6 +576,44 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
                     >
                       {meta.caption}
                     </span>
+                    <div className="flex flex-wrap" style={{ gap: 4, marginTop: 5 }}>
+                      {runtimeBadges.map((badge) => (
+                        <span
+                          key={badge.id}
+                          title={badge.detail}
+                          style={{
+                            fontFamily: "'Geist Sans',sans-serif",
+                            fontSize: 9,
+                            fontWeight: 600,
+                            padding: "2px 6px",
+                            borderRadius: 9999,
+                            letterSpacing: 0,
+                            background:
+                              badge.tone === "ok"
+                                ? "rgba(52,199,89,0.14)"
+                                : badge.tone === "warn"
+                                  ? "rgba(255,184,0,0.14)"
+                                  : "rgba(255,255,255,0.055)",
+                            color:
+                              badge.tone === "ok"
+                                ? "#34C759"
+                                : badge.tone === "warn"
+                                  ? "#FFB800"
+                                  : "#8A8F98",
+                            border: `1px solid ${
+                              badge.tone === "ok"
+                                ? "rgba(52,199,89,0.26)"
+                                : badge.tone === "warn"
+                                  ? "rgba(255,184,0,0.26)"
+                                  : "rgba(255,255,255,0.09)"
+                            }`,
+                            whiteSpace: "nowrap" as const,
+                          }}
+                        >
+                          {badge.label}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 </button>
               );
@@ -649,10 +715,7 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
                 }}
               />
               <button
-                onClick={() => {
-                  // Fallback to user home dir guess for Windows
-                  setWorkingDir("C:\\Users\\");
-                }}
+                onClick={handlePickWorkingDir}
                 className="shrink-0 flex items-center justify-center transition-colors"
                 style={{
                   width: 36,
@@ -662,10 +725,10 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
                   borderRadius: 8,
                   color: "#B8B3B0",
                 }}
-                title="Fill with C:\\Users\\ as a starting point"
-                aria-label="Use home directory"
+                title="Choose working directory"
+                aria-label="Choose working directory"
               >
-                <ICON_HOME size={14} color="currentColor" />
+                <ICON_FOLDER size={14} color="currentColor" />
               </button>
             </div>
             <span
@@ -676,7 +739,7 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
                 lineHeight: 1.5,
               }}
             >
-              Agent binary will start with this as its cwd. Leave blank to use Conflux's own working directory.
+              Agent binary will start with this as its cwd. Leave blank to use your default working directory.
             </span>
           </div>
 
@@ -716,7 +779,7 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
                 lineHeight: 1.5,
               }}
             >
-              Helps tell apart multiple instances of the same adapter. Shows as "Adapter · Nickname".
+              Helps tell apart multiple instances of the same adapter. Shows as "Adapter - Nickname".
             </span>
           </div>
 
@@ -792,7 +855,8 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
           </button>
           <button
             onClick={handleCreate}
-            disabled={!selectedId || creating}
+            disabled={createDisabled}
+            title={createDisabledReason ?? "Create agent"}
             className="flex items-center transition-opacity"
             style={{
               padding: "10px 20px",
@@ -803,8 +867,8 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
               fontSize: 13,
               fontWeight: 600,
               color: "#0A0F15",
-              opacity: !selectedId || creating ? 0.5 : 1,
-              cursor: !selectedId || creating ? "not-allowed" : "pointer",
+              opacity: createDisabled ? 0.5 : 1,
+              cursor: createDisabled ? "not-allowed" : "pointer",
             }}
           >
             <ICON_ARROW_RIGHT size={14} color="#0A0F15" />

@@ -115,6 +115,29 @@ describe("terminal input controller", () => {
     expect(h.echoed).toEqual([]);
   });
 
+  it("reports send failures without local echo fallback when live PTY send fails", async () => {
+    const h = createHarness();
+    const onSendFailure = vi.fn();
+    h.sendData.mockImplementationOnce(() => Promise.reject(new Error("pty offline")));
+
+    const controller = createTerminalInputController({
+      hasSelection: () => false,
+      getSelection: () => "",
+      copyText: h.copyText,
+      sendData: h.sendData,
+      echoLocal: h.echoLocal,
+      allowEchoFallback: false,
+      onSendFailure,
+    });
+
+    controller.handleData("a");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(h.echoed).toEqual([]);
+    expect(onSendFailure).toHaveBeenCalledWith("a", expect.any(Error));
+  });
+
   it("keeps local echo fallback when explicitly enabled", async () => {
     const h = createHarness();
     h.sendData.mockImplementationOnce(() => Promise.reject(new Error("demo mode")));

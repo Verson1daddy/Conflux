@@ -17,6 +17,7 @@ import type {
   PtyOutputPayload,
   StdinInjectedPayload,
   ProcessExitedPayload,
+  IslandMode,
 } from "../types";
 
 // ===== Tauri 事件名常量 =====
@@ -25,6 +26,7 @@ import type {
 
 /** 统一事件通道名——所有 ConfluxEvent 通过此通道发射 */
 const CONFLUX_EVENT_CHANNEL = "conflux://event";
+const COMPACT_DETAIL_RESET_EVENT = "compact-detail-reset";
 
 /** 各事件类型独立通道名（按事件类型分发，便于精确订阅） */
 const EVENT_CHANNELS = {
@@ -40,6 +42,8 @@ const EVENT_CHANNELS = {
   StdinInjected: "conflux://stdin-injected",
   ProcessExited: "conflux://process-exited",
 } as const;
+
+const ISLAND_MODE_CHANGED_EVENT = "island-mode-changed";
 
 // ===== 统一事件监听 =====
 
@@ -211,6 +215,24 @@ export async function onPtyOutput(
       callback(tauriEvent.payload);
     }
   );
+}
+
+export async function onIslandModeChanged(
+  callback: (mode: IslandMode) => void
+): Promise<UnlistenFn> {
+  return listen<IslandMode>(ISLAND_MODE_CHANGED_EVENT, (tauriEvent) => {
+    callback(tauriEvent.payload);
+  });
+}
+
+export type CompactDetailResetSource = "island_window" | "float_panel";
+
+export async function onCompactDetailReset(
+  callback: (source: CompactDetailResetSource) => void
+): Promise<UnlistenFn> {
+  return listen<CompactDetailResetSource>(COMPACT_DETAIL_RESET_EVENT, (tauriEvent) => {
+    callback(tauriEvent.payload);
+  });
 }
 
 /**

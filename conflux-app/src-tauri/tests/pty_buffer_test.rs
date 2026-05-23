@@ -74,7 +74,7 @@ fn test_wrap_around_incremental_writes() {
     // 容量 10 字节，分多次写入超过容量
     let mut buf = OutputBuffer::new(10);
     buf.write(b"ABCDEFGH"); // 8 字节，write_pos=8
-    buf.write(b"IJKL");     // 4 字节，发生环绕，write_pos=2
+    buf.write(b"IJKL"); // 4 字节，发生环绕，write_pos=2
 
     assert_eq!(buf.len(), 10);
     assert_eq!(buf.total_written(), 12);
@@ -109,8 +109,8 @@ fn test_multiple_wrap_arounds() {
     // 容量 4，多次环绕
     let mut buf = OutputBuffer::new(4);
     buf.write(b"ABCD"); // 填满
-    buf.write(b"EF");   // 覆盖 AB
-    buf.write(b"GH");   // 覆盖 CD
+    buf.write(b"EF"); // 覆盖 AB
+    buf.write(b"GH"); // 覆盖 CD
 
     assert_eq!(buf.len(), 4);
     assert_eq!(buf.total_written(), 8);
@@ -134,7 +134,7 @@ fn test_read_last_no_wrap() {
 fn test_read_last_with_wrap() {
     let mut buf = OutputBuffer::new(10);
     buf.write(b"ABCDEFGH"); // write_pos=8
-    buf.write(b"IJKL");     // 环绕，write_pos=2
+    buf.write(b"IJKL"); // 环绕，write_pos=2
 
     // 有效数据: CDEFGHIJKL
     assert_eq!(buf.read_last(4), b"IJKL".to_vec());

@@ -70,11 +70,7 @@ fn test_spawn_returns_instance_id() {
     assert!(!instance_id.is_empty(), "instance_id 不应为空");
 
     // UUID v4 格式验证: 8-4-4-4-12
-    assert_eq!(
-        instance_id.len(),
-        36,
-        "UUID v4 字符串应为 36 个字符"
-    );
+    assert_eq!(instance_id.len(), 36, "UUID v4 字符串应为 36 个字符");
 
     // 清理
     let _ = manager.kill(&instance_id);
@@ -102,6 +98,11 @@ fn test_spawn_creates_instance_in_list() {
     assert_eq!(instances.len(), 1, "应该有 1 个实例");
     assert_eq!(instances[0].instance_id.0, instance_id);
     assert_eq!(instances[0].adapter_name, "Test Adapter");
+    assert!(
+        instances[0].last_activity_at >= instances[0].created_at,
+        "runtime list should expose a real last_activity_at timestamp"
+    );
+    assert_eq!(instances[0].ended_at, None);
 
     // 清理
     let _ = manager.kill(&instance_id);
@@ -174,11 +175,7 @@ fn test_kill_removes_instance() {
     let result = manager.kill(&instance_id);
     assert!(result.is_ok(), "kill 应该成功");
 
-    assert_eq!(
-        manager.list_instances().len(),
-        0,
-        "kill 后实例列表应为空"
-    );
+    assert_eq!(manager.list_instances().len(), 0, "kill 后实例列表应为空");
 }
 
 #[test]
@@ -222,11 +219,7 @@ fn test_inject_stdin_to_valid_instance() {
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     let result = manager.inject_stdin(&instance_id, "echo test\n");
-    assert!(
-        result.is_ok(),
-        "inject_stdin 应该成功: {:?}",
-        result.err()
-    );
+    assert!(result.is_ok(), "inject_stdin 应该成功: {:?}", result.err());
 
     // 清理
     let _ = manager.kill(&instance_id);
@@ -281,6 +274,38 @@ fn test_get_instance_state_nonexistent() {
     let manager = PtyManager::new();
     let result = manager.get_instance_state("nonexistent-id");
     assert!(result.is_err());
+}
+
+#[test]
+fn test_spawn_preserves_working_dir_in_list_and_state() {
+    let manager = PtyManager::new();
+    let working_dir = test_working_dir();
+    let instance_id = manager
+        .spawn(
+            test_command(),
+            &echo_args(),
+            &working_dir,
+            "test-adapter",
+            "Test Adapter",
+            None,
+            None,
+            AgentMode::Full,
+            false,
+            None,
+        )
+        .unwrap();
+
+    let instances = manager.list_instances();
+    let listed = instances
+        .iter()
+        .find(|inst| inst.instance_id.0 == instance_id)
+        .expect("spawned instance should be present in list_instances");
+    assert_eq!(listed.working_dir, working_dir);
+
+    let state = manager.get_instance_state(&instance_id).unwrap();
+    assert_eq!(state.working_dir, working_dir);
+
+    let _ = manager.kill(&instance_id);
 }
 
 // ===== update_status 测试 =====
@@ -492,10 +517,7 @@ fn test_spawn_invalid_command() {
     if result.is_err() {
         match result.unwrap_err() {
             ConfluxError::PtyError { message } => {
-                assert!(
-                    !message.is_empty(),
-                    "PtyError 应该包含错误信息"
-                );
+                assert!(!message.is_empty(), "PtyError 应该包含错误信息");
             }
             other => panic!("期望 PtyError，实际: {:?}", other),
         }
@@ -528,15 +550,19 @@ fn test_rename_instance() {
         .rename_instance(&instance_id, Some("my-alias".to_string()))
         .unwrap();
     let instances = manager.list_instances();
-    let inst = instances.iter().find(|i| i.instance_id.0 == instance_id).unwrap();
+    let inst = instances
+        .iter()
+        .find(|i| i.instance_id.0 == instance_id)
+        .unwrap();
     assert_eq!(inst.display_name, Some("my-alias".to_string()));
 
     // rename back to None
-    manager
-        .rename_instance(&instance_id, None)
-        .unwrap();
+    manager.rename_instance(&instance_id, None).unwrap();
     let instances = manager.list_instances();
-    let inst = instances.iter().find(|i| i.instance_id.0 == instance_id).unwrap();
+    let inst = instances
+        .iter()
+        .find(|i| i.instance_id.0 == instance_id)
+        .unwrap();
     assert_eq!(inst.display_name, None);
 
     // 清理
@@ -562,7 +588,10 @@ fn test_display_name_in_spawn() {
         .unwrap();
 
     let instances = manager.list_instances();
-    let inst = instances.iter().find(|i| i.instance_id.0 == instance_id).unwrap();
+    let inst = instances
+        .iter()
+        .find(|i| i.instance_id.0 == instance_id)
+        .unwrap();
     assert_eq!(inst.display_name, Some("test-name".to_string()));
 
     // 清理
@@ -588,7 +617,10 @@ fn test_display_name_none_by_default() {
         .unwrap();
 
     let instances = manager.list_instances();
-    let inst = instances.iter().find(|i| i.instance_id.0 == instance_id).unwrap();
+    let inst = instances
+        .iter()
+        .find(|i| i.instance_id.0 == instance_id)
+        .unwrap();
     assert_eq!(inst.display_name, None);
 
     // 清理

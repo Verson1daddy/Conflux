@@ -15,20 +15,28 @@ import {
   resolveTopIslandState,
   type CompactDetailState,
 } from "./compact-mode";
+import { COMPACT_WINDOW_METRICS } from "./compact-window-metrics";
 
 function SidebarHotzoneMock(props: {
   expanded: boolean;
   onHoverChange: (hovered: boolean) => void;
+  onActivate: () => void;
 }) {
   return createElement("sidebar-hotzone", props);
 }
 
-function SidebarPanelMock(props: { onCollapse: () => void }) {
+function SidebarPanelMock(props: {
+  onCollapse: () => void;
+  onOpenWorkspace?: () => void;
+  onUndock?: () => void;
+  onDragStart?: () => void;
+}) {
   return createElement("sidebar-panel", props);
 }
 
 function TopIslandPopoverMock(props: {
   anchor: { x: number; y: number };
+  view: "details" | "notifications" | "quick_reply";
   onClose: () => void;
   onRestoreWorkspace: () => void;
 }) {
@@ -109,6 +117,54 @@ async function renderFloatBallRendererWithIslandState(input: {
   }
 }
 
+async function renderFloatBallPanelWithIslandState(input: {
+  notifications: Array<{
+    id: string;
+    level: string;
+    read: boolean;
+    source_adapter_name?: string;
+    content?: string;
+  }>;
+  pendingPermissions: Array<{
+    id: string;
+    action?: string;
+    description?: string;
+  }>;
+}) {
+  vi.resetModules();
+  vi.doMock("@/stores/islandStore", () => ({
+    useIslandStore: (
+      selector: (state: {
+        notifications: typeof input.notifications;
+        pendingPermissions: typeof input.pendingPermissions;
+      }) => unknown
+    ) =>
+      selector({
+        notifications: input.notifications,
+        pendingPermissions: input.pendingPermissions,
+      }),
+  }));
+
+  try {
+    const { FloatBallPanel } = await import("@/components/island/FloatBallPanel");
+    let renderer!: TestRenderer.ReactTestRenderer;
+
+    await act(async () => {
+      renderer = TestRenderer.create(
+        createElement(FloatBallPanel, {
+          onClose: () => undefined,
+          onOpenWorkspace: () => undefined,
+        })
+      );
+    });
+
+    return renderer;
+  } finally {
+    vi.doUnmock("@/stores/islandStore");
+    vi.resetModules();
+  }
+}
+
 async function renderTopIslandWithIslandState(input: {
   notifications: Array<{
     id: string;
@@ -123,6 +179,12 @@ async function renderTopIslandWithIslandState(input: {
     string,
     { status: "thinking" | "coding" | "waiting_permission" | "idle" }
   >;
+  presentation?: "collapsed" | "expanded";
+  onExpand?: (
+    anchor: { x: number; y: number },
+    view: "details" | "notifications" | "quick_reply"
+  ) => void;
+  onSnapToMonitor?: (presentation: "collapsed" | "expanded") => void;
 }) {
   vi.resetModules();
   vi.doMock("@/stores/islandStore", () => ({
@@ -154,7 +216,11 @@ async function renderTopIslandWithIslandState(input: {
 
     await act(async () => {
       renderer = TestRenderer.create(
-        createElement(TopIsland, { onExpand: () => undefined })
+        createElement(TopIsland, {
+          presentation: input.presentation,
+          onExpand: input.onExpand ?? (() => undefined),
+          onSnapToMonitor: input.onSnapToMonitor,
+        })
       );
     });
 
@@ -166,7 +232,9 @@ async function renderTopIslandWithIslandState(input: {
   }
 }
 
-async function renderCompactModeControllerForSidebarFlow() {
+async function renderCompactModeControllerForSidebarFlow(input?: {
+  setIslandDetailPresentation?: ReturnType<typeof vi.fn>;
+}) {
   vi.resetModules();
   vi.useFakeTimers();
   vi.stubGlobal("window", {
@@ -175,13 +243,32 @@ async function renderCompactModeControllerForSidebarFlow() {
   });
 
   const setMode = vi.fn();
+  const showWorkspaceOnly = vi.fn();
+  const setIslandDetailPresentation =
+    input?.setIslandDetailPresentation ?? vi.fn().mockResolvedValue(undefined);
 
   vi.doMock("@/stores/islandStore", () => ({
-    useIslandStore: (selector: (state: { mode: string; setMode: typeof setMode }) => unknown) =>
-      selector({ mode: "sidebar", setMode }),
+    useIslandStore: (
+      selector: (state: {
+        mode: string;
+        setMode: typeof setMode;
+        pendingPermissions: [];
+        unreadCount: number;
+      }) => unknown
+    ) =>
+      selector({
+        mode: "sidebar",
+        setMode,
+        pendingPermissions: [],
+        unreadCount: 0,
+      }),
   }));
   vi.doMock("@/lib/tauri-bridge", () => ({
-    showWorkspaceOnly: vi.fn(),
+    setIslandDetailPresentation,
+    showWorkspaceOnly,
+  }));
+  vi.doMock("@/lib/event-listener", () => ({
+    onCompactDetailReset: vi.fn().mockResolvedValue(() => undefined),
   }));
   vi.doMock("@/components/island/SidebarHotzone", () => ({
     SidebarHotzone: SidebarHotzoneMock,
@@ -218,12 +305,13 @@ async function renderCompactModeControllerForSidebarFlow() {
       renderer = TestRenderer.create(createElement(CompactModeController));
     });
 
-    return { renderer, setMode };
+    return { renderer, setIslandDetailPresentation, setMode, showWorkspaceOnly };
   } catch (error) {
     vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.doUnmock("@/stores/islandStore");
     vi.doUnmock("@/lib/tauri-bridge");
+    vi.doUnmock("@/lib/event-listener");
     vi.doUnmock("@/components/island/SidebarHotzone");
     vi.doUnmock("@/components/island/Sidebar");
     vi.doUnmock("@/components/island/IslandSurface");
@@ -241,6 +329,7 @@ function cleanupCompactModeControllerSidebarMocks() {
   vi.unstubAllGlobals();
   vi.doUnmock("@/stores/islandStore");
   vi.doUnmock("@/lib/tauri-bridge");
+  vi.doUnmock("@/lib/event-listener");
   vi.doUnmock("@/components/island/SidebarHotzone");
   vi.doUnmock("@/components/island/Sidebar");
   vi.doUnmock("@/components/island/IslandSurface");
@@ -425,18 +514,32 @@ async function renderSidebarWithIslandState(input: {
   }
 }
 
-async function renderCompactModeControllerForTopIslandFlow() {
+async function renderCompactModeControllerForTopIslandFlow(input?: {
+  notifications?: Array<{ id: string; level: string; read: boolean }>;
+  pendingPermissions?: Array<{ id: string }>;
+  unreadCount?: number;
+  setIslandDetailPresentation?: ReturnType<typeof vi.fn>;
+}) {
   vi.resetModules();
+  vi.stubGlobal("window", {
+    clearTimeout,
+    setTimeout,
+  });
 
   const setMode = vi.fn();
+  const setIslandDetailPresentation =
+    input?.setIslandDetailPresentation ?? vi.fn().mockResolvedValue(undefined);
+  const notifications = input?.notifications ?? [];
+  const pendingPermissions = input?.pendingPermissions ?? [];
+  const unreadCount = input?.unreadCount ?? 0;
 
   vi.doMock("@/stores/islandStore", () => ({
     useIslandStore: (
       selector: (state: {
         mode: string;
         setMode: typeof setMode;
-        pendingPermissions: [];
-        notifications: [];
+        pendingPermissions: typeof pendingPermissions;
+        notifications: typeof notifications;
         unreadCount: number;
         removePermissionRequest: ReturnType<typeof vi.fn>;
         clearNotification: ReturnType<typeof vi.fn>;
@@ -445,9 +548,9 @@ async function renderCompactModeControllerForTopIslandFlow() {
       selector({
         mode: "top_island",
         setMode,
-        pendingPermissions: [],
-        notifications: [],
-        unreadCount: 0,
+        pendingPermissions,
+        notifications,
+        unreadCount,
         removePermissionRequest: vi.fn(),
         clearNotification: vi.fn(),
       }),
@@ -458,7 +561,11 @@ async function renderCompactModeControllerForTopIslandFlow() {
   }));
   vi.doMock("@/lib/tauri-bridge", () => ({
     respondToPermission: vi.fn(),
+    setIslandDetailPresentation,
     showWorkspaceOnly: vi.fn(),
+  }));
+  vi.doMock("@/lib/event-listener", () => ({
+    onCompactDetailReset: vi.fn().mockResolvedValue(() => undefined),
   }));
   vi.doMock("@/components/island/IslandSurface", () => ({
     IslandSurface: forwardRef(function IslandSurfaceMock(
@@ -501,11 +608,12 @@ async function renderCompactModeControllerForTopIslandFlow() {
       renderer = TestRenderer.create(createElement(CompactModeController));
     });
 
-    return { renderer, setMode };
+    return { renderer, setIslandDetailPresentation, setMode };
   } catch (error) {
     vi.doUnmock("@/stores/islandStore");
     vi.doUnmock("@/stores/agentStore");
     vi.doUnmock("@/lib/tauri-bridge");
+    vi.doUnmock("@/lib/event-listener");
     vi.doUnmock("@/components/island/IslandSurface");
     vi.doUnmock("@/components/island/FloatBall");
     vi.doUnmock("@/components/island/FloatBallPanel");
@@ -521,6 +629,7 @@ function cleanupCompactModeControllerTopIslandMocks() {
   vi.doUnmock("@/stores/islandStore");
   vi.doUnmock("@/stores/agentStore");
   vi.doUnmock("@/lib/tauri-bridge");
+  vi.doUnmock("@/lib/event-listener");
   vi.doUnmock("@/components/island/IslandSurface");
   vi.doUnmock("@/components/island/FloatBall");
   vi.doUnmock("@/components/island/FloatBallPanel");
@@ -545,11 +654,22 @@ async function renderCompactModeControllerForFloatBallFlow(input: {
     description: string;
   }>;
   unreadCount: number;
+  setIslandDetailPresentationMock?: ReturnType<typeof vi.fn>;
+  showFloatBallPanelWindowMock?: ReturnType<typeof vi.fn>;
+  hideFloatBallPanelWindowMock?: ReturnType<typeof vi.fn>;
 }) {
   vi.resetModules();
 
   const setMode = vi.fn();
   const showWorkspaceOnly = vi.fn();
+  const setIslandDetailPresentation =
+    input.setIslandDetailPresentationMock ?? vi.fn().mockResolvedValue(undefined);
+  const showFloatBallPanelWindow =
+    input.showFloatBallPanelWindowMock ?? vi.fn().mockResolvedValue(undefined);
+  const hideFloatBallPanelWindow =
+    input.hideFloatBallPanelWindowMock ?? vi.fn().mockResolvedValue(undefined);
+  const writeFloatPanelSnapshot = vi.fn();
+  let compactDetailReset: (() => void) | undefined;
 
   vi.doMock("@/stores/islandStore", () => ({
     useIslandStore: (
@@ -570,7 +690,19 @@ async function renderCompactModeControllerForFloatBallFlow(input: {
       }),
   }));
   vi.doMock("@/lib/tauri-bridge", () => ({
+    hideFloatBallPanelWindow,
+    setIslandDetailPresentation,
+    showFloatBallPanelWindow,
     showWorkspaceOnly,
+  }));
+  vi.doMock("@/lib/float-panel-snapshot", () => ({
+    writeFloatPanelSnapshot,
+  }));
+  vi.doMock("@/lib/event-listener", () => ({
+    onCompactDetailReset: vi.fn((callback: () => void) => {
+      compactDetailReset = callback;
+      return Promise.resolve(() => undefined);
+    }),
   }));
   vi.doMock("@/components/island/TopIsland", () => ({
     TopIsland: () => createElement("top-island"),
@@ -592,15 +724,35 @@ async function renderCompactModeControllerForFloatBallFlow(input: {
     await act(async () => {
       renderer = TestRenderer.create(createElement(CompactModeController));
     });
+    await act(async () => {
+      await Promise.resolve();
+    });
 
-    return { renderer, setMode, showWorkspaceOnly };
+    return {
+      hideFloatBallPanelWindow,
+      renderer,
+      setIslandDetailPresentation,
+      setMode,
+      showFloatBallPanelWindow,
+      showWorkspaceOnly,
+      compactDetailReset: () => {
+        if (!compactDetailReset) {
+          throw new Error("compact detail reset listener was not registered");
+        }
+        compactDetailReset();
+      },
+      writeFloatPanelSnapshot,
+    };
   } catch (error) {
     vi.doUnmock("@/stores/islandStore");
     vi.doUnmock("@/lib/tauri-bridge");
+    vi.doUnmock("@/lib/float-panel-snapshot");
+    vi.doUnmock("@/lib/event-listener");
     vi.doUnmock("@/components/island/TopIsland");
     vi.doUnmock("@/components/island/TopIslandPopover");
     vi.doUnmock("@/components/island/SidebarHotzone");
     vi.doUnmock("@/components/island/Sidebar");
+    vi.unstubAllGlobals();
     vi.resetModules();
     throw error;
   }
@@ -609,10 +761,13 @@ async function renderCompactModeControllerForFloatBallFlow(input: {
 function cleanupCompactModeControllerFloatBallMocks() {
   vi.doUnmock("@/stores/islandStore");
   vi.doUnmock("@/lib/tauri-bridge");
+  vi.doUnmock("@/lib/float-panel-snapshot");
+  vi.doUnmock("@/lib/event-listener");
   vi.doUnmock("@/components/island/TopIsland");
   vi.doUnmock("@/components/island/TopIslandPopover");
   vi.doUnmock("@/components/island/SidebarHotzone");
   vi.doUnmock("@/components/island/Sidebar");
+  vi.unstubAllGlobals();
   vi.resetModules();
 }
 
@@ -632,9 +787,20 @@ async function renderTopIslandPopoverWithIslandState(input: {
   }>;
   unreadCount: number;
   activeStatuses?: Array<"thinking" | "coding" | "waiting_permission" | "idle">;
+  view?: "details" | "notifications" | "quick_reply";
+  anchor?: { x: number; y: number };
+  viewport?: { innerWidth: number; innerHeight: number };
   respondToPermissionMock?: ReturnType<typeof vi.fn>;
+  onClose?: () => void;
 }) {
   vi.resetModules();
+
+  if (input.viewport) {
+    vi.stubGlobal("window", {
+      innerWidth: input.viewport.innerWidth,
+      innerHeight: input.viewport.innerHeight,
+    });
+  }
 
   const removePermissionRequest = vi.fn();
   const clearNotification = vi.fn();
@@ -670,15 +836,28 @@ async function renderTopIslandPopoverWithIslandState(input: {
         clearNotification,
       }),
   }));
+  const openDiscussionWizard = vi.fn();
   vi.doMock("@/stores/agentStore", () => ({
-    useAgentStore: (selector: (state: { instances: Map<string, unknown> }) => unknown) =>
+    useAgentStore: (
+      selector: (state: {
+        instances: Map<string, unknown>;
+        openDiscussionWizard: typeof openDiscussionWizard;
+      }) => unknown
+    ) =>
       selector({
         instances: new Map(
           (input.activeStatuses ?? []).map((status, index) => [
             `agent-${index}`,
-            { status },
+            {
+              instance_id: `agent-${index}`,
+              adapter_name: index === 0 ? "Codex" : "Claude Code",
+              display_name: null,
+              status,
+              ended_at: null,
+            },
           ])
         ),
+        openDiscussionWizard,
       }),
   }));
   vi.doMock("@/lib/tauri-bridge", () => ({
@@ -692,8 +871,9 @@ async function renderTopIslandPopoverWithIslandState(input: {
     await act(async () => {
       renderer = TestRenderer.create(
         createElement(TopIslandPopover, {
-          anchor: { x: 320, y: 180 },
-          onClose: () => undefined,
+          anchor: input.anchor ?? { x: 320, y: 180 },
+          view: input.view ?? "details",
+          onClose: input.onClose ?? (() => undefined),
           onRestoreWorkspace: () => undefined,
         })
       );
@@ -709,6 +889,7 @@ async function renderTopIslandPopoverWithIslandState(input: {
     vi.doUnmock("@/stores/islandStore");
     vi.doUnmock("@/stores/agentStore");
     vi.doUnmock("@/lib/tauri-bridge");
+    vi.unstubAllGlobals();
     vi.resetModules();
     throw error;
   }
@@ -718,6 +899,7 @@ function cleanupTopIslandMocks() {
   vi.doUnmock("@/stores/islandStore");
   vi.doUnmock("@/stores/agentStore");
   vi.doUnmock("@/lib/tauri-bridge");
+  vi.unstubAllGlobals();
   vi.resetModules();
 }
 
@@ -729,7 +911,11 @@ describe("compact-mode", () => {
     };
     const reduceDetail = (
       state: typeof prev,
-      action: { type: "toggle_top_island_popover"; anchor: { x: number; y: number } },
+      action: {
+        type: "toggle_top_island_popover";
+        anchor: { x: number; y: number };
+        view: "details" | "notifications" | "quick_reply";
+      },
     ) => ({
       ...state,
       detail: nextDetailState({
@@ -741,6 +927,7 @@ describe("compact-mode", () => {
     const next = reduceDetail(prev, {
       type: "toggle_top_island_popover",
       anchor: { x: 420, y: 48 },
+      view: "details",
     });
 
     expect(next.mode).toBe(prev.mode);
@@ -751,12 +938,17 @@ describe("compact-mode", () => {
     const detail = nextDetailState({
       currentMode: "top_island",
       currentDetail: { kind: "none" },
-      action: { type: "toggle_top_island_popover", anchor: { x: 600, y: 44 } },
+      action: {
+        type: "toggle_top_island_popover",
+        anchor: { x: 600, y: 44 },
+        view: "details",
+      },
     });
 
     expect(detail).toEqual({
       kind: "top_island_popover",
       anchor: { x: 600, y: 44 },
+      view: "details",
     } satisfies CompactDetailState);
   });
 
@@ -764,32 +956,82 @@ describe("compact-mode", () => {
     const opened = nextDetailState({
       currentMode: "top_island",
       currentDetail: { kind: "none" },
-      action: { type: "toggle_top_island_popover", anchor: { x: 700, y: 52 } },
+      action: {
+        type: "toggle_top_island_popover",
+        anchor: { x: 700, y: 52 },
+        view: "details",
+      },
     });
     const closed = nextDetailState({
       currentMode: "top_island",
       currentDetail: opened,
-      action: { type: "toggle_top_island_popover", anchor: { x: 700, y: 52 } },
+      action: {
+        type: "toggle_top_island_popover",
+        anchor: { x: 700, y: 52 },
+        view: "details",
+      },
     });
 
     expect(opened).toEqual({
       kind: "top_island_popover",
       anchor: { x: 700, y: 52 },
+      view: "details",
     });
     expect(closed).toEqual({ kind: "none" });
   });
 
-  it("expands the sidebar while scheduling collapse when the pointer only brushes the hotzone", () => {
+  it("switches top island popover views without collapsing the bubble", () => {
+    const notifications = nextDetailState({
+      currentMode: "top_island",
+      currentDetail: { kind: "none" },
+      action: {
+        type: "toggle_top_island_popover",
+        anchor: { x: 700, y: 52 },
+        view: "notifications",
+      },
+    });
+    const quickReply = nextDetailState({
+      currentMode: "top_island",
+      currentDetail: notifications,
+      action: {
+        type: "toggle_top_island_popover",
+        anchor: { x: 700, y: 52 },
+        view: "quick_reply",
+      },
+    });
+
+    expect(quickReply).toEqual({
+      kind: "top_island_popover",
+      anchor: { x: 700, y: 52 },
+      view: "quick_reply",
+    });
+  });
+
+  it("opens a collapsed sidebar from hotzone hover alone", () => {
     const next = resolveSidebarVisibility({
       hotzoneHovered: true,
       panelHovered: false,
-      expanded: false,
+      expanded: true,
       collapseDelayMs: 160,
     });
 
     expect(next).toEqual({
       expanded: true,
-      shouldScheduleCollapse: true,
+      shouldScheduleCollapse: false,
+    });
+  });
+
+  it("keeps an expanded sidebar open while the pointer stays on the hotzone", () => {
+    const next = resolveSidebarVisibility({
+      hotzoneHovered: true,
+      panelHovered: false,
+      expanded: true,
+      collapseDelayMs: 160,
+    });
+
+    expect(next).toEqual({
+      expanded: true,
+      shouldScheduleCollapse: false,
     });
   });
 
@@ -835,12 +1077,40 @@ describe("compact-mode", () => {
     });
     const capsule = renderer.root.find(
       (node) =>
-        node.type === "button" && classNameIncludes(node.props.className, "top-island-capsule")
+        classNameIncludes(node.props.className, "top-island-capsule")
     );
+    const detailTriggers = renderer.root.findAllByProps({
+      "aria-label": "Open dynamic island details",
+    });
 
     expect(classNameIncludes(capsule.props.className, "top-island-capsule")).toBe(true);
     expect(capsule.props["data-visual-state"]).toBe("idle");
-    expect(capsule.props.style?.["--top-island-width"]).toBe("400px");
+    expect(capsule.props["data-presentation"]).toBe("collapsed");
+    expect(capsule.props["data-tauri-drag-region"]).toBe(true);
+    expect(capsule.props.style?.["--top-island-width"]).toBe("180px");
+    expect(capsule.props.style?.["--top-island-height"]).toBe("36px");
+    expect(JSON.stringify(renderer.toJSON())).toContain("Idle");
+    expect(detailTriggers).toHaveLength(0);
+  });
+
+  it("asks the native island window to resnap when a draggable capsule is released", async () => {
+    const onSnapToMonitor = vi.fn();
+    const renderer = await renderTopIslandWithIslandState({
+      notifications: [],
+      pendingPermissions: [],
+      unreadCount: 0,
+      onSnapToMonitor,
+    });
+    const capsule = renderer.root.find(
+      (node) =>
+        classNameIncludes(node.props.className, "top-island-capsule")
+    );
+
+    await act(async () => {
+      capsule.props.onPointerUp();
+    });
+
+    expect(onSnapToMonitor).toHaveBeenCalledWith("collapsed");
   });
 
   it("locks the unread top island shell geometry to the pen baseline", async () => {
@@ -859,12 +1129,14 @@ describe("compact-mode", () => {
     });
     const capsule = renderer.root.find(
       (node) =>
-        node.type === "button" && classNameIncludes(node.props.className, "top-island-capsule")
+        node.type === "div" && classNameIncludes(node.props.className, "top-island-capsule")
     );
 
     expect(classNameIncludes(capsule.props.className, "top-island-capsule")).toBe(true);
     expect(capsule.props["data-visual-state"]).toBe("active");
+    expect(capsule.props["data-presentation"]).toBe("expanded");
     expect(capsule.props.style?.["--top-island-width"]).toBe("420px");
+    expect(capsule.props.style?.["--top-island-height"]).toBe("44px");
   });
 
   it("maps float ball data to semantic states", () => {
@@ -927,6 +1199,38 @@ describe("compact-mode", () => {
     expect(html).toMatch(/<span[^>]*aria-label="Float ball activity count 2"[^>]*>2<\/span>/);
   });
 
+  it("keeps the float ball panel summary aligned with the deduplicated badge count", async () => {
+    const renderer = await renderFloatBallPanelWithIslandState({
+      notifications: [
+        {
+          id: "perm-1",
+          level: "permission_required",
+          read: false,
+          source_adapter_name: "Codex",
+          content: "Permission needed: shell - Approve shell command",
+        },
+      ],
+      pendingPermissions: [
+        {
+          id: "perm-1",
+          action: "shell",
+          description: "Approve shell command",
+        },
+      ],
+    });
+
+    try {
+      const json = JSON.stringify(renderer.toJSON());
+
+      expect(json).toContain("1 pending permission");
+      expect(json).not.toContain("1 unread notification / 1 pending permission");
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+    }
+  });
+
   it("keeps stale permission notification ids separate from unmatched pending permissions", async () => {
     const html = await renderFloatBallWithIslandState({
       notifications: [
@@ -963,37 +1267,158 @@ describe("compact-mode", () => {
 
     expect(classNameIncludes(button.props.className, "float-ball")).toBe(true);
     expect(button.props.style?.["--float-ball-size"]).toBe("52px");
+    expect(button.props.children).not.toContain("Idle");
+  });
+
+  it("renders top island notification and quick reply actions instead of a blank expanded spacer", async () => {
+    const onExpand = vi.fn();
+    const renderer = await renderTopIslandWithIslandState({
+      notifications: [],
+      pendingPermissions: [],
+      unreadCount: 0,
+      presentation: "expanded",
+      onExpand,
+    });
+
+    try {
+      const capsule = renderer.root.find(
+        (node) =>
+          classNameIncludes(node.props.className, "top-island-capsule")
+      );
+
+      expect(capsule.props["data-presentation"]).toBe("expanded");
+      const notificationButton = renderer.root.findByProps({
+        "aria-label": "Open notifications",
+      });
+      const quickReplyButton = renderer.root.findByProps({
+        "aria-label": "Open quick reply",
+      });
+      const detailsButton = renderer.root.findByProps({
+        "aria-label": "Open dynamic island details",
+      });
+
+      await act(async () => {
+        notificationButton.props.onClick();
+      });
+      await act(async () => {
+        quickReplyButton.props.onClick();
+      });
+      await act(async () => {
+        detailsButton.props.onClick();
+      });
+
+      expect(onExpand).toHaveBeenNthCalledWith(1, expect.any(Object), "notifications");
+      expect(onExpand).toHaveBeenNthCalledWith(2, expect.any(Object), "quick_reply");
+      expect(onExpand).toHaveBeenNthCalledWith(3, expect.any(Object), "details");
+      expect(
+        renderer.root.findAll((node) =>
+          classNameIncludes(node.props.className, "top-island-capsule__spacer")
+        )
+      ).toHaveLength(0);
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+    }
   });
 
   it("closes repeated top island toggles", () => {
     const detail = nextDetailState({
       currentMode: "top_island",
-      currentDetail: { kind: "top_island_popover", anchor: { x: 600, y: 44 } },
-      action: { type: "toggle_top_island_popover", anchor: { x: 620, y: 52 } },
+      currentDetail: {
+        kind: "top_island_popover",
+        anchor: { x: 600, y: 44 },
+        view: "details",
+      },
+      action: {
+        type: "toggle_top_island_popover",
+        anchor: { x: 620, y: 52 },
+        view: "details",
+      },
     });
 
     expect(detail).toEqual({ kind: "none" });
   });
 
-  it("clicking dynamic island only toggles its popover and keeps mode stable", async () => {
-    const { renderer, setMode } = await renderCompactModeControllerForTopIslandFlow();
+  it("clicking the collapsed dynamic island expands before opening details and keeps mode stable", async () => {
+    const { renderer, setIslandDetailPresentation, setMode } =
+      await renderCompactModeControllerForTopIslandFlow();
 
     try {
-      const topIslandButton = renderer.root.findByType("button");
+      const collapsedCapsule = renderer.root.findByProps({
+        "aria-label": "Expand dynamic island capsule",
+      });
+
+      expect(renderer.root.findAllByProps({
+        "aria-label": "Open dynamic island details",
+      })).toHaveLength(0);
+
+      setIslandDetailPresentation.mockClear();
+      await act(async () => {
+        collapsedCapsule.props.onClick();
+      });
+
+      const expandedCapsule = renderer.root.find(
+        (node) =>
+          classNameIncludes(node.props.className, "top-island-capsule")
+      );
+      expect(expandedCapsule.props["data-presentation"]).toBe("expanded");
+      expect(expandedCapsule.props.style?.["--top-island-width"]).toBe("420px");
+      expect(setIslandDetailPresentation).not.toHaveBeenCalledWith("top_island_expanded");
+      expect(setIslandDetailPresentation).not.toHaveBeenCalled();
+      expect(setMode).not.toHaveBeenCalled();
+
+      const topIslandButton = renderer.root.findByProps({
+        "aria-label": "Open dynamic island details",
+      });
 
       await act(async () => {
-        topIslandButton.props.onClick({ clientX: 250, clientY: 120 });
+        topIslandButton.props.onClick({
+          currentTarget: {
+            getBoundingClientRect: () => ({
+              right: 368,
+              bottom: 56,
+            }),
+          },
+        });
       });
 
       const popover = renderer.root.findByType(TopIslandPopoverMock);
-      expect(popover.props.anchor).toEqual({ x: 262, y: 108 });
+      expect(popover.props.anchor).toEqual({
+        x:
+          COMPACT_WINDOW_METRICS.topIsland.expandedWidth -
+          COMPACT_WINDOW_METRICS.topIsland.popoverWidth -
+          12,
+        y:
+          COMPACT_WINDOW_METRICS.topIsland.shellPaddingY +
+          COMPACT_WINDOW_METRICS.topIsland.expandedHeight +
+          12,
+      });
+      expect(popover.props.view).toBe("details");
+      expect(setIslandDetailPresentation).toHaveBeenCalledWith(
+        "top_island_popover",
+        "top_island"
+      );
       expect(setMode).not.toHaveBeenCalled();
 
+      setIslandDetailPresentation.mockClear();
       await act(async () => {
-        topIslandButton.props.onClick({ clientX: 250, clientY: 120 });
+        topIslandButton.props.onClick({
+          currentTarget: {
+            getBoundingClientRect: () => ({
+              right: 368,
+              bottom: 56,
+            }),
+          },
+        });
       });
 
       expect(renderer.root.findAllByType(TopIslandPopoverMock)).toHaveLength(0);
+      expect(setIslandDetailPresentation).toHaveBeenCalledWith("none", "top_island");
+      const recollapsedCapsule = renderer.root.findByProps({
+        "aria-label": "Expand dynamic island capsule",
+      });
+      expect(recollapsedCapsule.props["data-presentation"]).toBe("collapsed");
       expect(setMode).not.toHaveBeenCalled();
     } finally {
       await act(async () => {
@@ -1003,8 +1428,218 @@ describe("compact-mode", () => {
     }
   });
 
-  it("clicking float ball only toggles its own panel and keeps mode stable", async () => {
-    const { renderer, setMode, showWorkspaceOnly } = await renderCompactModeControllerForFloatBallFlow({
+  it("waits for native top island popover resize before mounting the popover", async () => {
+    let resolvePopoverResize!: () => void;
+    const setIslandDetailPresentation = vi.fn((presentation: string) => {
+      if (presentation === "top_island_popover") {
+        return new Promise<void>((resolve) => {
+          resolvePopoverResize = resolve;
+        });
+      }
+
+      return Promise.resolve();
+    });
+    const { renderer } = await renderCompactModeControllerForTopIslandFlow({
+      setIslandDetailPresentation,
+    });
+
+    try {
+      const collapsedCapsule = renderer.root.findByProps({
+        "aria-label": "Expand dynamic island capsule",
+      });
+
+      await act(async () => {
+        collapsedCapsule.props.onClick();
+      });
+
+      const topIslandButton = renderer.root.findByProps({
+        "aria-label": "Open dynamic island details",
+      });
+
+      await act(async () => {
+        topIslandButton.props.onClick({
+          currentTarget: {
+            getBoundingClientRect: () => ({
+              right: 368,
+              bottom: 56,
+            }),
+          },
+        });
+      });
+
+      expect(setIslandDetailPresentation).toHaveBeenCalledWith(
+        "top_island_popover",
+        "top_island"
+      );
+      expect(renderer.root.findAllByType(TopIslandPopoverMock)).toHaveLength(0);
+
+      await act(async () => {
+        resolvePopoverResize();
+      });
+
+      expect(renderer.root.findAllByType(TopIslandPopoverMock)).toHaveLength(1);
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerTopIslandMocks();
+    }
+  });
+
+  it("previews the full dynamic island on hover and collapses after pointer leaves", async () => {
+    const { renderer, setIslandDetailPresentation, setMode } =
+      await renderCompactModeControllerForTopIslandFlow();
+
+    try {
+      const collapsedCapsule = renderer.root.findByProps({
+        "aria-label": "Expand dynamic island capsule",
+      });
+
+      setIslandDetailPresentation.mockClear();
+      await act(async () => {
+        collapsedCapsule.props.onMouseEnter();
+      });
+
+      const expandedCapsule = renderer.root.find(
+        (node) =>
+          classNameIncludes(node.props.className, "top-island-capsule")
+      );
+
+      expect(expandedCapsule.props["data-presentation"]).toBe("expanded");
+      expect(expandedCapsule.props.style?.["--top-island-width"]).toBe("420px");
+      expect(setIslandDetailPresentation).not.toHaveBeenCalledWith("top_island_expanded");
+      expect(setIslandDetailPresentation).not.toHaveBeenCalled();
+
+      setIslandDetailPresentation.mockClear();
+      await act(async () => {
+        expandedCapsule.props.onMouseLeave({ buttons: 0 });
+      });
+
+      const recollapsedCapsule = renderer.root.findByProps({
+        "aria-label": "Expand dynamic island capsule",
+      });
+
+      expect(recollapsedCapsule.props["data-presentation"]).toBe("collapsed");
+      expect(recollapsedCapsule.props.style?.["--top-island-width"]).toBe("180px");
+      expect(setIslandDetailPresentation).toHaveBeenCalledWith("none", "top_island");
+      expect(setMode).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerTopIslandMocks();
+    }
+  });
+
+  it("does not collapse the full dynamic island preview while a drag is active", async () => {
+    const { renderer, setIslandDetailPresentation, setMode } =
+      await renderCompactModeControllerForTopIslandFlow();
+
+    try {
+      const collapsedCapsule = renderer.root.findByProps({
+        "aria-label": "Expand dynamic island capsule",
+      });
+
+      await act(async () => {
+        collapsedCapsule.props.onMouseEnter();
+      });
+
+      const expandedCapsule = renderer.root.find(
+        (node) =>
+          classNameIncludes(node.props.className, "top-island-capsule")
+      );
+
+      setIslandDetailPresentation.mockClear();
+      await act(async () => {
+        expandedCapsule.props.onMouseLeave({ buttons: 1 });
+      });
+
+      expect(expandedCapsule.props["data-presentation"]).toBe("expanded");
+      expect(setIslandDetailPresentation).not.toHaveBeenCalledWith("none");
+      expect(setMode).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerTopIslandMocks();
+    }
+  });
+
+  it("keeps the native top island viewport stable when unread activity forces the full capsule", async () => {
+    const { renderer, setIslandDetailPresentation, setMode } =
+      await renderCompactModeControllerForTopIslandFlow({
+        notifications: [{ id: "notif-1", level: "info", read: false }],
+        unreadCount: 1,
+      });
+
+    try {
+      const capsule = renderer.root.find(
+        (node) =>
+          classNameIncludes(node.props.className, "top-island-capsule")
+      );
+
+      expect(capsule.props["data-presentation"]).toBe("expanded");
+      expect(capsule.props.style?.["--top-island-width"]).toBe("420px");
+      expect(setIslandDetailPresentation).not.toHaveBeenCalledWith("top_island_expanded");
+      expect(setMode).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerTopIslandMocks();
+    }
+  });
+
+  it("resnaps the top island viewport using the current capsule presentation after drag release", async () => {
+    const { renderer, setIslandDetailPresentation, setMode } =
+      await renderCompactModeControllerForTopIslandFlow();
+
+    try {
+      const collapsedCapsule = renderer.root.findByProps({
+        "aria-label": "Expand dynamic island capsule",
+      });
+
+      setIslandDetailPresentation.mockClear();
+      await act(async () => {
+        collapsedCapsule.props.onPointerUp();
+      });
+
+      expect(setIslandDetailPresentation).toHaveBeenCalledWith("none", "top_island");
+
+      await act(async () => {
+        collapsedCapsule.props.onClick();
+      });
+
+      const expandedCapsule = renderer.root.find(
+        (node) =>
+          classNameIncludes(node.props.className, "top-island-capsule")
+      );
+
+      setIslandDetailPresentation.mockClear();
+      await act(async () => {
+        expandedCapsule.props.onPointerUp();
+      });
+
+      expect(setIslandDetailPresentation).toHaveBeenCalledWith("none", "top_island");
+      expect(setIslandDetailPresentation).not.toHaveBeenCalledWith("top_island_expanded");
+      expect(setMode).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerTopIslandMocks();
+    }
+  });
+
+  it("clicking float ball opens a separate panel window without resizing the ball window", async () => {
+    const {
+      hideFloatBallPanelWindow,
+      renderer,
+      setIslandDetailPresentation,
+      setMode,
+      showFloatBallPanelWindow,
+      writeFloatPanelSnapshot,
+    } = await renderCompactModeControllerForFloatBallFlow({
       notifications: [
         {
           id: "notif-error",
@@ -1034,57 +1669,192 @@ describe("compact-mode", () => {
 
       await act(async () => {
         floatBallButton.props.onClick();
+        await Promise.resolve();
+        await Promise.resolve();
       });
 
-      const panel = renderer.root.findByProps({ "data-testid": "float-ball-panel" });
-      expect(panel).toBeDefined();
       expect(setMode).not.toHaveBeenCalled();
-      expect(JSON.stringify(renderer.toJSON())).toContain("Status summary");
-      expect(JSON.stringify(renderer.toJSON())).toContain("Recent activity");
-      expect(JSON.stringify(renderer.toJSON())).toContain("Approve shell command");
-      expect(JSON.stringify(renderer.toJSON())).toContain("Agent failed to continue");
-      expect(JSON.stringify(renderer.toJSON())).toContain("Open Workspace");
-      expect(JSON.stringify(renderer.toJSON())).toContain("Dismiss");
+      expect(writeFloatPanelSnapshot).toHaveBeenCalledWith({
+        notifications: expect.arrayContaining([
+          expect.objectContaining({ id: "notif-error" }),
+        ]),
+        pendingPermissions: expect.arrayContaining([
+          expect.objectContaining({ id: "perm-shell" }),
+        ]),
+      });
+      expect(showFloatBallPanelWindow).toHaveBeenCalledTimes(1);
+      expect(setIslandDetailPresentation).not.toHaveBeenCalledWith("float_ball_panel");
+      expect(renderer.root.findAllByProps({ "data-testid": "float-ball-panel" })).toHaveLength(0);
 
       await act(async () => {
         floatBallButton.props.onClick();
+        await Promise.resolve();
+        await Promise.resolve();
       });
 
       expect(renderer.root.findAllByProps({ "data-testid": "float-ball-panel" })).toHaveLength(0);
+      expect(showFloatBallPanelWindow).toHaveBeenCalledTimes(2);
+      expect(hideFloatBallPanelWindow).not.toHaveBeenCalled();
       expect(setMode).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerFloatBallMocks();
+    }
+  });
+
+  it("reopens the float ball panel after Dismiss resets the compact detail state", async () => {
+    const {
+      compactDetailReset,
+      hideFloatBallPanelWindow,
+      renderer,
+      showFloatBallPanelWindow,
+    } = await renderCompactModeControllerForFloatBallFlow({
+      notifications: [],
+      pendingPermissions: [],
+      unreadCount: 0,
+    });
+
+    try {
+      const floatBallButton = renderer.root.findByProps({
+        "aria-label": "Open float ball details",
+      });
 
       await act(async () => {
         floatBallButton.props.onClick();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        compactDetailReset();
+        await Promise.resolve();
+      });
+      const reopenedFloatBallButton = renderer.root.findByProps({
+        "aria-label": "Open float ball details",
+      });
+      await act(async () => {
+        reopenedFloatBallButton.props.onClick();
+        await Promise.resolve();
+        await Promise.resolve();
       });
 
-      const openWorkspaceButton = renderer.root
-        .findAllByType("button")
-        .find((node) => node.props.children === "Open Workspace");
-      expect(openWorkspaceButton).toBeDefined();
+      expect(showFloatBallPanelWindow).toHaveBeenCalledTimes(2);
+      expect(hideFloatBallPanelWindow).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerFloatBallMocks();
+    }
+  });
+
+  it("suppresses repeated float ball opens while the separate panel window is opening", async () => {
+    let resolvePanel!: () => void;
+    const showFloatBallPanelWindow = vi.fn(() => {
+      return new Promise<void>((resolve) => {
+        resolvePanel = resolve;
+      });
+    });
+    const { renderer } = await renderCompactModeControllerForFloatBallFlow({
+      notifications: [],
+      pendingPermissions: [],
+      unreadCount: 0,
+      showFloatBallPanelWindowMock: showFloatBallPanelWindow,
+    });
+
+    try {
+      const floatBallButton = renderer.root.findByProps({
+        "aria-label": "Open float ball details",
+      });
+
+      showFloatBallPanelWindow.mockClear();
+      await act(async () => {
+        floatBallButton.props.onClick();
+        floatBallButton.props.onClick();
+        await Promise.resolve();
+      });
+
+      expect(showFloatBallPanelWindow).toHaveBeenCalledTimes(1);
+      expect(renderer.root.findAllByProps({ "data-testid": "float-ball-panel" })).toHaveLength(0);
 
       await act(async () => {
-        openWorkspaceButton?.props.onClick();
+        resolvePanel();
+        await Promise.resolve();
+        await Promise.resolve();
       });
 
-      expect(showWorkspaceOnly).toHaveBeenCalledTimes(1);
       expect(renderer.root.findAllByProps({ "data-testid": "float-ball-panel" })).toHaveLength(0);
-      expect(setMode).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerFloatBallMocks();
+    }
+  });
+
+  it("does not mark float ball detail open when the separate panel window fails", async () => {
+    const showFloatBallPanelWindow = vi
+      .fn()
+      .mockRejectedValue(new Error("panel window failed"));
+    const { renderer } = await renderCompactModeControllerForFloatBallFlow({
+      notifications: [],
+      pendingPermissions: [],
+      unreadCount: 0,
+      showFloatBallPanelWindowMock: showFloatBallPanelWindow,
+    });
+
+    try {
+      const floatBallButton = renderer.root.findByProps({
+        "aria-label": "Open float ball details",
+      });
 
       await act(async () => {
         floatBallButton.props.onClick();
+        await Promise.resolve();
+        await Promise.resolve();
       });
 
-      const dismissButton = renderer.root
-        .findAllByType("button")
-        .find((node) => node.props.children === "Dismiss");
-      expect(dismissButton).toBeDefined();
+      expect(showFloatBallPanelWindow).toHaveBeenCalledTimes(1);
+      expect(renderer.root.findAllByProps({ "data-testid": "float-ball-panel" })).toHaveLength(0);
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerFloatBallMocks();
+    }
+  });
+
+  it("allows retrying the float ball panel after a failed open", async () => {
+    const showFloatBallPanelWindow = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("panel window failed"))
+      .mockResolvedValueOnce(undefined);
+    const { renderer } = await renderCompactModeControllerForFloatBallFlow({
+      notifications: [],
+      pendingPermissions: [],
+      unreadCount: 0,
+      showFloatBallPanelWindowMock: showFloatBallPanelWindow,
+    });
+
+    try {
+      const floatBallButton = renderer.root.findByProps({
+        "aria-label": "Open float ball details",
+      });
 
       await act(async () => {
-        dismissButton?.props.onClick();
+        floatBallButton.props.onClick();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        floatBallButton.props.onClick();
+        await Promise.resolve();
+        await Promise.resolve();
       });
 
+      expect(showFloatBallPanelWindow).toHaveBeenCalledTimes(2);
       expect(renderer.root.findAllByProps({ "data-testid": "float-ball-panel" })).toHaveLength(0);
-      expect(setMode).not.toHaveBeenCalled();
     } finally {
       await act(async () => {
         renderer.unmount();
@@ -1106,8 +1876,16 @@ describe("compact-mode", () => {
   it("rejects illegal mode and action combinations", () => {
     const detail = nextDetailState({
       currentMode: "sidebar",
-      currentDetail: { kind: "top_island_popover", anchor: { x: 600, y: 44 } },
-      action: { type: "toggle_top_island_popover", anchor: { x: 640, y: 44 } },
+      currentDetail: {
+        kind: "top_island_popover",
+        anchor: { x: 600, y: 44 },
+        view: "details",
+      },
+      action: {
+        type: "toggle_top_island_popover",
+        anchor: { x: 640, y: 44 },
+        view: "details",
+      },
     });
 
     expect(detail).toEqual({ kind: "none" });
@@ -1116,14 +1894,501 @@ describe("compact-mode", () => {
   it("normalizes an illegal current detail before opening the allowed one", () => {
     const detail = nextDetailState({
       currentMode: "float_ball",
-      currentDetail: { kind: "top_island_popover", anchor: { x: 600, y: 44 } },
+      currentDetail: {
+        kind: "top_island_popover",
+        anchor: { x: 600, y: 44 },
+        view: "details",
+      },
       action: { type: "toggle_float_ball_panel" },
     });
 
     expect(detail).toEqual({ kind: "float_ball_panel" });
   });
 
-  it("collapses the sidebar only after hover leaves and the timeout elapses", async () => {
+  it("keeps the float ball panel detail open for idempotent show actions", () => {
+    const detail = nextDetailState({
+      currentMode: "float_ball",
+      currentDetail: { kind: "float_ball_panel" },
+      action: { type: "open_float_ball_panel" },
+    });
+
+    expect(detail).toEqual({ kind: "float_ball_panel" });
+  });
+
+  it("waits for native floating sidebar placement before mounting the floating panel", async () => {
+    let resolveFloatingPlacement!: () => void;
+    const setIslandDetailPresentation = vi.fn((presentation: string) => {
+      if (presentation === "sidebar_expanded") {
+        return Promise.resolve();
+      }
+      if (presentation === "sidebar_floating") {
+        return new Promise<void>((resolve) => {
+          resolveFloatingPlacement = resolve;
+        });
+      }
+
+      return Promise.resolve();
+    });
+    const { renderer } = await renderCompactModeControllerForSidebarFlow({
+      setIslandDetailPresentation,
+    });
+
+    try {
+      const hotzone = renderer.root.findByType(SidebarHotzoneMock);
+
+      await act(async () => {
+        hotzone.props.onActivate();
+      });
+
+      const panel = renderer.root.findByType(SidebarPanelMock);
+      await act(async () => {
+        panel.props.onUndock();
+      });
+
+      expect(setIslandDetailPresentation).toHaveBeenCalledWith(
+        "sidebar_floating",
+        "sidebar"
+      );
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(0);
+
+      await act(async () => {
+        resolveFloatingPlacement();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(1);
+      expect(renderer.root.findAllByProps({ className: "sidebar-panel-sensor" })).toHaveLength(0);
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerSidebarMocks();
+    }
+  });
+
+  it("collapses the sidebar when native floating placement fails", async () => {
+    const setIslandDetailPresentation = vi.fn((presentation: string) => {
+      if (presentation === "sidebar_expanded") {
+        return Promise.resolve();
+      }
+      if (presentation === "sidebar_floating") {
+        return Promise.reject(new Error("native floating placement failed"));
+      }
+
+      return Promise.resolve();
+    });
+    const { renderer } = await renderCompactModeControllerForSidebarFlow({
+      setIslandDetailPresentation,
+    });
+
+    try {
+      const hotzone = renderer.root.findByType(SidebarHotzoneMock);
+
+      await act(async () => {
+        hotzone.props.onActivate();
+      });
+
+      const panel = renderer.root.findByType(SidebarPanelMock);
+      await act(async () => {
+        panel.props.onUndock();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(0);
+      expect(renderer.root.findAllByType(SidebarHotzoneMock)).toHaveLength(1);
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerSidebarMocks();
+    }
+  });
+
+  it("ignores stale docked expansion acks after undocking into floating placement", async () => {
+    let resolveExpanded!: () => void;
+    let resolveFloating!: () => void;
+    const setIslandDetailPresentation = vi.fn((presentation: string) => {
+      if (presentation === "sidebar_expanded") {
+        return new Promise<void>((resolve) => {
+          resolveExpanded = resolve;
+        });
+      }
+      if (presentation === "sidebar_floating") {
+        return new Promise<void>((resolve) => {
+          resolveFloating = resolve;
+        });
+      }
+
+      return Promise.resolve();
+    });
+    const { renderer } = await renderCompactModeControllerForSidebarFlow({
+      setIslandDetailPresentation,
+    });
+
+    try {
+      const hotzone = renderer.root.findByType(SidebarHotzoneMock);
+      await act(async () => {
+        hotzone.props.onActivate();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(0);
+
+      await act(async () => {
+        resolveExpanded();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(1);
+
+      const dockedPanel = renderer.root.findByType(SidebarPanelMock);
+      await act(async () => {
+        dockedPanel.props.onUndock();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(0);
+
+      await act(async () => {
+        resolveExpanded();
+        await Promise.resolve();
+      });
+
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(0);
+
+      await act(async () => {
+        resolveFloating();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(1);
+      expect(renderer.root.findAllByProps({ className: "sidebar-panel-sensor" })).toHaveLength(0);
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerSidebarMocks();
+    }
+  });
+
+  it("restores the workspace and resets sidebar shell state", async () => {
+    const { renderer, showWorkspaceOnly } = await renderCompactModeControllerForSidebarFlow();
+
+    try {
+      const hotzone = renderer.root.findByType(SidebarHotzoneMock);
+      await act(async () => {
+        hotzone.props.onActivate();
+        await Promise.resolve();
+      });
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      const panel = renderer.root.findByType(SidebarPanelMock);
+      await act(async () => {
+        panel.props.onOpenWorkspace();
+        await Promise.resolve();
+      });
+
+      expect(showWorkspaceOnly).toHaveBeenCalledTimes(1);
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(0);
+      expect(renderer.root.findAllByType(SidebarHotzoneMock)).toHaveLength(1);
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerSidebarMocks();
+    }
+  });
+
+  it("reveals the docked sidebar from hotzone hover without requiring a click", async () => {
+    const { renderer, setIslandDetailPresentation } =
+      await renderCompactModeControllerForSidebarFlow();
+
+    try {
+      const hotzone = renderer.root.findByType(SidebarHotzoneMock);
+
+      setIslandDetailPresentation.mockClear();
+      await act(async () => {
+        hotzone.props.onHoverChange(true);
+      });
+
+      expect(setIslandDetailPresentation).toHaveBeenCalledWith(
+        "sidebar_expanded",
+        "sidebar"
+      );
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(1);
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerSidebarMocks();
+    }
+  });
+
+  it("stops responding to hotzone hover once the sidebar is undocked", async () => {
+    const { renderer, setIslandDetailPresentation } =
+      await renderCompactModeControllerForSidebarFlow();
+
+    try {
+      const hotzone = renderer.root.findByType(SidebarHotzoneMock);
+
+      await act(async () => {
+        hotzone.props.onHoverChange(true);
+      });
+
+      const panel = renderer.root.findByType(SidebarPanelMock);
+      await act(async () => {
+        panel.props.onUndock();
+      });
+
+      setIslandDetailPresentation.mockClear();
+      expect(renderer.root.findAllByType(SidebarHotzoneMock)).toHaveLength(0);
+      expect(setIslandDetailPresentation).not.toHaveBeenCalledWith(
+        "sidebar_expanded",
+        "sidebar"
+      );
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerSidebarMocks();
+    }
+  });
+
+  it("clicking the dock tab keeps the docked sidebar pinned open", async () => {
+    const { renderer } = await renderCompactModeControllerForSidebarFlow();
+
+    try {
+      const hotzone = renderer.root.findByType(SidebarHotzoneMock);
+      await act(async () => {
+        hotzone.props.onActivate();
+      });
+
+      expect(renderer.root.findAllByType(SidebarHotzoneMock)).toHaveLength(0);
+
+      const panelSensor = renderer.root.findByProps({
+        className: "sidebar-panel-sensor",
+      });
+
+      await act(async () => {
+        panelSensor.props.onMouseLeave();
+      });
+      await act(async () => {
+        await Promise.resolve();
+        vi.advanceTimersByTime(160);
+        await Promise.resolve();
+      });
+
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(1);
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerSidebarMocks();
+    }
+  });
+
+  it("switches the sidebar into floating native placement after undock", async () => {
+    const { renderer, setIslandDetailPresentation } =
+      await renderCompactModeControllerForSidebarFlow();
+
+    try {
+      const hotzone = renderer.root.findByType(SidebarHotzoneMock);
+
+      await act(async () => {
+        hotzone.props.onActivate();
+      });
+
+      const panel = renderer.root.findByType(SidebarPanelMock);
+      setIslandDetailPresentation.mockClear();
+      await act(async () => {
+        panel.props.onUndock();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(setIslandDetailPresentation).toHaveBeenCalledWith(
+        "sidebar_floating",
+        "sidebar"
+      );
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerSidebarMocks();
+    }
+  });
+
+  it("passes the sidebar mode with native sidebar detail requests", async () => {
+    const { renderer, setIslandDetailPresentation } =
+      await renderCompactModeControllerForSidebarFlow();
+
+    try {
+      const hotzone = renderer.root.findByType(SidebarHotzoneMock);
+
+      setIslandDetailPresentation.mockClear();
+      await act(async () => {
+        hotzone.props.onActivate();
+      });
+
+      expect(setIslandDetailPresentation).toHaveBeenCalledWith(
+        "sidebar_expanded",
+        "sidebar"
+      );
+
+      const panel = renderer.root.findByType(SidebarPanelMock);
+      await act(async () => {
+        panel.props.onCollapse();
+      });
+
+      expect(setIslandDetailPresentation).toHaveBeenCalledWith("none", "sidebar");
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerSidebarMocks();
+    }
+  });
+
+  it("mounts the expanded docked sidebar inside a full-window hover sensor", async () => {
+    const { renderer } = await renderCompactModeControllerForSidebarFlow();
+
+    try {
+      const hotzone = renderer.root.findByType(SidebarHotzoneMock);
+
+      await act(async () => {
+        hotzone.props.onActivate();
+      });
+
+      const root = renderer.root.findByProps({
+        "data-sidebar-interaction": "panel",
+      });
+      expect(root.props["data-sidebar-interaction"]).toBe("panel");
+
+      const panelSensor = renderer.root.findByProps({
+        className: "sidebar-panel-sensor",
+      });
+
+      expect(panelSensor.props.onPointerEnter).toEqual(expect.any(Function));
+      expect(panelSensor.props.onPointerLeave).toEqual(expect.any(Function));
+      expect(panelSensor.props.onMouseEnter).toEqual(expect.any(Function));
+      expect(panelSensor.props.onMouseLeave).toEqual(expect.any(Function));
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerSidebarMocks();
+    }
+  });
+
+  it("does not keep the floating sidebar inside the docked hover sensor", async () => {
+    const { renderer } = await renderCompactModeControllerForSidebarFlow();
+
+    try {
+      const hotzone = renderer.root.findByType(SidebarHotzoneMock);
+
+      await act(async () => {
+        hotzone.props.onActivate();
+      });
+
+      const panel = renderer.root.findByType(SidebarPanelMock);
+      await act(async () => {
+        panel.props.onUndock();
+      });
+
+      expect(renderer.root.findAllByProps({ className: "sidebar-panel-sensor" })).toHaveLength(0);
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerSidebarMocks();
+    }
+  });
+
+  it("retries docked hover reveal after a native expanded ack failure", async () => {
+    let expandedRequests = 0;
+    const setIslandDetailPresentation = vi.fn((presentation: string) => {
+      if (presentation !== "sidebar_expanded" && presentation !== "sidebar_floating") {
+        return Promise.resolve();
+      }
+
+      expandedRequests += 1;
+      return expandedRequests === 1
+        ? Promise.reject(new Error("native sidebar resize failed"))
+        : Promise.resolve();
+    });
+    const { renderer } = await renderCompactModeControllerForSidebarFlow({
+      setIslandDetailPresentation,
+    });
+
+    try {
+      let hotzone = renderer.root.findByType(SidebarHotzoneMock);
+
+      await act(async () => {
+        hotzone.props.onHoverChange(true);
+        await Promise.resolve();
+      });
+
+      expect(expandedRequests).toBe(1);
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(0);
+
+      hotzone = renderer.root.findByType(SidebarHotzoneMock);
+      await act(async () => {
+        hotzone.props.onHoverChange(true);
+        await Promise.resolve();
+      });
+
+      expect(expandedRequests).toBe(2);
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(1);
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerSidebarMocks();
+    }
+  });
+
+  it("hover reveal collapses back after the cursor leaves the docked sidebar", async () => {
+    const { renderer } = await renderCompactModeControllerForSidebarFlow();
+
+    try {
+      const hotzone = renderer.root.findByType(SidebarHotzoneMock);
+      await act(async () => {
+        hotzone.props.onHoverChange(true);
+      });
+
+      const panelSensor = renderer.root.findByProps({
+        className: "sidebar-panel-sensor",
+      });
+
+      await act(async () => {
+        panelSensor.props.onMouseLeave();
+      });
+      await act(async () => {
+        await Promise.resolve();
+        vi.advanceTimersByTime(160);
+        await Promise.resolve();
+      });
+
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(0);
+      expect(renderer.root.findAllByType(SidebarHotzoneMock)).toHaveLength(1);
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerSidebarMocks();
+    }
+  });
+
+  it("collapses the hover-revealed docked sidebar only after panel hover leaves and the timeout elapses", async () => {
     const { renderer, setMode } = await renderCompactModeControllerForSidebarFlow();
 
     try {
@@ -1147,7 +2412,6 @@ describe("compact-mode", () => {
         panelSensor.props.onMouseEnter();
       });
       await act(async () => {
-        hotzone.props.onHoverChange(false);
         vi.advanceTimersByTime(160);
       });
 
@@ -1158,16 +2422,20 @@ describe("compact-mode", () => {
         panelSensor.props.onMouseLeave();
       });
       await act(async () => {
+        await Promise.resolve();
         vi.advanceTimersByTime(159);
+        await Promise.resolve();
       });
 
       expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(1);
 
       await act(async () => {
         vi.advanceTimersByTime(1);
+        await Promise.resolve();
       });
 
       expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(0);
+      expect(renderer.root.findAllByType(SidebarHotzoneMock)).toHaveLength(1);
       expect(setMode).not.toHaveBeenCalled();
     } finally {
       await act(async () => {
@@ -1177,7 +2445,105 @@ describe("compact-mode", () => {
     }
   });
 
-  it("auto-collapses after hotzone-only hover without entering the panel", async () => {
+  it("keeps the docked sidebar hidden until the native expanded ack resolves after hover reveal", async () => {
+    const expansionResolvers: Array<() => void> = [];
+    const setIslandDetailPresentation = vi.fn((presentation: string) => {
+      if (presentation === "sidebar_expanded" || presentation === "sidebar_floating") {
+        return new Promise<void>((resolve) => {
+          expansionResolvers.push(resolve);
+        });
+      }
+
+      return Promise.resolve();
+    });
+
+    const { renderer } = await renderCompactModeControllerForSidebarFlow({
+      setIslandDetailPresentation,
+    });
+
+    try {
+      const hotzone = renderer.root.findByType(SidebarHotzoneMock);
+
+      await act(async () => {
+        hotzone.props.onHoverChange(true);
+      });
+
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(0);
+      expect(expansionResolvers).toHaveLength(1);
+
+      await act(async () => {
+        expansionResolvers.forEach((resolve) => resolve());
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(1);
+      expect(renderer.root.findAllByType(SidebarHotzoneMock)).toHaveLength(0);
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerSidebarMocks();
+    }
+  });
+
+  it("keeps the hover-revealed docked sidebar mounted while moving from hotzone into panel before timeout", async () => {
+    const { renderer } = await renderCompactModeControllerForSidebarFlow();
+
+    try {
+      const hotzone = renderer.root.findByType(SidebarHotzoneMock);
+      await act(async () => {
+        hotzone.props.onHoverChange(true);
+      });
+
+      const panelSensor = renderer.root.findByProps({
+        className: "sidebar-panel-sensor",
+      });
+
+      await act(async () => {
+        panelSensor.props.onPointerEnter();
+        vi.advanceTimersByTime(160);
+      });
+
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(1);
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerSidebarMocks();
+    }
+  });
+
+  it("drops collapseArmed after the hover-revealed panel re-enters before timeout fires", async () => {
+    const { renderer } = await renderCompactModeControllerForSidebarFlow();
+
+    try {
+      const hotzone = renderer.root.findByType(SidebarHotzoneMock);
+      await act(async () => {
+        hotzone.props.onHoverChange(true);
+      });
+
+      const panelSensor = renderer.root.findByProps({
+        className: "sidebar-panel-sensor",
+      });
+
+      await act(async () => {
+        panelSensor.props.onPointerLeave();
+        vi.advanceTimersByTime(80);
+        panelSensor.props.onPointerEnter();
+        vi.advanceTimersByTime(80);
+      });
+
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(1);
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerSidebarMocks();
+    }
+  });
+
+  it("collapses the hover-revealed docked sidebar after leaving the panel without re-entering", async () => {
     const { renderer, setMode } = await renderCompactModeControllerForSidebarFlow();
 
     try {
@@ -1191,6 +2557,10 @@ describe("compact-mode", () => {
       expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(1);
       expect(setMode).not.toHaveBeenCalled();
 
+      const panelSensor = renderer.root.findByProps({
+        className: "sidebar-panel-sensor",
+      });
+
       await act(async () => {
         vi.advanceTimersByTime(159);
       });
@@ -1198,11 +2568,69 @@ describe("compact-mode", () => {
       expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(1);
 
       await act(async () => {
+        panelSensor.props.onMouseLeave();
+      });
+      await act(async () => {
+        await Promise.resolve();
+        vi.advanceTimersByTime(159);
+        await Promise.resolve();
+      });
+
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(1);
+
+      await act(async () => {
         vi.advanceTimersByTime(1);
+        await Promise.resolve();
       });
 
       expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(0);
+      expect(renderer.root.findAllByType(SidebarHotzoneMock)).toHaveLength(1);
       expect(setMode).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupCompactModeControllerSidebarMocks();
+    }
+  });
+
+  it("clicking the docked sidebar keeps it open until explicit dismiss", async () => {
+    const { renderer, setMode } = await renderCompactModeControllerForSidebarFlow();
+
+    try {
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(0);
+
+      const hotzone = renderer.root.findByType(SidebarHotzoneMock);
+      await act(async () => {
+        hotzone.props.onActivate();
+      });
+
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(1);
+      expect(setMode).not.toHaveBeenCalled();
+
+      await act(async () => {
+        vi.advanceTimersByTime(500);
+      });
+
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(1);
+
+      const panelSensor = renderer.root.find(
+        (node) =>
+          typeof node.props.onMouseEnter === "function" &&
+          typeof node.props.onMouseLeave === "function"
+      );
+
+      await act(async () => {
+        panelSensor.props.onMouseEnter();
+      });
+      await act(async () => {
+        panelSensor.props.onMouseLeave();
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(160);
+      });
+
+      expect(renderer.root.findAllByType(SidebarPanelMock)).toHaveLength(1);
     } finally {
       await act(async () => {
         renderer.unmount();
@@ -1236,6 +2664,158 @@ describe("compact-mode", () => {
     expect(classNameIncludes(band.props.className, "sidebar-panel__band")).toBe(true);
     expect(rail.props.style?.["--sidebar-rail-width"]).toBe("300px");
     expect(band.props.style?.["--sidebar-band-width"]).toBe("220px");
+  });
+
+  it("renders the collapsed sidebar as a right-edge dock tab with a transparent icon", async () => {
+    const onActivate = vi.fn();
+    const onHoverChange = vi.fn();
+    const { SidebarHotzone } = await import("@/components/island/SidebarHotzone");
+
+    const renderer = TestRenderer.create(
+      createElement(SidebarHotzone, {
+        expanded: false,
+        onActivate,
+        onHoverChange,
+      })
+    );
+
+    const tab = renderer.root.findByType("button");
+    const icon = renderer.root.find(
+      (node) =>
+        typeof node.props.className === "string" &&
+        node.props.className.includes("sidebar-hotzone__icon")
+    );
+
+    expect(classNameIncludes(tab.props.className, "sidebar-hotzone")).toBe(true);
+    expect(tab.props.style?.["--sidebar-dock-tab-width"]).toBe("48px");
+    expect(tab.props.style?.["--sidebar-dock-tab-height"]).toBe("260px");
+    expect(icon.props["aria-hidden"]).toBe("true");
+  });
+
+  it("starts a native window drag from the collapsed sidebar dock tab without expanding", async () => {
+    vi.resetModules();
+    const onActivate = vi.fn();
+    const onHoverChange = vi.fn();
+    const startCurrentWindowDrag = vi.fn().mockResolvedValue(undefined);
+
+    vi.doMock("@/lib/window-drag", () => ({
+      startCurrentWindowDrag,
+    }));
+
+    try {
+      const { SidebarHotzone } = await import("@/components/island/SidebarHotzone");
+      const renderer = TestRenderer.create(
+        createElement(SidebarHotzone, {
+          expanded: false,
+          onActivate,
+          onHoverChange,
+        })
+      );
+      const tab = renderer.root.findByType("button");
+
+      await act(async () => {
+        tab.props.onPointerDown({
+          button: 0,
+          buttons: 1,
+          clientX: 12,
+          clientY: 40,
+        });
+        await Promise.resolve();
+      });
+
+      expect(onActivate).not.toHaveBeenCalled();
+      expect(startCurrentWindowDrag).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        tab.props.onPointerMove({
+          buttons: 1,
+          clientX: 18,
+          clientY: 41,
+        });
+        await Promise.resolve();
+      });
+
+      expect(onActivate).not.toHaveBeenCalled();
+      expect(startCurrentWindowDrag).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.doUnmock("@/lib/window-drag");
+      vi.resetModules();
+    }
+  });
+
+  it("suppresses the synthetic click that follows a sidebar dock tab drag", async () => {
+    vi.resetModules();
+    const onActivate = vi.fn();
+    const onHoverChange = vi.fn();
+    const startCurrentWindowDrag = vi.fn().mockResolvedValue(undefined);
+
+    vi.doMock("@/lib/window-drag", () => ({
+      startCurrentWindowDrag,
+    }));
+
+    try {
+      const { SidebarHotzone } = await import("@/components/island/SidebarHotzone");
+      const renderer = TestRenderer.create(
+        createElement(SidebarHotzone, {
+          expanded: false,
+          onActivate,
+          onHoverChange,
+        })
+      );
+      const tab = renderer.root.findByType("button");
+      const clickEvent = {
+        preventDefault: vi.fn(),
+        stopPropagation: vi.fn(),
+      };
+
+      await act(async () => {
+        tab.props.onPointerDown({
+          button: 0,
+          buttons: 1,
+          clientX: 12,
+          clientY: 40,
+        });
+        tab.props.onPointerMove({
+          buttons: 1,
+          clientX: 19,
+          clientY: 42,
+        });
+        await Promise.resolve();
+      });
+
+      await act(async () => {
+        tab.props.onClick(clickEvent);
+      });
+
+      expect(startCurrentWindowDrag).toHaveBeenCalledTimes(1);
+      expect(onActivate).not.toHaveBeenCalled();
+      expect(clickEvent.preventDefault).toHaveBeenCalledTimes(1);
+      expect(clickEvent.stopPropagation).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.doUnmock("@/lib/window-drag");
+      vi.resetModules();
+    }
+  });
+
+  it("opens the collapsed sidebar dock tab from an explicit click", async () => {
+    const onActivate = vi.fn();
+    const onHoverChange = vi.fn();
+    const { SidebarHotzone } = await import("@/components/island/SidebarHotzone");
+
+    const renderer = TestRenderer.create(
+      createElement(SidebarHotzone, {
+        expanded: false,
+        onActivate,
+        onHoverChange,
+      })
+    );
+    const tab = renderer.root.findByType("button");
+
+    await act(async () => {
+      tab.props.onClick();
+    });
+
+    expect(onActivate).toHaveBeenCalledTimes(1);
   });
 
   it("renders sidebar as a compact assistant panel with explicit workspace and dismiss actions", async () => {
@@ -1330,7 +2910,7 @@ describe("compact-mode", () => {
         "approve",
       );
       expect(removePermissionRequest).toHaveBeenCalledWith("perm-1");
-      expect(clearNotification).toHaveBeenCalledWith("perm-1");
+      expect(clearNotification).not.toHaveBeenCalled();
     } finally {
       await act(async () => {
         renderer.unmount();
@@ -1379,7 +2959,7 @@ describe("compact-mode", () => {
         "deny",
       );
       expect(removePermissionRequest).toHaveBeenCalledWith("perm-2");
-      expect(clearNotification).toHaveBeenCalledWith("perm-2");
+      expect(clearNotification).not.toHaveBeenCalled();
     } finally {
       await act(async () => {
         renderer.unmount();
@@ -1456,7 +3036,7 @@ describe("compact-mode", () => {
       });
 
       expect(removePermissionRequest).toHaveBeenCalledWith("perm-3");
-      expect(clearNotification).toHaveBeenCalledWith("perm-3");
+      expect(clearNotification).not.toHaveBeenCalled();
     } finally {
       await act(async () => {
         renderer.unmount();
@@ -1494,9 +3074,80 @@ describe("compact-mode", () => {
 
       expect(popoverRoot.props.style.left).toBe(320);
       expect(popoverRoot.props.style.top).toBe(180);
+      expect(popoverRoot.props.style["--top-island-popover-width"]).toBe("232px");
+      expect(popoverRoot.props.style["--top-island-popover-measure-height"]).toBe("168px");
       expect(buttonLabels).toContain("Open Workspace");
       expect(buttonLabels).toContain("Dismiss");
       expect(JSON.stringify(renderer.toJSON())).toContain("Mode");
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupTopIslandMocks();
+    }
+  });
+
+  it("keeps the top island popover below the capsule while the native window is still resizing", async () => {
+    const expectedTop =
+      COMPACT_WINDOW_METRICS.topIsland.shellPaddingY +
+      COMPACT_WINDOW_METRICS.topIsland.expandedHeight +
+      12;
+    const { renderer } = await renderTopIslandPopoverWithIslandState({
+      pendingPermissions: [],
+      notifications: [],
+      unreadCount: 0,
+      anchor: { x: 176, y: expectedTop },
+      viewport: {
+        innerWidth: COMPACT_WINDOW_METRICS.topIsland.expandedWidth,
+        innerHeight: COMPACT_WINDOW_METRICS.topIsland.windowHeight,
+      },
+    });
+
+    try {
+      const popoverRoot = renderer.root.find(
+        (node) =>
+          typeof node.props.className === "string" &&
+          node.props.className.includes("top-island-popover")
+      );
+
+      expect(popoverRoot.props.style.top).toBe(expectedTop);
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupTopIslandMocks();
+    }
+  });
+
+  it("closes the top island popover when the pointer leaves its bubble", async () => {
+    const onClose = vi.fn();
+    const { renderer } = await renderTopIslandPopoverWithIslandState({
+      pendingPermissions: [],
+      notifications: [
+        {
+          id: "notif-1",
+          level: "info",
+          read: false,
+          source_adapter_name: "Conflux",
+          content: "Workspace ready",
+        },
+      ],
+      unreadCount: 1,
+      onClose,
+    });
+
+    try {
+      const popoverRoot = renderer.root.find(
+        (node) =>
+          typeof node.props.className === "string" &&
+          node.props.className.includes("top-island-popover")
+      );
+
+      await act(async () => {
+        popoverRoot.props.onMouseLeave();
+      });
+
+      expect(onClose).toHaveBeenCalledTimes(1);
     } finally {
       await act(async () => {
         renderer.unmount();
@@ -1552,6 +3203,144 @@ describe("compact-mode", () => {
       );
       expect(removePermissionRequest).not.toHaveBeenCalled();
       expect(clearNotification).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupTopIslandMocks();
+    }
+  });
+
+  it("suppresses repeated top island permission submissions while one is pending", async () => {
+    let resolvePermission!: () => void;
+    const respondToPermissionMock = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolvePermission = resolve;
+        })
+    );
+    const {
+      clearNotification,
+      removePermissionRequest,
+      renderer,
+    } = await renderTopIslandPopoverWithIslandState({
+      pendingPermissions: [
+        {
+          id: "perm-1",
+          instance_id: "agent-1",
+          action: "shell",
+          description: "Need approval",
+        },
+      ],
+      notifications: [
+        {
+          id: "perm-1",
+          level: "permission_required",
+          read: false,
+          source_adapter_name: "Conflux",
+        },
+      ],
+      unreadCount: 1,
+      respondToPermissionMock,
+    });
+
+    try {
+      const allowButton = renderer.root
+        .findAllByType("button")
+        .find((node) => node.props.children === "Allow");
+
+      expect(allowButton).toBeDefined();
+
+      await act(async () => {
+        allowButton?.props.onClick();
+        allowButton?.props.onClick();
+        await Promise.resolve();
+      });
+
+      expect(respondToPermissionMock).toHaveBeenCalledTimes(1);
+      expect(removePermissionRequest).not.toHaveBeenCalled();
+      expect(clearNotification).not.toHaveBeenCalled();
+
+      await act(async () => {
+        resolvePermission();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(removePermissionRequest).toHaveBeenCalledWith("perm-1");
+      expect(clearNotification).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupTopIslandMocks();
+    }
+  });
+
+  it("renders top island notifications as a compact unread list instead of the details view", async () => {
+    const { renderer } = await renderTopIslandPopoverWithIslandState({
+      pendingPermissions: [],
+      notifications: [
+        {
+          id: "notif-1",
+          level: "info",
+          read: false,
+          source_adapter_name: "Codex",
+          content: "Review finished",
+        },
+        {
+          id: "notif-2",
+          level: "warning",
+          read: false,
+          source_adapter_name: "Claude Code",
+          content: "Permission still pending",
+        },
+      ],
+      unreadCount: 2,
+      activeStatuses: ["idle"],
+      view: "notifications",
+    });
+
+    try {
+      const json = JSON.stringify(renderer.toJSON());
+      const list = renderer.root.findByProps({
+        className: "top-island-bubble__notification-list",
+      });
+
+      expect(list.children).toHaveLength(2);
+      expect(json).toContain("Notifications");
+      expect(json).toContain("Review finished");
+      expect(json).toContain("Permission still pending");
+      expect(json).not.toContain("Top-centered capsule");
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupTopIslandMocks();
+    }
+  });
+
+  it("renders top island quick reply as a composer entry point", async () => {
+    const { renderer } = await renderTopIslandPopoverWithIslandState({
+      pendingPermissions: [],
+      notifications: [],
+      unreadCount: 0,
+      activeStatuses: ["idle"],
+      view: "quick_reply",
+    });
+
+    try {
+      const json = JSON.stringify(renderer.toJSON());
+      const textarea = renderer.root.findByType("textarea");
+      const openDiscussionButton = renderer.root
+        .findAllByType("button")
+        .find((node) => node.props.children === "Open Discussion");
+
+      expect(json).toContain("Quick Reply");
+      expect(json).toContain("Reply to Codex");
+      expect(textarea.props.placeholder).toContain("Message Codex");
+      expect(openDiscussionButton).toBeDefined();
+      expect(json).not.toContain("Top-centered capsule");
     } finally {
       await act(async () => {
         renderer.unmount();

@@ -93,8 +93,7 @@ mod agent_command_tests {
         };
 
         let json = serde_json::to_string(&info).expect("序列化 AgentInstanceInfo 失败");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&json).expect("JSON 解析失败");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("JSON 解析失败");
 
         // 验证所有字段存在且类型正确
         assert_eq!(parsed["instance_id"], "inst-001");
@@ -226,7 +225,10 @@ mod agent_command_tests {
         assert_eq!(parsed["root"]["name"], "Main Agent");
         assert_eq!(parsed["root"]["status"], "thinking");
         assert!(parsed["root"]["parent_id"].is_null());
-        assert!(parsed["children"].as_array().expect("children 应为数组").is_empty());
+        assert!(parsed["children"]
+            .as_array()
+            .expect("children 应为数组")
+            .is_empty());
     }
 
     #[test]

@@ -2,9 +2,10 @@
 // 负责打开/创建数据库并执行所有 CREATE TABLE 语句
 // 所有表使用 IF NOT EXISTS 确保幂等性
 
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 
-use crate::core::ConfluxError;
+use crate::adapter::registry::AdapterRegistry;
+use crate::core::{AdapterConfig, ConfluxError};
 
 /// 所有建表 SQL 语句（按依赖顺序排列）
 const SCHEMA_SQL: &str = r#"
@@ -122,9 +123,151 @@ pub fn init_database(path: &str) -> Result<Connection, ConfluxError> {
     Ok(conn)
 }
 
+pub fn sync_adapter_configs_from_registry(
+    conn: &Connection,
+    registry: &AdapterRegistry,
+) -> Result<(), ConfluxError> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| ConfluxError::DatabaseError {
+            message: format!("adapter_configs sync transaction failed: {e}"),
+        })?;
+    for (adapter_id, config, is_builtin) in registry.registered_configs() {
+        upsert_adapter_config(&tx, &adapter_id, &config, is_builtin)?;
+    }
+    tx.commit().map_err(|e| ConfluxError::DatabaseError {
+        message: format!("adapter_configs sync commit failed: {e}"),
+    })?;
+    Ok(())
+}
+
+pub fn ensure_adapter_config(
+    conn: &Connection,
+    adapter_id: &str,
+    config: &AdapterConfig,
+    is_builtin: bool,
+) -> Result<(), ConfluxError> {
+    upsert_adapter_config(conn, adapter_id, config, is_builtin)
+}
+
+fn upsert_adapter_config(
+    conn: &Connection,
+    adapter_id: &str,
+    config: &AdapterConfig,
+    is_builtin: bool,
+) -> Result<(), ConfluxError> {
+    let default_args = serde_json::to_string(&config.default_args).map_err(|e| {
+        ConfluxError::SerializationError {
+            message: format!("adapter default_args serialize failed: {e}"),
+        }
+    })?;
+    let status_patterns = serde_json::to_string(&config.status_patterns).map_err(|e| {
+        ConfluxError::SerializationError {
+            message: format!("adapter status_patterns serialize failed: {e}"),
+        }
+    })?;
+
+    conn.execute(
+        r#"
+        INSERT INTO adapter_configs (
+            adapter_id,
+            name,
+            command,
+            default_args,
+            status_patterns,
+            permission_pattern,
+            sub_agent_spawn_pattern,
+            sub_agent_complete_pattern,
+            can_coordinate,
+            coordination_template,
+            can_parse_tree,
+            can_detect_permission,
+            is_builtin,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+        ON CONFLICT(adapter_id) DO UPDATE SET
+            name = excluded.name,
+            command = excluded.command,
+            default_args = excluded.default_args,
+            status_patterns = excluded.status_patterns,
+            permission_pattern = excluded.permission_pattern,
+            sub_agent_spawn_pattern = excluded.sub_agent_spawn_pattern,
+            sub_agent_complete_pattern = excluded.sub_agent_complete_pattern,
+            can_coordinate = excluded.can_coordinate,
+            coordination_template = excluded.coordination_template,
+            can_parse_tree = excluded.can_parse_tree,
+            can_detect_permission = excluded.can_detect_permission,
+            is_builtin = excluded.is_builtin
+        "#,
+        params![
+            adapter_id,
+            config.name,
+            config.command,
+            default_args,
+            status_patterns,
+            config.permission_pattern,
+            config.sub_agent_spawn_pattern,
+            config.sub_agent_complete_pattern,
+            bool_to_int(config.capabilities.can_coordinate),
+            config.capabilities.coordination_template,
+            bool_to_int(config.capabilities.can_parse_tree),
+            bool_to_int(config.capabilities.can_detect_permission),
+            bool_to_int(is_builtin),
+            now_ms(),
+        ],
+    )
+    .map_err(|e| ConfluxError::DatabaseError {
+        message: format!("adapter_configs upsert failed for {adapter_id}: {e}"),
+    })?;
+
+    Ok(())
+}
+
+fn bool_to_int(value: bool) -> i64 {
+    if value {
+        1
+    } else {
+        0
+    }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter::{builtin, registry::AdapterRegistry};
+    use crate::persistence::session::insert_agent_instance;
+
+    #[test]
+    fn test_ensure_single_adapter_config_allows_first_agent_instance() {
+        let conn = init_database(":memory:").expect("database init should succeed");
+        let mut registry = AdapterRegistry::new();
+        builtin::register_builtins(&mut registry);
+        let config = registry
+            .get_config("codex")
+            .expect("builtin codex config should exist")
+            .clone();
+
+        ensure_adapter_config(&conn, "codex", &config, registry.is_builtin("codex"))
+            .expect("single adapter config should upsert");
+
+        insert_agent_instance(
+            &conn,
+            "inst-codex-001",
+            "codex",
+            "Codex",
+            r"C:\Users",
+            1_000,
+        )
+        .expect("first agent instance insert should pass after single adapter upsert");
+    }
 
     #[test]
     fn test_init_database_creates_all_tables() {
@@ -158,5 +301,25 @@ mod tests {
         // 重复执行 schema SQL 应当不报错（IF NOT EXISTS）
         conn.execute_batch(SCHEMA_SQL)
             .expect("重复执行 Schema SQL 应成功（幂等性）");
+    }
+
+    #[test]
+    fn test_sync_builtin_adapter_configs_allows_first_agent_instance() {
+        let conn = init_database(":memory:").expect("数据库初始化应成功");
+        let mut registry = AdapterRegistry::new();
+        builtin::register_builtins(&mut registry);
+
+        sync_adapter_configs_from_registry(&conn, &registry)
+            .expect("内置 adapter 配置应同步到 adapter_configs");
+
+        insert_agent_instance(
+            &conn,
+            "inst-claude-001",
+            "claude-code",
+            "Claude Code",
+            r"C:\Users",
+            1_000,
+        )
+        .expect("同步内置 adapter 后首个 agent instance 插入应成功");
     }
 }

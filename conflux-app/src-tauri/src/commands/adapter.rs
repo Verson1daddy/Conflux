@@ -4,15 +4,124 @@
 
 use tauri::State;
 
+use std::env;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+
 use crate::core::{AdapterAuthStatus, AdapterConfig, AdapterId, AdapterInfo, ConfluxError};
 use crate::AppState;
+
+#[cfg(test)]
+mod tests {
+    use super::command_is_available_with;
+    use std::ffi::OsString;
+    use std::path::Path;
+
+    #[test]
+    fn command_lookup_uses_path_and_pathext() {
+        let path = OsString::from(r"C:\Tools;C:\Other");
+        let pathext = OsString::from(".EXE;.CMD");
+
+        let found = command_is_available_with("codex", Some(path), Some(pathext), |candidate| {
+            candidate == Path::new(r"C:\Tools\codex.EXE")
+        });
+
+        assert!(found);
+    }
+
+    #[test]
+    fn command_lookup_rejects_missing_binary() {
+        let path = OsString::from(r"C:\Tools;C:\Other");
+        let pathext = OsString::from(".EXE;.CMD");
+
+        let found = command_is_available_with("codex", Some(path), Some(pathext), |_| false);
+
+        assert!(!found);
+    }
+}
+
+fn command_is_available(command: &str) -> bool {
+    command_is_available_with(
+        command,
+        env::var_os("PATH"),
+        env::var_os("PATHEXT"),
+        |candidate| candidate.is_file(),
+    )
+}
+
+fn command_is_available_with<F>(
+    command: &str,
+    path_env: Option<OsString>,
+    pathext_env: Option<OsString>,
+    exists: F,
+) -> bool
+where
+    F: Fn(&Path) -> bool,
+{
+    if command.trim().is_empty() {
+        return false;
+    }
+
+    let command_path = Path::new(command);
+    if command_contains_path(command) {
+        return command_file_candidates(command_path, pathext_env.as_ref())
+            .iter()
+            .any(|candidate| exists(candidate));
+    }
+
+    let Some(path_env) = path_env else {
+        return false;
+    };
+
+    let file_names = command_file_names(command, pathext_env.as_ref());
+    env::split_paths(&path_env).any(|dir| {
+        file_names
+            .iter()
+            .map(|name| dir.join(name))
+            .any(|candidate| exists(&candidate))
+    })
+}
+
+fn command_contains_path(command: &str) -> bool {
+    command.contains('/') || command.contains('\\')
+}
+
+fn command_file_candidates(command: &Path, pathext_env: Option<&OsString>) -> Vec<PathBuf> {
+    let mut candidates = vec![command.to_path_buf()];
+    if command.extension().is_none() {
+        for extension in executable_extensions(pathext_env) {
+            candidates.push(PathBuf::from(format!("{}{}", command.display(), extension)));
+        }
+    }
+    candidates
+}
+
+fn command_file_names(command: &str, pathext_env: Option<&OsString>) -> Vec<String> {
+    let mut names = vec![command.to_string()];
+    if Path::new(command).extension().is_none() {
+        for extension in executable_extensions(pathext_env) {
+            names.push(format!("{command}{extension}"));
+        }
+    }
+    names
+}
+
+fn executable_extensions(pathext_env: Option<&OsString>) -> Vec<String> {
+    let raw = pathext_env
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string());
+
+    raw.split(';')
+        .map(str::trim)
+        .filter(|extension| !extension.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
 
 /// 列出所有已注册的适配器
 /// 返回适配器 ID、名称、命令、能力声明、是否内置
 #[tauri::command]
-pub async fn list_adapters(
-    state: State<'_, AppState>,
-) -> Result<Vec<AdapterInfo>, ConfluxError> {
+pub async fn list_adapters(state: State<'_, AppState>) -> Result<Vec<AdapterInfo>, ConfluxError> {
     let registry = state.adapter_registry.read();
     Ok(registry.list())
 }
@@ -25,8 +134,22 @@ pub async fn register_adapter(
     state: State<'_, AppState>,
     config_path: String,
 ) -> Result<AdapterId, ConfluxError> {
-    let mut registry = state.adapter_registry.write();
-    let adapter_id = registry.register_from_toml(&config_path)?;
+    let adapter_id = {
+        let mut registry = state.adapter_registry.write();
+        registry.register_from_toml(&config_path)?
+    };
+    let sync_result = {
+        let conn = state.db.lock();
+        let registry = state.adapter_registry.read();
+        crate::persistence::schema::sync_adapter_configs_from_registry(&conn, &registry)
+    };
+    if let Err(err) = sync_result {
+        let mut registry = state.adapter_registry.write();
+        if let Err(rollback_err) = registry.unregister(&adapter_id) {
+            log::warn!("adapter registration rollback failed for {adapter_id}: {rollback_err}");
+        }
+        return Err(err);
+    }
     Ok(AdapterId(adapter_id))
 }
 
@@ -85,12 +208,49 @@ pub async fn detect_adapter_auth(
         _ => (None, None),
     };
 
-    let adapter = {
+    let (adapter, command) = {
         let registry = state.adapter_registry.read();
-        registry.get(&adapter_id.0).ok_or_else(|| ConfluxError::AdapterNotFound {
-            adapter_id: adapter_id.0.clone(),
-        })?
+        let adapter = registry
+            .get(&adapter_id.0)
+            .ok_or_else(|| ConfluxError::AdapterNotFound {
+                adapter_id: adapter_id.0.clone(),
+            })?;
+        let command = registry
+            .get_config(&adapter_id.0)
+            .ok_or_else(|| ConfluxError::AdapterNotFound {
+                adapter_id: adapter_id.0.clone(),
+            })?
+            .command
+            .clone();
+        (adapter, command)
     };
+
+    let installed = command_is_available(&command);
+    let install_message = if installed {
+        Some(format!("Found CLI binary: {command}"))
+    } else {
+        Some(format!("CLI binary not found: {command}"))
+    };
+
+    if !installed {
+        return Ok(AdapterAuthStatus {
+            adapter_id: adapter_id.0,
+            ready: false,
+            message: format!("CLI binary not found: {command}"),
+            login_command,
+            docs_url,
+            installed: false,
+            authenticated: false,
+            runnable: false,
+            session_supported: false,
+            install_message,
+            auth_message: Some("Auth not checked because CLI is missing".to_string()),
+            runtime_message: Some("Install the CLI before creating a session".to_string()),
+            session_message: Some(
+                "Session restore support is pending for V1 hardening".to_string(),
+            ),
+        });
+    }
 
     match adapter.detect_auth().await {
         Ok(()) => Ok(AdapterAuthStatus {
@@ -99,13 +259,35 @@ pub async fn detect_adapter_auth(
             message: "Ready".to_string(),
             login_command,
             docs_url,
+            installed: true,
+            authenticated: true,
+            runnable: true,
+            session_supported: false,
+            install_message,
+            auth_message: Some("Authenticated".to_string()),
+            runtime_message: Some("Adapter is runnable".to_string()),
+            session_message: Some(
+                "Session restore support is pending for V1 hardening".to_string(),
+            ),
         }),
         Err(msg) => Ok(AdapterAuthStatus {
             adapter_id: adapter_id.0,
             ready: false,
-            message: msg,
+            message: msg.clone(),
             login_command,
             docs_url,
+            installed: true,
+            authenticated: false,
+            runnable: false,
+            session_supported: false,
+            install_message,
+            auth_message: Some(msg),
+            runtime_message: Some(
+                "Complete login or API key setup before creating a session".to_string(),
+            ),
+            session_message: Some(
+                "Session restore support is pending for V1 hardening".to_string(),
+            ),
         }),
     }
 }

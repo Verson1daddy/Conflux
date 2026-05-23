@@ -2,12 +2,13 @@
 // Manages workspace layout lifecycle: load, save, event listening, and auto-pack
 // Connects the zustand store to Tauri IPC and event system
 
-import { useEffect, useCallback, useRef } from "react";
+import { useEffect, useCallback, useMemo, useRef, useState } from "react";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { useAgentStore } from "@/stores/agentStore";
+import { getLiveAgentInstances } from "@/lib/workspace-status";
 import {
   loadWorkspaceLayout,
   saveWorkspaceLayout,
-  listAgentInstances,
 } from "@/lib/tauri-bridge";
 import { onAgentStatusChanged } from "@/lib/event-listener";
 import type {
@@ -45,6 +46,59 @@ function createDefaultCardLayout(
   };
 }
 
+export function mergeWorkspaceCards(input: {
+  liveInstances: AgentInstanceInfo[];
+  currentCards: CardLayout[];
+  savedCards: Map<string, CardLayout>;
+  preserveCurrentCardsOnEmpty?: boolean;
+}): CardLayout[] {
+  if (
+    input.preserveCurrentCardsOnEmpty &&
+    input.liveInstances.length === 0 &&
+    input.currentCards.length > 0
+  ) {
+    return input.currentCards;
+  }
+
+  const currentCardMap = new Map(
+    input.currentCards.map((card) => [card.instance_id, card] as const)
+  );
+
+  return input.liveInstances.map((instance, index) => {
+    return (
+      currentCardMap.get(instance.instance_id) ??
+      input.savedCards.get(instance.instance_id) ??
+      createDefaultCardLayout(instance, index)
+    );
+  });
+}
+
+export function shouldAutoFitOnCardsRestored(
+  previousCardCount: number,
+  nextCardCount: number
+): boolean {
+  return previousCardCount === 0 && nextCardCount > 0;
+}
+
+export function selectWorkspaceLiveInstances(
+  instances: Map<string, AgentInstanceInfo>
+): AgentInstanceInfo[] {
+  return getLiveAgentInstances(instances);
+}
+
+export function shouldAddCardForStatusEvent(input: {
+  instanceId: string;
+  instances: Map<string, AgentInstanceInfo>;
+  currentCards: CardLayout[];
+}): boolean {
+  if (input.currentCards.some((card) => card.instance_id === input.instanceId)) {
+    return false;
+  }
+
+  const instance = input.instances.get(input.instanceId);
+  return Boolean(instance && instance.ended_at === null && !instance.hidden);
+}
+
 /**
  * Workspace layout management hook.
  *
@@ -54,6 +108,14 @@ function createDefaultCardLayout(
  * - Provides saveLayout() to persist current layout to disk
  */
 export function useWorkspaceLayout() {
+  const instanceMap = useAgentStore((s) => s.instances);
+  const preserveCurrentCardsOnEmpty = useAgentStore(
+    (s) => s.ignoredEmptyInstanceSnapshot
+  );
+  const liveInstances = useMemo(
+    () => selectWorkspaceLiveInstances(instanceMap),
+    [instanceMap]
+  );
   const {
     cards,
     layoutMode,
@@ -64,8 +126,11 @@ export function useWorkspaceLayout() {
   } = useWorkspaceStore();
 
   const initializedRef = useRef(false);
+  const savedCardsRef = useRef(new Map<string, CardLayout>());
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [layoutHydrated, setLayoutHydrated] = useState(false);
 
-  // ===== Initialization: load layout + merge with live agents =====
+  // ===== Initialization: load persisted layout metadata =====
   useEffect(() => {
     if (initializedRef.current) return;
     initializedRef.current = true;
@@ -74,35 +139,17 @@ export function useWorkspaceLayout() {
 
     async function initialize() {
       try {
-        const [savedLayout, liveInstances] = await Promise.all([
-          loadWorkspaceLayout(),
-          listAgentInstances(),
-        ]);
+        const savedLayout = await loadWorkspaceLayout();
 
         if (cancelled) return;
 
-        // Build a map of saved card layouts by instance_id
         const savedCardMap = new Map<string, CardLayout>();
         if (savedLayout) {
           for (const card of savedLayout.cards) {
             savedCardMap.set(card.instance_id, card);
           }
         }
-
-        // Merge: use saved layout if available, otherwise create default
-        const mergedCards = liveInstances.map((instance, index) => {
-          const saved = savedCardMap.get(instance.instance_id);
-          if (saved) return saved;
-          return createDefaultCardLayout(instance, index);
-        });
-
-        // Only overwrite cards when the backend actually reported instances.
-        // Otherwise leave the store untouched so the demo seed written by
-        // App.tsx survives initialization under real `tauri:dev`. New real
-        // instances arriving later flow through onAgentStatusChanged below.
-        if (mergedCards.length > 0) {
-          setCards(mergedCards);
-        }
+        savedCardsRef.current = savedCardMap;
 
         if (savedLayout) {
           setLayoutMode(savedLayout.layout_mode);
@@ -110,9 +157,12 @@ export function useWorkspaceLayout() {
             setAutoPackConfig(savedLayout.auto_pack_config);
           }
         }
+
+        setLayoutHydrated(true);
       } catch (err) {
         // On error (e.g., backend not ready), initialize with empty state
         console.error("[useWorkspaceLayout] initialization failed:", err);
+        setLayoutHydrated(true);
       }
     }
 
@@ -123,6 +173,40 @@ export function useWorkspaceLayout() {
     };
   }, [setCards, setLayoutMode, setAutoPackConfig]);
 
+  // ===== Reconcile cards with live instances =====
+  useEffect(() => {
+    if (!initializedRef.current || !layoutHydrated) {
+      return;
+    }
+
+    const mergedCards = mergeWorkspaceCards({
+      liveInstances,
+      currentCards: useWorkspaceStore.getState().cards,
+      savedCards: savedCardsRef.current,
+      preserveCurrentCardsOnEmpty,
+    });
+
+    const currentCards = useWorkspaceStore.getState().cards;
+    const cardsChanged =
+      currentCards.length !== mergedCards.length ||
+      currentCards.some((card, index) => {
+        const next = mergedCards[index];
+        return (
+          !next ||
+          card.instance_id !== next.instance_id ||
+          card.position.x !== next.position.x ||
+          card.position.y !== next.position.y ||
+          card.size.width !== next.size.width ||
+          card.size.height !== next.size.height ||
+          card.z_index !== next.z_index
+        );
+      });
+
+    if (cardsChanged) {
+      setCards(mergedCards);
+    }
+  }, [layoutHydrated, liveInstances, preserveCurrentCardsOnEmpty, setCards]);
+
   // ===== Event listener: AgentStatusChanged =====
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -130,10 +214,14 @@ export function useWorkspaceLayout() {
     onAgentStatusChanged((payload) => {
       // When a new agent appears that we don't have a card for, add one
       const currentCards = useWorkspaceStore.getState().cards;
-      const exists = currentCards.some(
-        (c) => c.instance_id === payload.instance_id
-      );
-      if (!exists) {
+      const currentInstances = useAgentStore.getState().instances;
+      if (
+        shouldAddCardForStatusEvent({
+          instanceId: payload.instance_id,
+          instances: currentInstances,
+          currentCards,
+        })
+      ) {
         const newCard: CardLayout = {
           instance_id: payload.instance_id,
           position: {
@@ -186,6 +274,27 @@ export function useWorkspaceLayout() {
       console.error("[useWorkspaceLayout] saveLayout failed:", err);
     }
   }, []);
+
+  useEffect(() => {
+    if (!layoutHydrated) {
+      return;
+    }
+
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+
+    saveTimeoutRef.current = setTimeout(() => {
+      void saveLayout();
+    }, 250);
+
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+        saveTimeoutRef.current = null;
+      }
+    };
+  }, [autoPackConfig, cards, layoutHydrated, layoutMode, saveLayout]);
 
   return {
     cards,

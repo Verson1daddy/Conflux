@@ -187,39 +187,6 @@ mod window_command_tests {
 
     // ===== 窗口配置常量验证测试 =====
 
-    /// 验证三种灵动岛模式的窗口尺寸配置一致性
-    #[test]
-    fn test_island_mode_window_dimensions() {
-        // TopIsland: 400x48
-        let top_island_width = 400.0_f64;
-        let top_island_height = 48.0_f64;
-        assert!(top_island_width > 0.0);
-        assert!(top_island_height > 0.0);
-        assert!(top_island_width > top_island_height, "TopIsland 应为横向矩形");
-
-        // Sidebar: 420x800
-        let sidebar_width = 420.0_f64;
-        let sidebar_height = 800.0_f64;
-        assert!(sidebar_height > sidebar_width, "Sidebar 应为纵向矩形");
-
-        // FloatBall: 64x64
-        let float_ball_width = 64.0_f64;
-        let float_ball_height = 64.0_f64;
-        assert!(
-            (float_ball_width - float_ball_height).abs() < f64::EPSILON,
-            "FloatBall 应为正方形"
-        );
-
-        // Workspace: 1440x900
-        let workspace_width = 1440.0_f64;
-        let workspace_height = 900.0_f64;
-        assert!(workspace_width > workspace_height, "Workspace 应为横向矩形");
-        assert!(
-            workspace_width > sidebar_width,
-            "Workspace 宽度应大于 Sidebar"
-        );
-    }
-
     // ===== 事件载荷序列化测试（focus-agent-card 事件） =====
 
     #[test]

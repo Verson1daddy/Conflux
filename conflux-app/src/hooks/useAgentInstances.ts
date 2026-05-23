@@ -1,24 +1,18 @@
-// ===== useAgentInstances Hook =====
-// Initializes agent instances from Tauri backend and subscribes to real-time events
-// Populates agentStore with instances, statuses, and trees
-
-import { useEffect, useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import { useAgentStore } from "@/stores/agentStore";
-import { listAgentInstances, getAgentTree } from "@/lib/tauri-bridge";
+import { getAgentTree, listAgentInstances } from "@/lib/tauri-bridge";
 import {
   onAgentStatusChanged,
-  onSubAgentSpawned,
   onSubAgentCompleted,
+  onSubAgentSpawned,
 } from "@/lib/event-listener";
 
-/**
- * Hook that manages agent instance lifecycle:
- * - Loads all instances on mount via listAgentInstances()
- * - Subscribes to AgentStatusChanged events to update statuses
- * - Subscribes to SubAgentSpawned / SubAgentCompleted events to refresh trees
- * - Returns instances, statuses, trees, and a manual refresh function
- */
-export function useAgentInstances() {
+interface UseAgentInstancesOptions {
+  hydrateTrees?: boolean;
+}
+
+export function useAgentInstances(options: UseAgentInstancesOptions = {}) {
+  const { hydrateTrees = true } = options;
   const instances = useAgentStore((s) => s.instances);
   const statuses = useAgentStore((s) => s.statuses);
   const trees = useAgentStore((s) => s.trees);
@@ -30,54 +24,65 @@ export function useAgentInstances() {
     try {
       const list = await listAgentInstances();
       setInstances(list);
-      // Fetch trees for each instance
-      for (const inst of list) {
-        try {
-          const tree = await getAgentTree(inst.instance_id);
-          updateTree(inst.instance_id, tree);
-        } catch {
-          // Tree may not be available for all instances; skip silently
+
+      if (!hydrateTrees) {
+        return;
+      }
+
+      const trees = await Promise.all(
+        list.map(async (inst) => {
+          try {
+            const tree = await getAgentTree(inst.instance_id);
+            return { instanceId: inst.instance_id, tree };
+          } catch {
+            return null;
+          }
+        })
+      );
+
+      for (const entry of trees) {
+        if (entry) {
+          updateTree(entry.instanceId, entry.tree);
         }
       }
     } catch {
-      // Backend not available yet (e.g. during startup); leave store empty
+      // Backend not available yet (e.g. during startup); leave store empty.
     }
-  }, [setInstances, updateTree]);
+  }, [hydrateTrees, setInstances, updateTree]);
 
   useEffect(() => {
-    // Initial load
     refresh();
 
-    // Subscribe to status changes
     const unlistenStatus = onAgentStatusChanged((payload) => {
-      updateStatus(payload.instance_id, payload.new_status);
+      updateStatus(payload.instance_id, payload.new_status, payload.timestamp);
     });
 
-    // Subscribe to sub-agent spawned events — refresh tree for the parent
-    const unlistenSpawned = onSubAgentSpawned((payload) => {
-      getAgentTree(payload.instance_id)
-        .then((tree) => updateTree(payload.instance_id, tree))
-        .catch(() => {
-          // Tree fetch failed; ignore
-        });
-    });
+    const unlistenSpawned = hydrateTrees
+      ? onSubAgentSpawned((payload) => {
+          getAgentTree(payload.instance_id)
+            .then((tree) => updateTree(payload.instance_id, tree))
+            .catch(() => {
+              // Tree fetch failed; ignore.
+            });
+        })
+      : Promise.resolve(() => {});
 
-    // Subscribe to sub-agent completed events — refresh tree for the parent
-    const unlistenCompleted = onSubAgentCompleted((payload) => {
-      getAgentTree(payload.instance_id)
-        .then((tree) => updateTree(payload.instance_id, tree))
-        .catch(() => {
-          // Tree fetch failed; ignore
-        });
-    });
+    const unlistenCompleted = hydrateTrees
+      ? onSubAgentCompleted((payload) => {
+          getAgentTree(payload.instance_id)
+            .then((tree) => updateTree(payload.instance_id, tree))
+            .catch(() => {
+              // Tree fetch failed; ignore.
+            });
+        })
+      : Promise.resolve(() => {});
 
-    // Cleanup subscriptions on unmount
     return () => {
       unlistenStatus.then((fn) => fn());
       unlistenSpawned.then((fn) => fn());
       unlistenCompleted.then((fn) => fn());
     };
-  }, [refresh, updateStatus, updateTree]);
+  }, [hydrateTrees, refresh, updateStatus, updateTree]);
 
   return { instances, statuses, trees, refresh };
 }

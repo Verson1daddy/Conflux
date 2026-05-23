@@ -1,12 +1,17 @@
 // ===== SettingsPanel =====
 // Two-column settings modal matching design/conflux.pen frame "Settings 面板" (PTDAa).
 // C2-A1: All four tabs implemented — Permissions / Appearance / Adapters / About.
-// Local state only — persistence wired in a later cycle.
+// Settings mix local UI preferences with backend adapter registry reads.
 
-import { type FC, useEffect, useState } from "react";
+import { type FC, useEffect, useMemo, useState } from "react";
 import { useAgentStore } from "@/stores/agentStore";
 import { useIslandStore } from "@/stores/islandStore";
-import type { IslandMode } from "@/types";
+import { listAdapters, switchIslandMode } from "@/lib/tauri-bridge";
+import {
+  buildSettingsAdapterRows,
+  resolvePrimaryAdapterName,
+} from "@/lib/settings-model";
+import type { AdapterInfo, CloseAction, IslandMode } from "@/types";
 
 interface SettingsPanelProps {
   visible: boolean;
@@ -15,6 +20,7 @@ interface SettingsPanelProps {
 
 type SettingsTab = "frameworks" | "permissions" | "appearance" | "adapters" | "about";
 type PermissionTier = "manual" | "smart" | "autonomous";
+type CloseActionPreference = "ask" | CloseAction;
 
 interface NavItem {
   id: SettingsTab;
@@ -146,21 +152,6 @@ const ACCENT_OPTIONS: AccentOption[] = [
 
 // ===== Adapters data =====
 
-interface BuiltinAdapter {
-  id: string;
-  name: string;
-  vendor: string;
-  command: string;
-  description: string;
-}
-
-const BUILTIN_ADAPTERS: BuiltinAdapter[] = [
-  { id: "claude-code", name: "Claude Code", vendor: "Anthropic", command: "claude", description: "Flagship agent framework with sub-agent orchestration" },
-  { id: "codex",       name: "Codex",       vendor: "OpenAI",    command: "codex",  description: "Code-focused reasoning and analysis" },
-  { id: "aider",       name: "Aider",       vendor: "Paul Gauthier", command: "aider", description: "Git-aware pair programmer" },
-  { id: "opencode",    name: "OpenCode",    vendor: "OpenCode",  command: "opencode", description: "PR review and codebase triage" },
-];
-
 // ===== About data =====
 
 const VERSION = "0.1.0";
@@ -189,9 +180,13 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
   });
 
   // Close action preference
-  const [closeAction, setCloseAction] = useState<string>(
-    () => localStorage.getItem("conflux.closeAction") || "ask"
-  );
+  const [closeAction, setCloseAction] = useState<CloseActionPreference>(() => {
+    const saved = localStorage.getItem("conflux.closeAction");
+    if (saved === "quit" || saved === "top_island" || saved === "sidebar") {
+      return saved;
+    }
+    return "ask";
+  });
 
   // Frameworks tab state
   const favoriteAdapters = useAgentStore((s) => s.favoriteAdapters);
@@ -205,6 +200,20 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
 
   // Adapters — read live instances from store to show "active" count
   const instances = useAgentStore((s) => s.instances);
+  const [registeredAdapters, setRegisteredAdapters] = useState<AdapterInfo[]>([]);
+  const [adaptersLoading, setAdaptersLoading] = useState(false);
+  const [adapterRegistryError, setAdapterRegistryError] = useState<string | null>(null);
+  const adapterRows = useMemo(
+    () =>
+      buildSettingsAdapterRows({
+        adapters: registeredAdapters,
+        instances: instances.values(),
+        favoriteAdapters,
+        primaryAdapter,
+      }),
+    [favoriteAdapters, instances, primaryAdapter, registeredAdapters]
+  );
+  const primaryAdapterName = resolvePrimaryAdapterName(adapterRows, primaryAdapter);
 
   useEffect(() => {
     if (!visible) return;
@@ -214,6 +223,31 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [visible, onClose]);
+
+  useEffect(() => {
+    if (!visible) return;
+
+    let cancelled = false;
+    setAdaptersLoading(true);
+    setAdapterRegistryError(null);
+    listAdapters()
+      .then((adapters) => {
+        if (cancelled) return;
+        setRegisteredAdapters(adapters);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setRegisteredAdapters([]);
+        setAdapterRegistryError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setAdaptersLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [visible]);
 
   if (!visible) return null;
 
@@ -330,20 +364,40 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                   Frameworks
                 </h3>
                 <p style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 12, color: "#6B7280", margin: 0, lineHeight: 1.5 }}>
-                  Your favorite agent frameworks. The primary framework is used by the capsule brand name and Send-to panel default.
+                  Favorites are UI defaults for new agent sessions. Runtime availability is checked in New Agent.
                 </p>
 
+                {adaptersLoading && (
+                  <p style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 12, color: "#8A8F98", margin: 0 }}>
+                    Loading registered adapters...
+                  </p>
+                )}
+
+                {adapterRegistryError && (
+                  <div style={{
+                    padding: "10px 12px",
+                    borderRadius: 8,
+                    background: "rgba(255,184,0,0.10)",
+                    border: "1px solid rgba(255,184,0,0.22)",
+                    fontFamily: "'Geist Sans',sans-serif",
+                    fontSize: 11,
+                    color: "#FFB800",
+                    lineHeight: 1.5,
+                  }}>
+                    Adapter registry unavailable. Framework preferences are read-only until the backend responds.
+                  </div>
+                )}
+
                 {/* Primary indicator */}
-                {primaryAdapter && (
+                {primaryAdapterName && (
                   <div className="flex flex-col" style={{ gap: 4 }}>
                     <div className="flex items-center" style={{
                       padding: "10px 14px", gap: 10, borderRadius: 8,
                       background: "rgba(184,212,227,0.06)",
                       border: "1px solid rgba(184,212,227,0.2)",
                     }}>
-                      <span style={{ fontSize: 14 }}>⭐</span>
                       <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 12, color: "#B8D4E3", fontWeight: 500 }}>
-                        Primary: {BUILTIN_ADAPTERS.find((a) => a.id === primaryAdapter)?.name ?? primaryAdapter}
+                        Primary: {primaryAdapterName}
                       </span>
                     </div>
                     <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 11, color: "#6B7280", paddingLeft: 2 }}>
@@ -354,17 +408,29 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
 
                 {/* Adapter list with favorite toggles */}
                 <div className="flex flex-col" style={{ gap: 8 }}>
-                  {BUILTIN_ADAPTERS.map((adapter) => {
-                    const isFav = favoriteAdapters.has(adapter.id);
-                    const isPrimary = primaryAdapter === adapter.id;
+                  {!adaptersLoading && adapterRows.length === 0 && !adapterRegistryError && (
+                    <div style={{
+                      padding: "14px 16px",
+                      borderRadius: 8,
+                      background: "rgba(255,255,255,0.03)",
+                      border: "1px solid rgba(255,255,255,0.082)",
+                      fontFamily: "'Geist Sans',sans-serif",
+                      fontSize: 12,
+                      color: "#8A8F98",
+                    }}>
+                      No registered adapters returned by the backend.
+                    </div>
+                  )}
+
+                  {adapterRows.map((adapter) => {
                     return (
                       <div
                         key={adapter.id}
                         className="flex items-center"
                         style={{
                           padding: "14px 16px", gap: 14, borderRadius: 8,
-                          background: isFav ? "rgba(184,212,227,0.06)" : "rgba(255,255,255,0.03)",
-                          border: isFav ? "1px solid rgba(184,212,227,0.25)" : "1px solid rgba(255,255,255,0.082)",
+                          background: adapter.isFavorite ? "rgba(184,212,227,0.06)" : "rgba(255,255,255,0.03)",
+                          border: adapter.isFavorite ? "1px solid rgba(184,212,227,0.25)" : "1px solid rgba(255,255,255,0.082)",
                         }}
                       >
                         {/* Favorite checkbox */}
@@ -382,13 +448,13 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                           className="shrink-0 flex items-center justify-center"
                           style={{
                             width: 20, height: 20, borderRadius: 5,
-                            background: isFav ? "#B8D4E3" : "rgba(255,255,255,0.06)",
-                            border: isFav ? "none" : "1px solid rgba(255,255,255,0.15)",
+                            background: adapter.isFavorite ? "#B8D4E3" : "rgba(255,255,255,0.06)",
+                            border: adapter.isFavorite ? "none" : "1px solid rgba(255,255,255,0.15)",
                             cursor: "pointer",
                           }}
-                          title={isFav ? "Remove from favorites" : "Add to favorites"}
+                          title={adapter.isFavorite ? "Remove from favorites" : "Add to favorites"}
                         >
-                          {isFav && <ICON_CHECK size={12} color="#0A0F15" />}
+                          {adapter.isFavorite && <ICON_CHECK size={12} color="#0A0F15" />}
                         </button>
 
                         <div className="flex-1 min-w-0 flex flex-col" style={{ gap: 2 }}>
@@ -396,7 +462,14 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                             <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 14, fontWeight: 600, color: "#F2F2F2" }}>
                               {adapter.name}
                             </span>
-                            {isPrimary && (
+                            <span style={{
+                              fontFamily: "'Geist Sans',sans-serif", fontSize: 9, fontWeight: 600,
+                              padding: "2px 7px", borderRadius: 9999,
+                              background: "rgba(255,255,255,0.055)", color: "#8A8F98",
+                            }}>
+                              {adapter.kindLabel}
+                            </span>
+                            {adapter.isPrimary && (
                               <span style={{
                                 fontFamily: "'Geist Sans',sans-serif", fontSize: 9, fontWeight: 600,
                                 padding: "2px 7px", borderRadius: 9999,
@@ -407,12 +480,15 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                             )}
                           </div>
                           <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 11, color: "#6B7280" }}>
-                            {adapter.vendor} · {adapter.description}
+                            {adapter.vendor} - {adapter.description}
+                          </span>
+                          <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 10, color: "#6B7280" }}>
+                            {adapter.capabilitySummary}
                           </span>
                         </div>
 
                         {/* Set as primary button (only for favorites) */}
-                        {isFav && !isPrimary && (
+                        {adapter.isFavorite && !adapter.isPrimary && (
                           <button
                             onClick={() => setPrimaryAdapterAction(adapter.id)}
                             title={`Set ${adapter.name} as primary adapter`}
@@ -457,7 +533,7 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                     lineHeight: 1.5,
                   }}
                 >
-                  Choose how much autonomy your agents have. You can override per-session from the sidebar.
+                  V1 preview of the policy tiers. Runtime permission policy is still controlled per session.
                 </p>
 
                 <div className="flex flex-col" style={{ gap: 10 }}>
@@ -468,14 +544,17 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                       <button
                         key={card.id}
                         onClick={() => setTier(card.id)}
+                        disabled
                         className="flex items-center w-full text-left"
-                        title={`${card.name}: ${card.description}`}
+                        title={`${card.name}: ${card.description} Preview only in V1.`}
                         style={{
                           padding: "16px 18px",
                           gap: 14,
                           borderRadius: 8,
                           background: isSelected ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.04)",
                           border: isSelected ? "1px solid #B8D4E3" : "1px solid rgba(255,255,255,0.082)",
+                          cursor: "not-allowed",
+                          opacity: isSelected ? 1 : 0.72,
                         }}
                       >
                         <IconComp size={22} color={isSelected ? "#B8D4E3" : "#B8B3B0"} />
@@ -515,7 +594,7 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                     fontStyle: "italic",
                   }}
                 >
-                  Persistence is wired in the next cycle — changes are preview-only for now.
+                  Preview only: selecting a tier here does not change running agents yet.
                 </p>
               </>
             )}
@@ -575,15 +654,19 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                   </span>
                   <div className="flex" style={{ gap: 8 }}>
                     {([
-                      { mode: "top_island" as IslandMode, label: "Capsule", desc: "Top bar capsule" },
-                      { mode: "float_ball" as IslandMode, label: "Float Ball", desc: "Draggable overlay" },
-                      { mode: "sidebar" as IslandMode, label: "Sidebar", desc: "Right panel" },
+                      { mode: "top_island" as IslandMode, label: "Dynamic Island", desc: "Top centered capsule" },
+                      { mode: "sidebar" as IslandMode, label: "Sidebar", desc: "Right-edge reveal panel" },
                     ]).map(({ mode, label, desc }) => {
                       const sel = islandMode === mode;
                       return (
                         <button
                           key={mode}
-                          onClick={() => setIslandMode(mode)}
+                          onClick={() => {
+                            setIslandMode(mode);
+                            void switchIslandMode(mode).catch(() => {
+                              // Keep local preview if backend island state is unavailable.
+                            });
+                          }}
                           className="flex flex-col flex-1 items-center justify-center"
                           style={{
                             height: 56, gap: 3, borderRadius: 8,
@@ -616,7 +699,7 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                   <select
                     value={closeAction}
                     onChange={(e) => {
-                      const val = e.target.value;
+                      const val = e.target.value as CloseActionPreference;
                       setCloseAction(val);
                       if (val === "ask") localStorage.removeItem("conflux.closeAction");
                       else localStorage.setItem("conflux.closeAction", val);
@@ -638,7 +721,8 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                     }}
                   >
                     <option value="ask" style={{ background: "#1C1C1E", color: "#F2F2F2" }}>Always ask</option>
-                    <option value="tray" style={{ background: "#1C1C1E", color: "#F2F2F2" }}>Minimize to tray</option>
+                    <option value="top_island" style={{ background: "#1C1C1E", color: "#F2F2F2" }}>Close to Dynamic Island</option>
+                    <option value="sidebar" style={{ background: "#1C1C1E", color: "#F2F2F2" }}>Close to Sidebar (edge reveal)</option>
                     <option value="quit" style={{ background: "#1C1C1E", color: "#F2F2F2" }}>Quit completely</option>
                   </select>
                 </div>
@@ -652,14 +736,46 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                   Adapters
                 </h3>
                 <p style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 12, color: "#6B7280", margin: 0, lineHeight: 1.5 }}>
-                  Agent frameworks registered in Conflux. Built-in adapters detect CLI binaries on your PATH.
+                  Adapter registry reported by the backend. This page does not synthesize built-ins when the backend is unavailable.
                 </p>
 
+                {adaptersLoading && (
+                  <p style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 12, color: "#8A8F98", margin: 0 }}>
+                    Loading registered adapters...
+                  </p>
+                )}
+
+                {adapterRegistryError && (
+                  <div style={{
+                    padding: "10px 12px",
+                    borderRadius: 8,
+                    background: "rgba(255,184,0,0.10)",
+                    border: "1px solid rgba(255,184,0,0.22)",
+                    fontFamily: "'Geist Sans',sans-serif",
+                    fontSize: 11,
+                    color: "#FFB800",
+                    lineHeight: 1.5,
+                  }}>
+                    Adapter registry unavailable. Open New Agent for runtime detection once the backend is ready.
+                  </div>
+                )}
+
                 <div className="flex flex-col" style={{ gap: 8 }}>
-                  {BUILTIN_ADAPTERS.map((adapter) => {
-                    const activeCount = Array.from(instances.values()).filter(
-                      (inst) => inst.adapter_id === adapter.id
-                    ).length;
+                  {!adaptersLoading && adapterRows.length === 0 && !adapterRegistryError && (
+                    <div style={{
+                      padding: "14px 16px",
+                      borderRadius: 8,
+                      background: "rgba(255,255,255,0.03)",
+                      border: "1px solid rgba(255,255,255,0.082)",
+                      fontFamily: "'Geist Sans',sans-serif",
+                      fontSize: 12,
+                      color: "#8A8F98",
+                    }}>
+                      No adapters are currently registered.
+                    </div>
+                  )}
+
+                  {adapterRows.map((adapter) => {
                     return (
                       <div
                         key={adapter.id}
@@ -687,22 +803,26 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                             <span style={{
                               fontFamily: "'Geist Sans',sans-serif", fontSize: 10, fontWeight: 500,
                               padding: "2px 8px", borderRadius: 9999,
-                              background: "rgba(184,212,227,0.12)", color: "#B8D4E3",
+                              background: adapter.kindLabel === "built-in" ? "rgba(184,212,227,0.12)" : "rgba(255,255,255,0.055)",
+                              color: adapter.kindLabel === "built-in" ? "#B8D4E3" : "#8A8F98",
                             }}>
-                              built-in
+                              {adapter.kindLabel}
                             </span>
                           </div>
                           <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 11, color: "#6B7280" }}>
-                            {adapter.vendor} · <span style={{ fontFamily: "'JetBrains Mono Variable',monospace", fontSize: 10 }}>{adapter.command}</span>
+                            {adapter.vendor} - <span style={{ fontFamily: "'JetBrains Mono Variable',monospace", fontSize: 10 }}>{adapter.command}</span>
+                          </span>
+                          <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 10, color: "#6B7280" }}>
+                            {adapter.capabilitySummary}
                           </span>
                         </div>
-                        {activeCount > 0 && (
+                        {adapter.activeCount > 0 && (
                           <span style={{
                             fontFamily: "'Geist Sans',sans-serif", fontSize: 10, fontWeight: 500,
                             padding: "3px 8px", borderRadius: 9999,
                             background: "rgba(52,199,89,0.12)", color: "#34C759",
                           }}>
-                            {activeCount} active
+                            {adapter.activeCount} active
                           </span>
                         )}
                       </div>
@@ -714,20 +834,21 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
 
                 <button
                   className="flex items-center justify-center"
+                  disabled
                   style={{
                     height: 40, gap: 8, borderRadius: 8,
                     background: "rgba(255,255,255,0.04)",
                     border: "1px dashed rgba(255,255,255,0.15)",
                     fontFamily: "'Geist Sans',sans-serif", fontSize: 12, fontWeight: 500,
-                    color: "#6B7280", cursor: "pointer",
+                    color: "#6B7280", cursor: "not-allowed", opacity: 0.65,
                   }}
-                  title="Register a custom adapter via TOML config (coming soon)"
+                  title="Register a custom adapter via TOML config (planned after V1)"
                 >
                   + Register Custom Adapter
                 </button>
 
                 <p style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 11, color: "#6B7280", margin: 0, fontStyle: "italic" }}>
-                  Custom adapter registration from TOML config — coming in the next cycle.
+                  Custom adapter registration from TOML config is planned after V1.
                 </p>
               </>
             )}
@@ -816,7 +937,7 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                 </div>
 
                 <p style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 10, color: "#6B728080", margin: 0, lineHeight: 1.5 }}>
-                  MIT License · Built with Claude Opus 4.6 + Pencil MCP
+                  MIT License - Local-first multi-agent CLI workspace
                 </p>
               </>
             )}

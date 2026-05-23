@@ -1,132 +1,90 @@
-// ===== TopBar 组件 =====
-// 工作台顶部栏 h:52, glass-bg + backdrop-blur
-// 设计稿结构: addBtn | spacer | island capsule (260px) | spacer | search | settings
-//
-// Capsule 有三种态（按优先级）：
-//   1. permission — pending permission request，琥珀 glow
-//   2. notification — 有未读通知，琥珀 glow + pulse + badge + 动态消息轮播
-//   3. normal — 显示活跃 agent 数量
-// 胶囊 hover 时右侧出现 ✎ 铅笔（Send to... 主动发起入口）
-
-import { type FC, useEffect, useMemo, useState } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useIslandStore } from "@/stores/islandStore";
-import { useAgentStore, agentDisplayLabel } from "@/stores/agentStore";
-import type { AgentStatus, AgentInstanceInfo } from "@/types";
+import { type FC, type MouseEvent, useMemo, useRef, useState } from "react";
+import { getLiveAgentInstances } from "@/lib/workspace-status";
+import { useAgentStore } from "@/stores/agentStore";
 
 interface TopBarProps {
-  onIslandClick: () => void;
-  onTrayOpen: () => void;
-  onSendToOpen: () => void;
+  onIslandOpen: () => void;
+  onMinimize: () => void;
+  onQuickReplyOpen: () => void;
   onDiscussionOpen: () => void;
   onAddAgent: () => void;
   onSearch: () => void;
   onSettings: () => void;
+  onToggleFullscreen: () => void;
   onClose: () => void;
 }
 
-const TopBar: FC<TopBarProps> = ({ onIslandClick, onTrayOpen, onSendToOpen, onDiscussionOpen, onAddAgent, onSearch, onSettings, onClose }) => {
-  const pendingPermissions = useIslandStore((s) => s.pendingPermissions);
-  const notifications = useIslandStore((s) => s.notifications);
+const TopBar: FC<TopBarProps> = ({
+  onIslandOpen,
+  onMinimize,
+  onQuickReplyOpen,
+  onDiscussionOpen,
+  onAddAgent,
+  onSearch,
+  onSettings,
+  onToggleFullscreen,
+  onClose,
+}) => {
   const instances = useAgentStore((s) => s.instances);
-  const instanceCount = instances.size;
-  const [capsuleHover, setCapsuleHover] = useState(false);
+  const [capsuleHovered, setCapsuleHovered] = useState(false);
+  const lastCompactShortcutAtRef = useRef(0);
 
-  // 所有 pinned agents（多选）
-  const pinnedAgents: AgentInstanceInfo[] = useMemo(() => {
-    const pinned: AgentInstanceInfo[] = [];
-    for (const inst of instances.values()) {
-      if (inst.is_pinned) pinned.push(inst);
-    }
-    return pinned;
-  }, [instances]);
+  const liveAgents = useMemo(
+    () => getLiveAgentInstances(instances),
+    [instances]
+  );
+  const instanceCount = liveAgents.length;
+  const activeCount = useMemo(() => {
+    return liveAgents.filter((agent) =>
+      agent.status === "thinking" || agent.status === "coding" || agent.status === "waiting_permission"
+    ).length;
+  }, [liveAgents]);
 
-  // 轮播索引 — 多个 pinned 时每 3 秒切换
-  const [rotateIdx, setRotateIdx] = useState(0);
-  useEffect(() => {
-    if (pinnedAgents.length <= 1) return;
-    const timer = setInterval(() => setRotateIdx((i) => i + 1), 3000);
-    return () => clearInterval(timer);
-  }, [pinnedAgents.length]);
-
-  const currentPinned = pinnedAgents.length > 0
-    ? pinnedAgents[rotateIdx % pinnedAgents.length]
-    : null;
-
-  // 胶囊显示标签
-  const primaryLabel = currentPinned
-    ? agentDisplayLabel(currentPinned)
-    : "Conflux";
-
-  // Primary agent status derived from pinned
-  const primaryStatus: AgentStatus = currentPinned?.status ?? "idle";
-
-  const isActive = primaryStatus === "thinking" || primaryStatus === "coding";
-  const hasPermission = pendingPermissions.length > 0;
-  const hasNotification = notifications.length > 0;
-
-  // 胶囊状态优先级：permission > notification > active > idle
-  const capsuleState: "permission" | "notification" | "active" | "idle" =
-    hasPermission
-      ? "permission"
-      : hasNotification
-        ? "notification"
-        : isActive || instanceCount > 0
-          ? "active"
-          : "idle";
-
-  // 胶囊发光
-  const glowStyle =
-    capsuleState === "permission" || capsuleState === "notification"
-      ? "0 0 20px rgba(255,184,0,0.32), 0 1px 3px rgba(0,0,0,0.4)"
-      : capsuleState === "active"
-        ? "0 0 20px rgba(184,212,227,0.31), 0 1px 3px rgba(0,0,0,0.4)"
-        : "0 1px 3px rgba(0,0,0,0.4)";
-
-  // 状态点颜色
-  const dotColor =
-    capsuleState === "permission" || capsuleState === "notification"
-      ? "bg-[#FFB800]"
-      : capsuleState === "active"
-        ? "bg-[#34C759]"
-        : "bg-[#6B7280]";
-
-  // 胶囊主文字
   const capsuleText =
-    capsuleState === "permission"
-      ? "Approval Needed"
-      : capsuleState === "notification"
-        ? `${notifications[0]?.source_adapter_name || "Agent"} · task done`
-        : instanceCount > 0
-          ? `${instanceCount} Agent${instanceCount > 1 ? "s" : ""} Active`
-          : "No Agents";
+    activeCount > 0
+      ? `${activeCount} Agent${activeCount > 1 ? "s" : ""} Active`
+      : instanceCount > 0
+        ? `${instanceCount} Agent${instanceCount > 1 ? "s" : ""} Open`
+        : "No Agents";
 
-  // 胶囊 click 行为：通知态 → tray；其他 → sidebar
-  const handleCapsuleClick = () => {
-    if (capsuleState === "notification") {
-      onTrayOpen();
-    } else {
-      onIslandClick();
+  const dotColor = instanceCount > 0 ? "#34C759" : "#6B7280";
+  const requestTopBarCompactMode = (event: MouseEvent<HTMLElement>) => {
+    const target = event.target as EventTarget | null;
+    const closest =
+      target && "closest" in target
+        ? (target as Element).closest?.bind(target)
+        : undefined;
+
+    if (closest?.("button,a,input,textarea,select,[role='button']")) {
+      return;
     }
-  };
 
-  // hover 态下 ✎ 铅笔的 click：主动发起 Send to... 面板（和通知无关）
-  const handlePencilClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    onSendToOpen();
-  };
+    const now = Date.now();
+    if (now - lastCompactShortcutAtRef.current < 250) {
+      return;
+    }
 
-  // layers 图标 click：独立 Sidebar 入口
-  // Why: notification 态下胶囊主体打开 tray，但用户仍需快速进 Sidebar 查看
-  // agent 详情。layers 图标承担"永远进 Sidebar"的入口，与 tray 入口解耦。
-  const handleLayersClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    onIslandClick();
+    lastCompactShortcutAtRef.current = now;
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    onMinimize();
+  };
+  const handleTopBarMouseDownCapture = (event: MouseEvent<HTMLElement>) => {
+    if (event.detail < 2) {
+      return;
+    }
+
+    requestTopBarCompactMode(event);
+  };
+  const handleTopBarDoubleClick = (event: MouseEvent<HTMLElement>) => {
+    requestTopBarCompactMode(event);
   };
 
   return (
     <header
       data-tauri-drag-region
+      onMouseDownCapture={handleTopBarMouseDownCapture}
+      onDoubleClick={handleTopBarDoubleClick}
       className="flex items-center h-[52px] px-5 shrink-0 relative z-30"
       style={{
         background: "rgba(255,255,255,0.04)",
@@ -135,18 +93,20 @@ const TopBar: FC<TopBarProps> = ({ onIslandClick, onTrayOpen, onSendToOpen, onDi
         borderBottom: "1px solid rgba(255,255,255,0.08)",
       }}
     >
-      {/* 左侧: Add Agent */}
       <button
-        className="flex items-center gap-[5px] px-[10px] py-[5px] rounded-lg
-          text-xs font-body text-[#B8B3B0] font-medium
-          hover:bg-[rgba(255,255,255,0.07)] transition-colors duration-200"
-        style={{
-          background: "rgba(255,255,255,0.07)",
-          border: "1px solid rgba(255,255,255,0.08)",
-        }}
+        type="button"
         onClick={onAddAgent}
         onPointerDown={(e) => e.stopPropagation()}
-        title="Add new agent instance"
+        className="flex items-center gap-[5px] px-[10px] py-[5px] rounded-lg"
+        style={{
+          border: "1px solid rgba(255,255,255,0.08)",
+          background: "rgba(255,255,255,0.07)",
+          color: "#B8B3B0",
+          fontFamily: "'Geist Sans', sans-serif",
+          fontSize: 12,
+          fontWeight: 500,
+          cursor: "pointer",
+        }}
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#B8D4E3" strokeWidth="2" strokeLinecap="round">
           <path d="M12 5v14M5 12h14" />
@@ -154,159 +114,124 @@ const TopBar: FC<TopBarProps> = ({ onIslandClick, onTrayOpen, onSendToOpen, onDi
         <span>Add Agent</span>
       </button>
 
-      {/* Spacer */}
       <div className="flex-1" />
 
-      {/* 中间: 灵动岛胶囊 — 严格按设计稿 */}
-      <button
-        className={`flex items-center gap-2 h-[34px] pl-2 pr-4 rounded-full cursor-pointer select-none
-          transition-shadow duration-300 hover:border-white/20
-          ${capsuleState === "notification" ? "capsule-pulse" : ""}`}
-        style={{
-          background: "#000000",
-          boxShadow: glowStyle,
-          minWidth: "260px",
-          justifyContent: "center",
-          border:
-            capsuleState === "notification" || capsuleState === "permission"
-              ? "1px solid rgba(255,184,0,0.3)"
-              : "1px solid rgba(255,255,255,0.07)",
-          transition: "background 0.3s cubic-bezier(0.22, 1, 0.36, 1), border-color 0.3s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.3s cubic-bezier(0.22, 1, 0.36, 1)",
-        }}
-        onClick={handleCapsuleClick}
-        onPointerDown={(e) => e.stopPropagation()}
-        onMouseEnter={() => setCapsuleHover(true)}
-        onMouseLeave={() => setCapsuleHover(false)}
-        aria-label={`Dynamic island: ${capsuleText}. Click to ${capsuleState === "notification" ? "open notifications" : "expand sidebar"}.`}
+      <div
+        className="relative flex items-center"
+        onPointerEnter={() => setCapsuleHovered(true)}
+        onPointerLeave={() => setCapsuleHovered(false)}
       >
-        {/* Unread 数字 badge — 仅 notification 态 */}
-        {capsuleState === "notification" && (
+        <button
+          type="button"
+          onClick={onIslandOpen}
+          onPointerDown={(e) => e.stopPropagation()}
+          className="flex items-center justify-center gap-2 rounded-full"
+          style={{
+            width: 276,
+            height: 34,
+            paddingLeft: 14,
+            paddingRight: 42,
+            border: "1px solid rgba(255,255,255,0.07)",
+            background: "#000000",
+            boxShadow:
+              "0 5px 12px rgba(0, 0, 0, 0.46), inset 0 1px 0 rgba(255, 255, 255, 0.04)",
+            cursor: "pointer",
+            transition:
+              "transform var(--duration-fast) var(--ease-apple), box-shadow var(--duration-normal) var(--ease-apple)",
+          }}
+          aria-label="Open island window"
+        >
           <span
-            className="shrink-0 flex items-center justify-center"
+            className="shrink-0 rounded-full"
+            style={{ width: 6, height: 6, background: dotColor }}
+          />
+          <span
             style={{
-              width: 20,
-              height: 20,
-              borderRadius: 9999,
-              background: "#FFB800",
+              color: "#FFFFFF",
               fontFamily: "'Geist Sans', sans-serif",
-              fontSize: 11,
-              fontWeight: 700,
-              color: "#0A0F15",
-              marginLeft: 2,
+              fontSize: 12,
+              fontWeight: 500,
+              letterSpacing: 0.3,
             }}
           >
-            {notifications.length}
+            {capsuleText}
           </span>
-        )}
-
-        {/* 状态点 — 非 notification 态 */}
-        {capsuleState !== "notification" && (
-          <span className={`w-[6px] h-[6px] rounded-full shrink-0 ${dotColor} ml-2`} />
-        )}
-
-        {/* 状态文字 */}
-        <span
-          className="text-white text-xs font-medium tracking-wide font-body truncate max-w-[200px] fade-in"
-          key={capsuleState}
-        >
-          {capsuleText}
-        </span>
-
-        {/* 分隔线 */}
-        <span className="w-px h-4 bg-white/10 shrink-0" />
-
-        {/* Layers 图标 — 独立 Sidebar 入口（notification 态下仍可直接进 Sidebar） */}
-        <span
-          role="button"
-          aria-label="Open sidebar"
-          title="Open sidebar"
-          onClick={handleLayersClick}
-          className="shrink-0 flex items-center justify-center transition-opacity hover:opacity-80"
-          style={{ cursor: "pointer" }}
-        >
+          <span
+            style={{
+              width: 1,
+              height: 16,
+              background: "rgba(255,255,255,0.1)",
+            }}
+          />
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#B8D4E3" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" />
             <path d="m22 12-8.58 3.91a2 2 0 0 1-1.66 0L3.18 12" opacity="0.6" />
             <path d="m22 17-8.58 3.91a2 2 0 0 1-1.66 0L3.18 17" opacity="0.3" />
           </svg>
-        </span>
+          <span
+            style={{
+              color: "#B8D4E3",
+              fontFamily: "'Geist Sans', sans-serif",
+              fontSize: 11,
+              fontWeight: 600,
+              letterSpacing: 0.6,
+            }}
+          >
+            Conflux
+          </span>
+        </button>
 
-        {/* 品牌名 / Primary agent 名（跟随 pin 状态） */}
-        <span
-          className="text-[#B8D4E3] text-[11px] font-semibold tracking-wider font-body truncate max-w-[120px]"
-          title={primaryLabel === "Conflux" ? "No primary agent pinned" : `Primary: ${primaryLabel}`}
-        >
-          {primaryLabel}
-        </span>
-
-        {/* Hover ✎ 铅笔 — 主动发起 Send to... */}
-        <span
-          role="button"
-          aria-label="Send to agent"
-          title="Send message to agent (Send To...)"
-          onClick={handlePencilClick}
-          className="shrink-0 flex items-center justify-center transition-opacity"
+        <button
+          type="button"
+          onClick={onQuickReplyOpen}
+          onPointerDown={(e) => e.stopPropagation()}
+          className="absolute flex items-center justify-center rounded-full text-[#B8B3B0] hover:text-[#F2F2F2] transition-colors"
           style={{
-            width: 20,
-            height: 20,
-            marginLeft: 4,
-            opacity: capsuleHover ? 1 : 0,
-            color: "#B8B3B0",
-            cursor: "pointer",
+            top: "50%",
+            right: 7,
+            width: 24,
+            height: 24,
+            transform: capsuleHovered
+              ? "translateY(-50%) scale(1)"
+              : "translateY(-50%) scale(0.9)",
+            opacity: capsuleHovered ? 1 : 0,
+            pointerEvents: capsuleHovered ? "auto" : "none",
+            background: "rgba(255,255,255,0.05)",
+            border: "1px solid rgba(255,255,255,0.06)",
+            transition:
+              "opacity var(--duration-fast) var(--ease-apple), transform var(--duration-fast) var(--ease-apple), color var(--duration-fast) var(--ease-apple), background var(--duration-fast) var(--ease-apple)",
           }}
+          title="Quick reply"
+          aria-label="Open quick reply"
         >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" />
             <path d="m15 5 4 4" />
           </svg>
-        </span>
-      </button>
+        </button>
+      </div>
 
-      {/* Spacer */}
       <div className="flex-1" />
 
-      {/* 右侧: 讨论 + 通知 + 搜索 + 设置 */}
       <div className="flex items-center gap-[10px]">
-        {/* Discussion — 独立入口，从 TopBar 任意时刻发起 wizard（全局上下文） */}
         <button
+          type="button"
           className="text-[#6B7280] hover:text-[#B8B3B0] transition-colors"
           onClick={onDiscussionOpen}
           onPointerDown={(e) => e.stopPropagation()}
           title="New Discussion"
-          aria-label="Start a new discussion"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4c0-1.1.9-2 2-2h8a2 2 0 0 1 2 2z"/>
-            <path d="M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1"/>
+            <path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4c0-1.1.9-2 2-2h8a2 2 0 0 1 2 2z" />
+            <path d="M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1" />
           </svg>
         </button>
-        {/* Bell — 独立 Notifications tray 入口（可查看空态 / 通知历史） */}
         <button
-          className={`relative transition-colors ${
-            hasNotification ? "text-[#FFB800]" : "text-[#6B7280] hover:text-[#B8B3B0]"
-          }`}
-          onClick={onTrayOpen}
-          onPointerDown={(e) => e.stopPropagation()}
-          title={hasNotification ? `${notifications.length} notification${notifications.length > 1 ? "s" : ""}` : "Notifications"}
-          aria-label="Open notifications tray"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M10.268 21a2 2 0 0 0 3.464 0" />
-            <path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326" />
-          </svg>
-          {hasNotification && (
-            <span
-              aria-hidden="true"
-              className="absolute -top-[2px] -right-[2px] rounded-full"
-              style={{ width: 7, height: 7, background: "#FFB800", boxShadow: "0 0 0 1.5px rgba(10,15,21,0.9)" }}
-            />
-          )}
-        </button>
-        <button
+          type="button"
           className="text-[#6B7280] hover:text-[#B8B3B0] transition-colors"
           onClick={onSearch}
           onPointerDown={(e) => e.stopPropagation()}
-          title="Search (⌘K)"
+          title="Search"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <circle cx="11" cy="11" r="8" />
@@ -314,45 +239,54 @@ const TopBar: FC<TopBarProps> = ({ onIslandClick, onTrayOpen, onSendToOpen, onDi
           </svg>
         </button>
         <button
+          type="button"
           className="text-[#6B7280] hover:text-[#B8B3B0] transition-colors"
           onClick={onSettings}
           onPointerDown={(e) => e.stopPropagation()}
           title="Settings"
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="3" />
+            <path d="M12 2v2.5M12 19.5V22M4.93 4.93l1.77 1.77M17.3 17.3l1.77 1.77M2 12h2.5M19.5 12H22M4.93 19.07l1.77-1.77M17.3 6.7l1.77-1.77" />
           </svg>
         </button>
-      </div>
-
-      {/* Window Controls — minimize + close */}
-      <div style={{ display: "flex", alignItems: "center", gap: 2, marginLeft: 8 }}>
         <button
-          onClick={() => getCurrentWindow().minimize()}
+          type="button"
+          className="text-[#6B7280] hover:text-[#B8B3B0] transition-colors"
+          onClick={onToggleFullscreen}
           onPointerDown={(e) => e.stopPropagation()}
-          style={{
-            width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center",
-            background: "transparent", border: "none", borderRadius: 6, cursor: "pointer", color: "#B8B3B0",
-          }}
-          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.07)"; }}
-          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
-          title="Minimize"
+          title="Toggle fullscreen"
+          aria-label="Toggle fullscreen"
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 12h14"/></svg>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M15 3h6v6" />
+            <path d="M9 21H3v-6" />
+            <path d="M21 3l-7 7" />
+            <path d="M3 21l7-7" />
+          </svg>
         </button>
         <button
+          type="button"
+          onClick={onMinimize}
+          onPointerDown={(e) => e.stopPropagation()}
+          className="text-[#6B7280] hover:text-[#B8B3B0] transition-colors"
+          title="Minimize to compact mode"
+          aria-label="Minimize to compact mode"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M5 12h14" />
+          </svg>
+        </button>
+        <button
+          type="button"
           onClick={onClose}
           onPointerDown={(e) => e.stopPropagation()}
-          style={{
-            width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center",
-            background: "transparent", border: "none", borderRadius: 6, cursor: "pointer", color: "#B8B3B0",
-          }}
-          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgba(255,59,48,0.2)"; (e.currentTarget as HTMLElement).style.color = "#FF3B30"; }}
-          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B8B3B0"; }}
+          className="text-[#6B7280] hover:text-[#FF3B30] transition-colors"
           title="Close"
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M18 6 6 18M6 6l12 12" />
+          </svg>
         </button>
       </div>
     </header>

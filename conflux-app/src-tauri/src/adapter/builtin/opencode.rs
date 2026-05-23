@@ -61,10 +61,8 @@ impl OpenCodeAdapter {
                 .expect("内置 opencode thinking 正则编译失败"),
             coding: Regex::new(r"(?i)writing|editing|--- a/|\+\+\+")
                 .expect("内置 opencode coding 正则编译失败"),
-            done: Regex::new(r"(?i)done|complete")
-                .expect("内置 opencode done 正则编译失败"),
-            error: Regex::new(r"(?i)error|failed")
-                .expect("内置 opencode error 正则编译失败"),
+            done: Regex::new(r"(?i)done|complete").expect("内置 opencode done 正则编译失败"),
+            error: Regex::new(r"(?i)error|failed").expect("内置 opencode error 正则编译失败"),
         };
 
         Self {
@@ -102,7 +100,9 @@ impl AgentAdapter for OpenCodeAdapter {
         _working_dir: &str,
         _args: &[String],
     ) -> Result<Box<dyn AgentInstance>, ConfluxError> {
-        todo!("OpenCode spawn via PtyManager")
+        Err(ConfluxError::InvalidConfig {
+            message: "OpenCodeAdapter::spawn is not a runnable path; use create_agent_instance/PtyManager::spawn".to_string(),
+        })
     }
 
     fn parse_output(&self, raw_line: &str) -> Option<ConfluxEvent> {
@@ -171,7 +171,10 @@ impl AgentAdapter for OpenCodeAdapter {
             cmd.creation_flags(0x08000000);
         }
         let binary_ok = match cmd.spawn() {
-            Ok(child) => child.wait_with_output().map(|o| o.status.success()).unwrap_or(false),
+            Ok(child) => child
+                .wait_with_output()
+                .map(|o| o.status.success())
+                .unwrap_or(false),
             Err(_) => false,
         };
 

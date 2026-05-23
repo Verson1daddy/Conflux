@@ -7,6 +7,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { SessionSummary, SessionEvent } from "@/types";
 import { listSessions, querySessionEvents } from "@/lib/tauri-bridge";
+import {
+  hasTerminalReplayEvents,
+  summarizeSessionEvent,
+} from "@/lib/session-events";
 import { SessionList } from "@/components/session/SessionList";
 
 // Inlined from deleted hooks/useSessionPlayback.ts
@@ -145,45 +149,6 @@ function formatEventTime(timestamp: number): string {
   return `${hours}:${minutes}:${seconds}`;
 }
 
-/**
- * 截取事件数据摘要（最多 120 字符）
- */
-function getEventSummary(event: SessionEvent): string {
-  try {
-    const parsed = JSON.parse(event.data) as Record<string, unknown>;
-    // 尝试提取有意义的字段
-    if (typeof parsed.summary === "string") {
-      return truncate(parsed.summary, 120);
-    }
-    if (typeof parsed.error_message === "string") {
-      return truncate(parsed.error_message, 120);
-    }
-    if (typeof parsed.content === "string") {
-      return truncate(parsed.content, 120);
-    }
-    if (
-      typeof parsed.old_status === "string" &&
-      typeof parsed.new_status === "string"
-    ) {
-      return `${parsed.old_status} -> ${parsed.new_status}`;
-    }
-    if (typeof parsed.action === "string") {
-      return truncate(parsed.action, 120);
-    }
-    // 回退：显示 JSON 前 120 字符
-    return truncate(event.data, 120);
-  } catch {
-    return truncate(event.data, 120);
-  }
-}
-
-function truncate(text: string, maxLength: number): string {
-  if (text.length <= maxLength) {
-    return text;
-  }
-  return text.slice(0, maxLength) + "...";
-}
-
 /** SessionPlayback 组件 */
 export function SessionPlayback() {
   const {
@@ -221,6 +186,7 @@ export function SessionPlayback() {
     events.length > 1
       ? (currentEventIndex / (events.length - 1)) * 100
       : 0;
+  const hasTerminalEvents = hasTerminalReplayEvents(events);
 
   return (
     <div className="flex h-full bg-canvas-1">
@@ -236,7 +202,7 @@ export function SessionPlayback() {
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-[#2A2A2A]">
           <h2 className="font-display text-xl font-bold text-[#F2F2F2] tracking-tight">
-            Session Playback
+            Session Event Timeline
           </h2>
 
           {events.length > 0 && (
@@ -264,7 +230,7 @@ export function SessionPlayback() {
                 type="button"
                 onClick={togglePlay}
                 className="flex items-center justify-center w-8 h-8 rounded-lg bg-surface-dark-secondary hover:bg-[#3A3A3A] text-[#F2F2F2] transition-colors"
-                aria-label={isPlaying ? "Pause playback" : "Start playback"}
+                aria-label={isPlaying ? "Pause event timeline" : "Start event timeline"}
               >
                 {isPlaying ? (
                   /* Pause 图标 */
@@ -298,7 +264,7 @@ export function SessionPlayback() {
           <div className="flex-1 flex items-center justify-center">
             <div className="text-center">
               <p className="text-sm text-[#6B7280]">
-                Select a session to view its playback
+                Select a session to view recorded events
               </p>
             </div>
           </div>
@@ -318,6 +284,14 @@ export function SessionPlayback() {
           <>
             {/* ===== Timeline 进度条 ===== */}
             <div className="px-6 py-3 border-b border-[#2A2A2A]">
+              {!hasTerminalEvents && (
+                <div className="mb-3 rounded-lg border border-[#3A3A3A] bg-surface-dark-secondary/70 px-3 py-2">
+                  <p className="text-xs leading-relaxed text-[#B8B3B0]">
+                    V1 records a structured event timeline for this session. Full terminal replay is unavailable because no PTY output chunks were recorded.
+                  </p>
+                </div>
+              )}
+
               <div className="flex items-center gap-3">
                 {/* 当前时间 */}
                 <span className="text-xs font-mono text-[#B8B3B0] w-16 flex-shrink-0">
@@ -433,7 +407,7 @@ export function SessionPlayback() {
                                 : "text-[#6B7280]"
                           }`}
                         >
-                          {getEventSummary(event)}
+                          {summarizeSessionEvent(event)}
                         </p>
                       </div>
                     </button>

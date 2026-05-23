@@ -1,13 +1,28 @@
-import { type FC, type MouseEvent, useMemo } from "react";
+import {
+  type CSSProperties,
+  type FC,
+  type KeyboardEvent,
+  type MouseEvent,
+  useMemo,
+} from "react";
 import { resolveTopIslandState } from "@/lib/compact-mode";
+import type { TopIslandPopoverView } from "@/lib/compact-mode";
+import { COMPACT_WINDOW_METRICS, px } from "@/lib/compact-window-metrics";
+import { getLiveAgentInstances } from "@/lib/workspace-status";
 import { useIslandStore } from "@/stores/islandStore";
 import { useAgentStore } from "@/stores/agentStore";
 
 interface TopIslandProps {
-  onExpand: (anchor: { x: number; y: number }) => void;
+  presentation?: TopIslandPresentation;
+  onExpand: (anchor: { x: number; y: number }, view: TopIslandPopoverView) => void;
+  onExpandShell?: () => void;
+  onCollapseShell?: () => void;
+  onSnapToMonitor?: (presentation: TopIslandPresentation) => void;
 }
 
-function LayersIcon({ color = "#B8D4E3", size = 14 }: { color?: string; size?: number }) {
+export type TopIslandPresentation = "collapsed" | "expanded";
+
+function LayersIcon({ color = "#B8D4E3", size = 13 }: { color?: string; size?: number }) {
   return (
     <svg
       width={size}
@@ -27,58 +42,89 @@ function LayersIcon({ color = "#B8D4E3", size = 14 }: { color?: string; size?: n
   );
 }
 
-function ShieldIcon() {
+function ChevronDownIcon({ color = "rgba(255,255,255,0.72)" }: { color?: string }) {
   return (
     <svg
-      width="14"
-      height="14"
+      width="13"
+      height="13"
       viewBox="0 0 24 24"
       fill="none"
-      stroke="#FFB800"
+      stroke={color}
       strokeWidth="2"
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />
+      <path d="m6 9 6 6 6-6" />
     </svg>
   );
 }
 
-function BoltIcon() {
+function BellIcon({ color = "rgba(255,255,255,0.7)" }: { color?: string }) {
   return (
     <svg
-      width="14"
-      height="14"
+      width="13"
+      height="13"
       viewBox="0 0 24 24"
       fill="none"
-      stroke="#FFB800"
+      stroke={color}
       strokeWidth="2"
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z" />
+      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 8-3 8h18s-3-1-3-8" />
+      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
     </svg>
   );
 }
 
-export const TopIsland: FC<TopIslandProps> = ({ onExpand }) => {
+function PencilIcon({ color = "rgba(255,255,255,0.7)" }: { color?: string }) {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke={color}
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
+export const TopIsland: FC<TopIslandProps> = ({
+  presentation = "collapsed",
+  onExpand,
+  onExpandShell,
+  onCollapseShell,
+  onSnapToMonitor,
+}) => {
   const pendingPermissions = useIslandStore((s) => s.pendingPermissions);
   const notifications = useIslandStore((s) => s.notifications);
   const unreadCount = useIslandStore((s) => s.unreadCount);
   const instances = useAgentStore((s) => s.instances);
 
+  const liveAgents = useMemo(
+    () => getLiveAgentInstances(instances),
+    [instances]
+  );
   const activeCount = useMemo(
     () =>
-      Array.from(instances.values()).filter(
+      liveAgents.filter(
         (agent) =>
           agent.status === "thinking" ||
           agent.status === "coding" ||
           agent.status === "waiting_permission"
-      ).length,
-    [instances]
+        ).length,
+    [liveAgents]
   );
+  const instanceCount = liveAgents.length;
 
   const permissionRequest = pendingPermissions[0];
   const unreadNotification = useMemo(
@@ -96,74 +142,221 @@ export const TopIsland: FC<TopIslandProps> = ({ onExpand }) => {
     [activeCount, pendingPermissions.length, unreadCount]
   );
 
-  const copy = useMemo(() => {
+  const shellKind = visualState === "active" && unreadCount > 0 ? "unread" : "normal";
+  const requiresExpanded = visualState === "permission" || shellKind === "unread";
+  const resolvedPresentation: TopIslandPresentation =
+    requiresExpanded ? "expanded" : presentation;
+  const isExpanded = resolvedPresentation === "expanded";
+  const capsuleWidth = isExpanded
+    ? COMPACT_WINDOW_METRICS.topIsland.expandedWidth
+    : COMPACT_WINDOW_METRICS.topIsland.collapsedWidth;
+  const capsuleHeight = isExpanded
+    ? COMPACT_WINDOW_METRICS.topIsland.expandedHeight
+    : COMPACT_WINDOW_METRICS.topIsland.collapsedHeight;
+  const primaryCopy = useMemo(() => {
     if (visualState === "permission" && permissionRequest) {
-      return {
-        badge: "Permission",
-        title: permissionRequest.description || permissionRequest.action,
-        meta: `${pendingPermissions.length} request pending`,
-        icon: <ShieldIcon />,
-      };
+      return permissionRequest.description || permissionRequest.action;
+    }
+
+    if (shellKind === "unread") {
+      const source = unreadNotification?.source_adapter_name;
+      const summary =
+        unreadNotification?.content ||
+        `${unreadCount} unread update${unreadCount === 1 ? "" : "s"}`;
+
+      return source && source !== "Conflux" ? `${source} · ${summary}` : summary;
     }
 
     if (visualState === "active") {
-      const source = unreadNotification?.source_adapter_name || "Conflux";
-      const title =
-        unreadNotification?.content ||
-        (activeCount > 0 ? `${activeCount} agents active` : `${unreadCount} unread updates`);
-
-      return {
-        badge: "Active",
-        title,
-        meta:
-          unreadCount > 0
-            ? `${source} · ${unreadCount} unread`
-            : `${activeCount} agents running`,
-        icon: <BoltIcon />,
-      };
+      return activeCount > 0 ? `${activeCount} Agents Active` : "Recent activity";
     }
 
-    return {
-      badge: "Idle",
-      title: "All systems idle",
-      meta: "Open workspace or review recent activity",
-      icon: <LayersIcon size={13} />,
-    };
-  }, [
-    activeCount,
-    pendingPermissions.length,
-    permissionRequest,
-    unreadCount,
-    unreadNotification,
-    visualState,
-  ]);
+    return instanceCount > 0 ? `${instanceCount} Agents Open` : "All systems idle";
+  }, [activeCount, instanceCount, permissionRequest, shellKind, unreadCount, unreadNotification, visualState]);
 
-  const capsuleWidth =
-    visualState === "permission" ? 400 : visualState === "active" ? 360 : 248;
+  const leadingTone = visualState === "permission" ? "warning" : visualState === "active" ? "success" : "idle";
 
-  function handleExpand(event: MouseEvent<HTMLButtonElement>) {
+  const collapsedCopy = useMemo(() => {
+    if (activeCount > 0) return `${activeCount} Active`;
+    if (instanceCount > 0) return `${instanceCount} Agents`;
+    return "Idle";
+  }, [activeCount, instanceCount]);
+
+  const popoverAnchor = useMemo(
+    () => ({
+      x:
+        COMPACT_WINDOW_METRICS.topIsland.expandedWidth -
+        COMPACT_WINDOW_METRICS.topIsland.popoverWidth -
+        12,
+      y:
+        COMPACT_WINDOW_METRICS.topIsland.shellPaddingY +
+        COMPACT_WINDOW_METRICS.topIsland.expandedHeight +
+        12,
+    }),
+    []
+  );
+
+  function handleExpand(view: TopIslandPopoverView) {
     onExpand({
-      x: event.clientX + 12,
-      y: event.clientY - 12,
-    });
+      x: popoverAnchor.x,
+      y: popoverAnchor.y,
+    }, view);
   }
 
-  return (
-    <div className="w-full h-full flex items-center justify-center overflow-hidden">
+  function handleCollapsedClick() {
+    onExpandShell?.();
+  }
+
+  function handleCapsuleMouseEnter() {
+    if (requiresExpanded) return;
+    onExpandShell?.();
+  }
+
+  function handleCapsuleMouseLeave(event: MouseEvent<HTMLDivElement>) {
+    if (requiresExpanded) return;
+    if (event.buttons !== 0) return;
+    onCollapseShell?.();
+  }
+
+  function handleCollapsedKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    onExpandShell?.();
+  }
+
+  function handleCapsulePointerUp() {
+    onSnapToMonitor?.(resolvedPresentation);
+  }
+
+  function stopCapsuleActionPropagation(event: MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+  }
+
+  const expandedActions = (
+    <span className="top-island-capsule__actions">
       <button
         type="button"
-        onClick={handleExpand}
-        className="top-island-capsule island-pressable"
-        data-visual-state={visualState}
-        style={{ width: capsuleWidth }}
+        className="top-island-capsule__action island-pressable"
+        aria-label="Open notifications"
+        onClick={() => handleExpand("notifications")}
+        onPointerDown={stopCapsuleActionPropagation}
+        onPointerUp={stopCapsuleActionPropagation}
       >
-        <span className="top-island-capsule__icon">{copy.icon}</span>
-        <span className="top-island-capsule__copy">
-          <span className="top-island-capsule__eyebrow">{copy.badge}</span>
-          <span className="top-island-capsule__title">{copy.title}</span>
-        </span>
-        <span className="top-island-capsule__meta">{copy.meta}</span>
+        <BellIcon />
+        {unreadCount > 0 && (
+          <span className="top-island-capsule__action-badge" aria-hidden="true" />
+        )}
       </button>
+      <button
+        type="button"
+        className="top-island-capsule__action island-pressable"
+        aria-label="Open quick reply"
+        onClick={() => handleExpand("quick_reply")}
+        onPointerDown={stopCapsuleActionPropagation}
+        onPointerUp={stopCapsuleActionPropagation}
+      >
+        <PencilIcon />
+      </button>
+      <button
+        type="button"
+        className="top-island-capsule__detail-trigger island-pressable"
+        aria-label="Open dynamic island details"
+        onClick={() => handleExpand("details")}
+        onPointerDown={stopCapsuleActionPropagation}
+        onPointerUp={stopCapsuleActionPropagation}
+      >
+        <ChevronDownIcon />
+      </button>
+    </span>
+  );
+
+  return (
+    <div
+      className="top-island-shell"
+      style={
+        {
+          "--top-island-shell-padding-y": px(
+            COMPACT_WINDOW_METRICS.topIsland.shellPaddingY
+          ),
+        } as CSSProperties
+      }
+    >
+      <div
+        className="top-island-capsule"
+        data-tauri-drag-region={true}
+        data-visual-state={visualState}
+        data-shell-kind={shellKind}
+        data-presentation={resolvedPresentation}
+        role={isExpanded ? undefined : "button"}
+        tabIndex={isExpanded ? undefined : 0}
+        aria-label={isExpanded ? undefined : "Expand dynamic island capsule"}
+        onClick={isExpanded ? undefined : handleCollapsedClick}
+        onKeyDown={isExpanded ? undefined : handleCollapsedKeyDown}
+        onMouseEnter={handleCapsuleMouseEnter}
+        onMouseLeave={handleCapsuleMouseLeave}
+        onPointerUp={handleCapsulePointerUp}
+        style={
+          {
+            "--top-island-width": px(capsuleWidth),
+            "--top-island-height": px(capsuleHeight),
+            width: "var(--top-island-width)",
+            height: "var(--top-island-height)",
+          } as CSSProperties
+        }
+      >
+        {!isExpanded ? (
+          <>
+            <span
+              className="top-island-capsule__leading"
+              data-indicator="dot"
+              data-tone={leadingTone}
+              aria-hidden="true"
+            >
+              <span className="top-island-capsule__dot" />
+            </span>
+            <span className="top-island-capsule__primary">{collapsedCopy}</span>
+            <span className="top-island-capsule__compact-mark" aria-hidden="true">
+              <LayersIcon />
+            </span>
+          </>
+        ) : shellKind === "unread" ? (
+          <>
+            <span className="top-island-capsule__leading" data-indicator="badge">
+              <span className="top-island-capsule__badge" aria-label={`${unreadCount} unread updates`}>
+                {unreadCount > 9 ? "9+" : unreadCount}
+              </span>
+            </span>
+            <span className="top-island-capsule__primary">{primaryCopy}</span>
+            <span className="top-island-capsule__brand">
+              <span className="top-island-capsule__brand-mark" aria-hidden="true">
+                <LayersIcon />
+              </span>
+            <span className="top-island-capsule__brand-copy">Conflux</span>
+            </span>
+            {expandedActions}
+          </>
+        ) : (
+          <>
+            <span
+              className="top-island-capsule__leading"
+              data-indicator="dot"
+              data-tone={leadingTone}
+              aria-hidden="true"
+            >
+              <span className="top-island-capsule__dot" />
+            </span>
+            <span className="top-island-capsule__primary">{primaryCopy}</span>
+            <span className="top-island-capsule__separator" aria-hidden="true" />
+            <span className="top-island-capsule__brand">
+              <span className="top-island-capsule__brand-mark" aria-hidden="true">
+                <LayersIcon />
+              </span>
+            <span className="top-island-capsule__brand-copy">Conflux</span>
+            </span>
+            {expandedActions}
+          </>
+        )}
+      </div>
     </div>
   );
 };

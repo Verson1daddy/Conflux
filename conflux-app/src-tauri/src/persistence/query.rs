@@ -49,9 +49,7 @@ pub fn save_workspace_layout(
 ///
 /// # 返回
 /// 最新的布局数据，或 None（数据库中无记录时）
-pub fn load_workspace_layout(
-    conn: &Connection,
-) -> Result<Option<WorkspaceLayout>, ConfluxError> {
+pub fn load_workspace_layout(conn: &Connection) -> Result<Option<WorkspaceLayout>, ConfluxError> {
     let mut stmt = conn
         .prepare("SELECT layout_data FROM workspace_layouts ORDER BY updated_at DESC LIMIT 1")
         .map_err(|e| ConfluxError::DatabaseError {
@@ -271,16 +269,22 @@ pub fn list_discussions(
 
     let mut discussions = Vec::new();
     for row_result in rows {
-        let (id, topic, participant_ids_json, max_rounds, current_round, status_str, created_at, ended_at) =
-            row_result.map_err(|e| ConfluxError::DatabaseError {
-                message: format!("list_discussions 行解析失败: {}", e),
-            })?;
+        let (
+            id,
+            topic,
+            participant_ids_json,
+            max_rounds,
+            current_round,
+            status_str,
+            created_at,
+            ended_at,
+        ) = row_result.map_err(|e| ConfluxError::DatabaseError {
+            message: format!("list_discussions 行解析失败: {}", e),
+        })?;
 
-        let participant_ids: Vec<InstanceId> =
-            serde_json::from_str(&participant_ids_json).map_err(|e| {
-                ConfluxError::SerializationError {
-                    message: format!("participant_ids 反序列化失败: {}", e),
-                }
+        let participant_ids: Vec<InstanceId> = serde_json::from_str(&participant_ids_json)
+            .map_err(|e| ConfluxError::SerializationError {
+                message: format!("participant_ids 反序列化失败: {}", e),
             })?;
 
         let status = deserialize_discussion_status(&status_str);
@@ -344,8 +348,8 @@ pub fn get_discussion_messages(
 
     let mut messages = Vec::new();
     for row_result in rows {
-        let (id, disc_id, sender_type, sender_value, content, round, created_at) =
-            row_result.map_err(|e| ConfluxError::DatabaseError {
+        let (id, disc_id, sender_type, sender_value, content, round, created_at) = row_result
+            .map_err(|e| ConfluxError::DatabaseError {
                 message: format!("get_discussion_messages 行解析失败: {}", e),
             })?;
 
@@ -410,9 +414,7 @@ fn deserialize_discussion_status(status_str: &str) -> DiscussionStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::types::{
-        CardLayout, LayoutMode, Position, Size,
-    };
+    use crate::core::types::{CardLayout, LayoutMode, Position, Size};
     use crate::persistence::schema::init_database;
 
     #[test]
@@ -520,8 +522,7 @@ mod tests {
         insert_discussion_message(&conn, &msg).expect("插入消息应成功");
 
         // 查询消息
-        let messages =
-            get_discussion_messages(&conn, "disc-001").expect("查询消息应成功");
+        let messages = get_discussion_messages(&conn, "disc-001").expect("查询消息应成功");
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].content, "你好");
 
@@ -568,9 +569,9 @@ mod tests {
 
         // 插入多条消息（故意乱序插入）
         let msgs = vec![
-            ("msg-3", 2, 3000),  // round 2
-            ("msg-1", 1, 1000),  // round 1, 较早
-            ("msg-2", 1, 2000),  // round 1, 较晚
+            ("msg-3", 2, 3000), // round 2
+            ("msg-1", 1, 1000), // round 1, 较早
+            ("msg-2", 1, 2000), // round 1, 较晚
         ];
 
         for (id, round, ts) in &msgs {
@@ -586,8 +587,7 @@ mod tests {
         }
 
         // 查询应按 round ASC, created_at ASC 排序
-        let messages =
-            get_discussion_messages(&conn, "disc-order").expect("查询消息应成功");
+        let messages = get_discussion_messages(&conn, "disc-order").expect("查询消息应成功");
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[0].id, "msg-1"); // round=1, ts=1000
         assert_eq!(messages[1].id, "msg-2"); // round=1, ts=2000

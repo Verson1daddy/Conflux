@@ -222,10 +222,7 @@ thinking = "Thinking"
 
     let config = parse_adapter_toml(toml_content).unwrap();
 
-    assert_eq!(
-        config.status_patterns.thinking.as_deref(),
-        Some("Thinking")
-    );
+    assert_eq!(config.status_patterns.thinking.as_deref(), Some("Thinking"));
     assert!(config.status_patterns.coding.is_none());
     assert!(config.status_patterns.done.is_none());
     assert!(config.status_patterns.error.is_none());

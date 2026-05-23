@@ -1,38 +1,15 @@
-// ===== StatusBar 组件 =====
-// 底部状态栏 h:30, glass-bg + backdrop-blur
-// 设计稿: activity图标 + agent状态摘要 | spacer | 版本号
-
-import { type FC, useEffect, useState } from "react";
-import { listAgentInstances } from "@/lib/tauri-bridge";
-import { onAgentStatusChanged } from "@/lib/event-listener";
-import type { AgentInstanceInfo } from "@/types";
+import { type FC, useMemo } from "react";
+import { buildStatusSummary } from "@/lib/workspace-status";
+import { useAgentStore } from "@/stores/agentStore";
 
 interface StatusBarProps {
   onOpenSession?: () => void;
 }
 
 const StatusBar: FC<StatusBarProps> = ({ onOpenSession }) => {
-  const [agents, setAgents] = useState<AgentInstanceInfo[]>([]);
+  const instances = useAgentStore((s) => s.instances);
 
-  const fetchAgents = async () => {
-    try {
-      const list = await listAgentInstances();
-      setAgents(list);
-    } catch { /* 后端不可用 */ }
-  };
-
-  useEffect(() => { fetchAgents(); }, []);
-
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    onAgentStatusChanged(() => fetchAgents()).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
-  }, []);
-
-  // 构建状态摘要文字
-  const statusSummary = agents.length > 0
-    ? agents.map((a) => `${a.display_name ? `${a.adapter_name} · ${a.display_name}` : a.adapter_name}: ${a.status}`).join(" · ")
-    : "No active agents";
+  const statusSummary = useMemo(() => buildStatusSummary(instances), [instances]);
 
   return (
     <footer
@@ -44,17 +21,14 @@ const StatusBar: FC<StatusBarProps> = ({ onOpenSession }) => {
         borderTop: "1px solid rgba(255,255,255,0.08)",
       }}
     >
-      {/* Activity 图标 */}
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#B8D4E3" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" />
       </svg>
 
-      {/* Agent 状态摘要 */}
       <span className="text-[#6B7280] text-[10px] font-body truncate">
         {statusSummary}
       </span>
 
-      {/* Session 回放按钮 */}
       {onOpenSession && (
         <button
           onClick={onOpenSession}
@@ -70,12 +44,10 @@ const StatusBar: FC<StatusBarProps> = ({ onOpenSession }) => {
         </button>
       )}
 
-      {/* Spacer */}
       <div className="flex-1" />
 
-      {/* 版本号 */}
       <span className="text-[#6B7280] text-[10px] font-body shrink-0">
-        Conflux v0.1.0-alpha · Windows 11
+        Conflux v0.1.0-alpha - Windows 11
       </span>
     </footer>
   );

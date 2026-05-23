@@ -1,5 +1,6 @@
-import { type FC, useMemo } from "react";
+import { type CSSProperties, type FC, useMemo } from "react";
 import { resolveFloatBallSemanticState } from "@/lib/compact-mode";
+import { COMPACT_WINDOW_METRICS, px } from "@/lib/compact-window-metrics";
 import { useIslandStore } from "@/stores/islandStore";
 
 interface FloatBallProps {
@@ -7,29 +8,6 @@ interface FloatBallProps {
 }
 
 type SemanticState = "normal" | "notification" | "error";
-
-function semanticConfig(state: SemanticState) {
-  switch (state) {
-    case "notification":
-      return {
-        glow: "0 0 18px rgba(255, 184, 0, 0.25), 0 4px 10px rgba(0, 0, 0, 0.5)",
-        color: "#FFB800",
-        icon: "layers" as const,
-      };
-    case "error":
-      return {
-        glow: "0 0 18px rgba(255, 59, 48, 0.25), 0 4px 10px rgba(0, 0, 0, 0.5)",
-        color: "#FF3B30",
-        icon: "triangle-alert" as const,
-      };
-    default:
-      return {
-        glow: "0 0 18px rgba(184, 212, 227, 0.31), 0 4px 10px rgba(0, 0, 0, 0.5)",
-        color: "#B8D4E3",
-        icon: "layers" as const,
-      };
-  }
-}
 
 function FloatIcon({
   kind,
@@ -49,6 +27,7 @@ function FloatIcon({
         strokeWidth="2"
         strokeLinecap="round"
         strokeLinejoin="round"
+        aria-hidden="true"
       >
         <path d="m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" />
         <path d="M12 9v4" />
@@ -67,12 +46,24 @@ function FloatIcon({
       strokeWidth="2"
       strokeLinecap="round"
       strokeLinejoin="round"
+      aria-hidden="true"
     >
       <path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" />
       <path d="m22 12-8.58 3.91a2 2 0 0 1-1.66 0L3.18 12" opacity="0.6" />
       <path d="m22 17-8.58 3.91a2 2 0 0 1-1.66 0L3.18 17" opacity="0.3" />
     </svg>
   );
+}
+
+function semanticConfig(state: SemanticState) {
+  switch (state) {
+    case "notification":
+      return { color: "#FFB800", icon: "layers" as const };
+    case "error":
+      return { color: "#FF3B30", icon: "triangle-alert" as const };
+    default:
+      return { color: "#B8D4E3", icon: "layers" as const };
+  }
 }
 
 export const FloatBall: FC<FloatBallProps> = ({ onToggleDetail }) => {
@@ -82,7 +73,6 @@ export const FloatBall: FC<FloatBallProps> = ({ onToggleDetail }) => {
   const derivedState = useMemo(() => {
     const unreadNotifications = notifications.filter((notification) => !notification.read);
     const unreadNotificationCount = unreadNotifications.length;
-    // Contract: permission_required notification ids mirror permission request ids.
     const unreadPermissionNotificationIds = new Set(
       unreadNotifications
         .filter((notification) => notification.level === "permission_required")
@@ -106,17 +96,29 @@ export const FloatBall: FC<FloatBallProps> = ({ onToggleDetail }) => {
   const config = semanticConfig(derivedState.semanticState);
 
   return (
-    <div className="float-ball-shell">
+    <div
+      className="float-ball-shell"
+      style={
+        {
+          "--float-ball-window-padding": px(
+            COMPACT_WINDOW_METRICS.floatBall.windowPadding
+          ),
+        } as CSSProperties
+      }
+    >
       <button
         type="button"
         onClick={onToggleDetail}
         className="float-ball island-pressable"
         data-semantic-state={derivedState.semanticState}
+        style={
+          {
+            "--float-ball-size": px(COMPACT_WINDOW_METRICS.floatBall.buttonSize),
+          } as CSSProperties
+        }
         aria-label="Open float ball details"
       >
-        <span className="float-ball__halo" aria-hidden="true" />
-        <span className="float-ball__core" aria-hidden="true">
-          <span className="float-ball__sheen" />
+        <span className="float-ball__orb" aria-hidden="true">
           <FloatIcon kind={config.icon} color={config.color} />
         </span>
         {derivedState.badgeCount > 0 && (

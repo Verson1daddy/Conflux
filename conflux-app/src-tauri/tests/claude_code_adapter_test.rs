@@ -175,9 +175,7 @@ fn test_detect_permission_allow() {
     let result = adapter.parse_output("Allow this action? [Y/n]");
     assert!(result.is_some());
     match result.unwrap() {
-        ConfluxEvent::PermissionRequested {
-            request, ..
-        } => {
+        ConfluxEvent::PermissionRequested { request, .. } => {
             assert!(!request.id.is_empty());
             assert!(request.description.contains("Allow"));
             assert_eq!(request.raw_context.len(), 1);
@@ -241,9 +239,7 @@ fn test_detect_sub_agent_complete() {
     let result = adapter.parse_output("Agent completed with summary");
     assert!(result.is_some());
     match result.unwrap() {
-        ConfluxEvent::SubAgentCompleted {
-            result_summary, ..
-        } => {
+        ConfluxEvent::SubAgentCompleted { result_summary, .. } => {
             assert!(result_summary.is_some());
         }
         other => panic!("期望 SubAgentCompleted 事件，实际得到: {:?}", other),
@@ -281,11 +277,7 @@ fn test_no_match_ordinary_output() {
 
     for line in &ordinary_lines {
         let result = adapter.parse_output(line);
-        assert!(
-            result.is_none(),
-            "普通行 '{}' 不应被匹配为事件",
-            line
-        );
+        assert!(result.is_none(), "普通行 '{}' 不应被匹配为事件", line);
     }
 }
 

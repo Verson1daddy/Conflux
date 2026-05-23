@@ -46,8 +46,9 @@ fn ansi_regex() -> &'static Regex {
             | \x1b P [^\x1b]* \x1b \\      # DCS 序列
             | \x1b \( [A-Z]                  # 字符集选择
             | \x1b [=>78MNOPX]               # 单字符 ESC 序列
-            "
-        ).expect("ANSI 正则编译失败")
+            ",
+        )
+        .expect("ANSI 正则编译失败")
     })
 }
 
@@ -347,10 +348,7 @@ impl PtyOutputParser {
     /// 当 Agent 状态变为 Error 时，额外合成 ErrorOccurred 事件。
     fn process_event(&mut self, event: ConfluxEvent) -> Vec<ConfluxEvent> {
         match &event {
-            ConfluxEvent::AgentStatusChanged {
-                new_status,
-                ..
-            } => {
+            ConfluxEvent::AgentStatusChanged { new_status, .. } => {
                 // 状态去重：仅在状态真正变化时发出事件
                 if *new_status == self.current_status {
                     return Vec::new();
@@ -393,7 +391,9 @@ impl PtyOutputParser {
                     if new_status == AgentStatus::Error {
                         events_out.push(ConfluxEvent::ErrorOccurred {
                             instance_id: instance_id.clone(),
-                            error_message: self.recent_lines.last()
+                            error_message: self
+                                .recent_lines
+                                .last()
                                 .cloned()
                                 .unwrap_or_else(|| "Unknown error".to_string()),
                             severity: ErrorSeverity::Error,
@@ -418,15 +418,9 @@ impl PtyOutputParser {
                 vec![event]
             }
 
-            ConfluxEvent::SubAgentCompleted {
-                sub_agent_id, ..
-            } => {
+            ConfluxEvent::SubAgentCompleted { sub_agent_id, .. } => {
                 // 更新 sub-agent 状态为 Done
-                update_sub_agent_status(
-                    &mut self.agent_tree,
-                    sub_agent_id,
-                    &AgentStatus::Done,
-                );
+                update_sub_agent_status(&mut self.agent_tree, sub_agent_id, &AgentStatus::Done);
                 vec![event]
             }
 
@@ -531,7 +525,8 @@ mod tests {
             &self,
             _working_dir: &str,
             _args: &[String],
-        ) -> Result<Box<dyn crate::adapter::traits::AgentInstance>, crate::core::ConfluxError> {
+        ) -> Result<Box<dyn crate::adapter::traits::AgentInstance>, crate::core::ConfluxError>
+        {
             unreachable!("MockAdapter::spawn 不应在解析器测试中被调用")
         }
 
@@ -637,9 +632,7 @@ mod tests {
         let events = parser.feed(b"Thinking about the problem\n");
         assert_eq!(events.len(), 1);
         match &events[0] {
-            ConfluxEvent::AgentStatusChanged {
-                new_status, ..
-            } => {
+            ConfluxEvent::AgentStatusChanged { new_status, .. } => {
                 assert_eq!(*new_status, AgentStatus::Thinking);
             }
             other => panic!("期望 AgentStatusChanged，实际得到 {:?}", other),
@@ -649,9 +642,7 @@ mod tests {
         let events = parser.feed(b"some normal output\nCoding the solution\n");
         assert_eq!(events.len(), 1);
         match &events[0] {
-            ConfluxEvent::AgentStatusChanged {
-                new_status, ..
-            } => {
+            ConfluxEvent::AgentStatusChanged { new_status, .. } => {
                 assert_eq!(*new_status, AgentStatus::Coding);
             }
             other => panic!("期望 AgentStatusChanged，实际得到 {:?}", other),
@@ -774,9 +765,7 @@ mod tests {
         let events = parser.feed(b"ing about it\n");
         assert_eq!(events.len(), 1, "补全后应该产生一个事件");
         match &events[0] {
-            ConfluxEvent::AgentStatusChanged {
-                new_status, ..
-            } => {
+            ConfluxEvent::AgentStatusChanged { new_status, .. } => {
                 assert_eq!(*new_status, AgentStatus::Thinking);
             }
             other => panic!("期望 AgentStatusChanged，实际得到 {:?}", other),
@@ -788,7 +777,11 @@ mod tests {
         let events = parser.feed(b"ing the");
         assert_eq!(events.len(), 0);
         let events = parser.feed(b" code\nDone!\n");
-        assert_eq!(events.len(), 3, "应该产生 Coding、Done 和 TaskCompleted 三个事件");
+        assert_eq!(
+            events.len(),
+            3,
+            "应该产生 Coding、Done 和 TaskCompleted 三个事件"
+        );
     }
 
     // ----- test_agent_tree_tracking -----
@@ -837,9 +830,7 @@ mod tests {
         let events = parser.feed(b"\x1b[32mThinking about it\x1b[0m\n");
         assert_eq!(events.len(), 1);
         match &events[0] {
-            ConfluxEvent::AgentStatusChanged {
-                new_status, ..
-            } => {
+            ConfluxEvent::AgentStatusChanged { new_status, .. } => {
                 assert_eq!(*new_status, AgentStatus::Thinking);
             }
             other => panic!("期望 AgentStatusChanged，实际得到 {:?}", other),
@@ -855,9 +846,7 @@ mod tests {
         let events = parser.feed(b"Thinking about it\r\n");
         assert_eq!(events.len(), 1);
         match &events[0] {
-            ConfluxEvent::AgentStatusChanged {
-                new_status, ..
-            } => {
+            ConfluxEvent::AgentStatusChanged { new_status, .. } => {
                 assert_eq!(*new_status, AgentStatus::Thinking);
             }
             other => panic!("期望 AgentStatusChanged，实际得到 {:?}", other),
@@ -985,7 +974,11 @@ mod tests {
         assert_eq!(events.len(), 1);
 
         let events = parser.feed(b"Done with everything\n");
-        assert_eq!(events.len(), 2, "Done 应产生 AgentStatusChanged + TaskCompleted");
+        assert_eq!(
+            events.len(),
+            2,
+            "Done 应产生 AgentStatusChanged + TaskCompleted"
+        );
 
         match &events[0] {
             ConfluxEvent::AgentStatusChanged { new_status, .. } => {
@@ -1020,7 +1013,11 @@ mod tests {
         parser.feed(b"the actual error message\n");
 
         let events = parser.feed(b"Error occurred\n");
-        assert_eq!(events.len(), 2, "Error 应产生 AgentStatusChanged + ErrorOccurred");
+        assert_eq!(
+            events.len(),
+            2,
+            "Error 应产生 AgentStatusChanged + ErrorOccurred"
+        );
 
         match &events[0] {
             ConfluxEvent::AgentStatusChanged { new_status, .. } => {

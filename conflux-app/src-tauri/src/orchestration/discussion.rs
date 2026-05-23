@@ -84,8 +84,7 @@ impl DiscussionEngine {
         };
 
         self.sessions.insert(discussion_id.clone(), session.clone());
-        self.messages
-            .insert(discussion_id, vec![system_msg]);
+        self.messages.insert(discussion_id, vec![system_msg]);
 
         session
     }
@@ -112,20 +111,16 @@ impl DiscussionEngine {
         content: String,
         sender: MessageSender,
     ) -> Result<DiscussionMessage, ConfluxError> {
-        let session = self
-            .sessions
-            .get_mut(discussion_id)
-            .ok_or_else(|| ConfluxError::DiscussionNotFound {
+        let session = self.sessions.get_mut(discussion_id).ok_or_else(|| {
+            ConfluxError::DiscussionNotFound {
                 discussion_id: discussion_id.to_string(),
-            })?;
+            }
+        })?;
 
         // 检查讨论是否仍在进行
         if session.status != DiscussionStatus::Active {
             return Err(ConfluxError::OrchestrationError {
-                message: format!(
-                    "讨论 {} 已结束，无法发送消息",
-                    discussion_id
-                ),
+                message: format!("讨论 {} 已结束，无法发送消息", discussion_id),
             });
         }
 
@@ -185,12 +180,11 @@ impl DiscussionEngine {
     /// - 讨论不存在：返回 DiscussionNotFound
     /// - 讨论已结束：返回 OrchestrationError
     pub fn end(&mut self, discussion_id: &str) -> Result<DiscussionSummary, ConfluxError> {
-        let session = self
-            .sessions
-            .get_mut(discussion_id)
-            .ok_or_else(|| ConfluxError::DiscussionNotFound {
+        let session = self.sessions.get_mut(discussion_id).ok_or_else(|| {
+            ConfluxError::DiscussionNotFound {
                 discussion_id: discussion_id.to_string(),
-            })?;
+            }
+        })?;
 
         if session.status != DiscussionStatus::Active {
             return Err(ConfluxError::OrchestrationError {
@@ -285,10 +279,7 @@ mod tests {
         let mut engine = DiscussionEngine::new();
         let session = engine.start(
             "测试主题".to_string(),
-            vec![
-                InstanceId("a".to_string()),
-                InstanceId("b".to_string()),
-            ],
+            vec![InstanceId("a".to_string()), InstanceId("b".to_string())],
             vec![],
             5,
         );
@@ -311,10 +302,7 @@ mod tests {
         let mut engine = DiscussionEngine::new();
         let session = engine.start(
             "轮次测试".to_string(),
-            vec![
-                InstanceId("a".to_string()),
-                InstanceId("b".to_string()),
-            ],
+            vec![InstanceId("a".to_string()), InstanceId("b".to_string())],
             vec![],
             3,
         );

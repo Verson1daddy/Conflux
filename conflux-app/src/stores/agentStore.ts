@@ -15,7 +15,15 @@ import {
   sendMessageWithInjection,
   endBackendDiscussion,
 } from "@/lib/discussion-ipc";
-import { toFrontendMessage } from "@/lib/discussion-utils";
+import {
+  collectArtifacts,
+  replaceArtifactsForMessage,
+  toggleArtifactPin as toggleDiscussionArtifactPinInList,
+  upsertArtifactsForMessage,
+} from "@/lib/discussion-artifacts";
+import { adapterIdentityColor } from "@/lib/agent-visuals";
+import { parseCodeBlocks, toFrontendMessage } from "@/lib/discussion-utils";
+import { getLiveAgentInstances } from "@/lib/workspace-status";
 
 // ===== Discussion wizard types =====
 
@@ -46,21 +54,38 @@ export interface DiscussionMessage {
   body: string;
   /** Extracted code blocks from body (from backend or parsed locally) */
   codeBlocks: CodeBlock[] | null;
+  deliveryState?: "pending" | "confirmed" | "failed";
+  deliveryError?: string | null;
+}
+
+export type ArtifactStatus = "draft" | "pinned";
+
+export interface DiscussionArtifact {
+  id: string;
+  msgId: string;
+  authorName: string;
+  round: number;
+  blockIdx: number;
+  lang: string;
+  content: string;
+  status: ArtifactStatus;
 }
 
 export interface DiscussionWizardState {
   open: boolean;
   step: DiscussionStep;
-  /** Step 1 — free-text goal of the discussion (required to advance) */
+  /** Step 1 - free-text goal of the discussion (required to advance) */
   direction: string;
-  /** Step 1 — optional constraints / non-goals */
+  /** Step 1 - optional constraints / non-goals */
   requirements: string;
-  /** Step 2 — editable rules, seeded with DEFAULT_RULES on open */
+  /** Step 2 - editable rules, seeded with DEFAULT_RULES on open */
   rules: DiscussionRules;
-  /** Step 3 — set of instance_id participating (primary always present) */
+  /** Step 3 - set of instance_id participating (primary always present) */
   participantIds: Set<string>;
-  /** Step 4 — runtime message stream (seeded with demo openers on start) */
+  /** Step 4 - runtime message stream (seeded with demo openers on start) */
   messages: DiscussionMessage[];
+  /** Step 4 - extracted code artifacts owned by discussion lifecycle */
+  artifacts: DiscussionArtifact[];
   currentRound: number;
   paused: boolean;
   /** Optional source instance when launched from ExpandedAgentCard */
@@ -69,6 +94,10 @@ export interface DiscussionWizardState {
   discussionId: string | null;
   /** B3.1: Sandbox instance IDs for message injection (from backend start_discussion response) */
   sandboxInstanceIds: string[];
+  /** Backend discussion lifecycle state for optimistic-vs-confirmed UI */
+  backendState: "idle" | "starting" | "active" | "failed" | "ending";
+  /** Latest backend lifecycle error, if any */
+  backendError: string | null;
 }
 
 // maxRounds: 0 means unlimited
@@ -90,11 +119,14 @@ const EMPTY_WIZARD: DiscussionWizardState = {
   rules: { ...DEFAULT_DISCUSSION_RULES },
   participantIds: new Set<string>(),
   messages: [],
+  artifacts: [],
   currentRound: 0,
   paused: false,
   sourceInstanceId: null,
   discussionId: null,
   sandboxInstanceIds: [],
+  backendState: "idle",
+  backendError: null,
 };
 
 // ===== State Interface =====
@@ -106,18 +138,20 @@ interface AgentStoreState {
   statuses: Map<string, AgentStatus>;
   /** Agent tree for each instance, keyed by instance_id */
   trees: Map<string, AgentTree>;
-  /** C2-T1 Exit Overlay · record of PTY exit payloads keyed by instance_id. */
+  /** C2-T1 Exit Overlay - record of PTY exit payloads keyed by instance_id. */
   exitStates: Map<string, ProcessExitedPayload>;
-  /** C2-A4 Shield · per-instance permission tier (local state → backend in C2-C1) */
+  /** C2-A4 Shield - per-instance permission tier (local state -> backend in C2-C1) */
   permissionTiers: Map<string, string>;
-  /** C2-A4b · per-instance custom card color (user picks at create or later) */
+  /** C2-A4b - per-instance custom card color (user picks at create or later) */
   cardColors: Map<string, string>;
-  /** C2-A3 Frameworks · user's favorite adapter IDs (persisted to localStorage) */
+  /** C2-A3 Frameworks - user's favorite adapter IDs (persisted to localStorage) */
   favoriteAdapters: Set<string>;
-  /** C2-A3 Frameworks · user's primary adapter ID (persisted to localStorage) */
+  /** C2-A3 Frameworks - user's primary adapter ID (persisted to localStorage) */
   primaryAdapter: string | null;
   /** Currently expanded card instance_id, or null when no card is expanded */
   expandedCardId: string | null;
+  /** Guards one-shot backend list glitches without making real empty state sticky. */
+  ignoredEmptyInstanceSnapshot: boolean;
   /** Discussion wizard state (multi-step + runtime chatroom) */
   discussion: DiscussionWizardState;
 
@@ -127,18 +161,18 @@ interface AgentStoreState {
   addInstance: (instance: AgentInstanceInfo) => void;
   /** Drop an instance from the store along with its status/tree entries.
    *  The caller is responsible for any backend destroy_agent_instance call
-   *  — this action only touches frontend state. */
+   *  - this action only touches frontend state. */
   removeInstance: (instanceId: string) => void;
   setExitState: (instanceId: string, payload: ProcessExitedPayload | null) => void;
-  /** C2-A4 Shield · set per-instance permission tier */
+  /** C2-A4 Shield - set per-instance permission tier */
   setPermissionTier: (instanceId: string, tier: string) => void;
-  /** C2-A4b · set per-instance card color */
+  /** C2-A4b - set per-instance card color */
   setCardColor: (instanceId: string, color: string) => void;
-  /** C2-A3 Frameworks · set favorite adapters + persist to localStorage */
+  /** C2-A3 Frameworks - set favorite adapters + persist to localStorage */
   setFavoriteAdapters: (ids: Set<string>) => void;
-  /** C2-A3 Frameworks · set primary adapter + persist to localStorage */
+  /** C2-A3 Frameworks - set primary adapter + persist to localStorage */
   setPrimaryAdapter: (id: string | null) => void;
-  updateStatus: (instanceId: string, status: AgentStatus) => void;
+  updateStatus: (instanceId: string, status: AgentStatus, lastActivityAt?: number) => void;
   updateTree: (instanceId: string, tree: AgentTree) => void;
   setExpandedCard: (id: string | null) => void;
   /** Toggle pin for an instance (multi-select). Updates local state + backend. */
@@ -159,32 +193,33 @@ interface AgentStoreState {
   startDiscussion: () => void;
   pauseDiscussion: () => void;
   resumeDiscussion: () => void;
-  endDiscussion: () => void;
+  endDiscussion: () => Promise<import("@/types").DiscussionSummary | null>;
   interjectDiscussion: (text: string) => void;
+  toggleDiscussionArtifactPin: (artifactId: string) => void;
   /** B3: Append a backend-sourced message (e.g. from event subscription).
-   *  Deduplicates by message id — safe to call multiple times for the same msg. */
+   *  Deduplicates by message id - safe to call multiple times for the same msg. */
   appendDiscussionMessage: (msg: DiscussionMessage) => void;
 }
 
 // ===== Helpers =====
 
 /** Look up the instance that should be primary for a freshly-opened wizard.
- *  Preference order: first pinned instance → first instance in store → null. */
+ *  Preference order: first pinned instance -> first instance in store -> null. */
 function resolvePrimaryInstance(
   instances: Map<string, AgentInstanceInfo>
 ): AgentInstanceInfo | null {
-  for (const info of instances.values()) {
+  const liveInstances = getLiveAgentInstances(instances);
+  for (const info of liveInstances) {
     if (info.is_pinned) return info;
   }
-  const first = instances.values().next();
-  return first.done ? null : first.value;
+  return liveInstances[0] ?? null;
 }
 
 /** Helper: get display label for an agent instance.
- *  Format: "adapter_name · display_name" if alias set, else just adapter_name. */
+ *  Format: "adapter_name - display_name" if alias set, else just adapter_name. */
 export function agentDisplayLabel(info: AgentInstanceInfo): string {
   return info.display_name
-    ? `${info.adapter_name} · ${info.display_name}`
+    ? `${info.adapter_name} - ${info.display_name}`
     : info.adapter_name;
 }
 
@@ -226,7 +261,7 @@ function buildOpeningMessages(
       round: 1,
       interject: false,
       time: now + 1,
-      body: `Sure. From my analysis, the main tradeoff here is between correctness and speed — I'd lean toward the safer path first and optimize once we have a baseline.`,
+      body: `Sure. From my analysis, the main tradeoff here is between correctness and speed; I'd lean toward the safer path first and optimize once we have a baseline.`,
       codeBlocks: null,
     });
   }
@@ -242,13 +277,7 @@ function initialsOf(name: string): string {
 }
 
 function colorOfAdapter(adapterId: string): string {
-  switch (adapterId) {
-    case "claude-code": return "#B8D4E3";
-    case "codex":       return "#FFB800";
-    case "aider":       return "#8EA4B8";
-    case "opencode":    return "#C9B894";
-    default:            return "#8A8A8A";
-  }
+  return adapterIdentityColor(adapterId);
 }
 
 // ===== Store =====
@@ -258,7 +287,7 @@ function loadFavorites(): Set<string> {
   try {
     const raw = localStorage.getItem("conflux.favorites");
     if (raw) return new Set(JSON.parse(raw));
-  } catch { /* corrupt — ignore */ }
+  } catch { /* corrupt - ignore */ }
   return new Set();
 }
 function loadPrimaryAdapter(): string | null {
@@ -279,17 +308,29 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   favoriteAdapters: loadFavorites(),
   primaryAdapter: loadPrimaryAdapter(),
   expandedCardId: null,
+  ignoredEmptyInstanceSnapshot: false,
   discussion: { ...EMPTY_WIZARD, participantIds: new Set() },
 
   setInstances: (instances) =>
-    set(() => {
+    set((state) => {
+      const currentLiveInstances = getLiveAgentInstances(state.instances);
+      if (instances.length === 0 && currentLiveInstances.length > 0) {
+        if (!state.ignoredEmptyInstanceSnapshot) {
+          return { ignoredEmptyInstanceSnapshot: true };
+        }
+      }
+
       const instanceMap = new Map<string, AgentInstanceInfo>();
       const statusMap = new Map<string, AgentStatus>();
       for (const inst of instances) {
         instanceMap.set(inst.instance_id, inst);
         statusMap.set(inst.instance_id, inst.status);
       }
-      return { instances: instanceMap, statuses: statusMap };
+      return {
+        instances: instanceMap,
+        statuses: statusMap,
+        ignoredEmptyInstanceSnapshot: false,
+      };
     }),
 
   addInstance: (instance) =>
@@ -298,7 +339,11 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       nextInstances.set(instance.instance_id, instance);
       const nextStatuses = new Map(state.statuses);
       nextStatuses.set(instance.instance_id, instance.status);
-      return { instances: nextInstances, statuses: nextStatuses };
+      return {
+        instances: nextInstances,
+        statuses: nextStatuses,
+        ignoredEmptyInstanceSnapshot: false,
+      };
     }),
 
   removeInstance: (instanceId) =>
@@ -327,12 +372,24 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   setExitState: (instanceId, payload) =>
     set((state) => {
       const next = new Map(state.exitStates);
+      const nextInstances = new Map(state.instances);
+      const existing = nextInstances.get(instanceId);
       if (payload === null) {
         next.delete(instanceId);
+        if (existing) {
+          nextInstances.set(instanceId, { ...existing, ended_at: null });
+        }
       } else {
         next.set(instanceId, payload);
+        if (existing) {
+          nextInstances.set(instanceId, {
+            ...existing,
+            ended_at: payload.timestamp,
+            last_activity_at: payload.timestamp,
+          });
+        }
       }
-      return { exitStates: next };
+      return { exitStates: next, instances: nextInstances };
     }),
 
   setPermissionTier: (instanceId, tier) =>
@@ -365,14 +422,18 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
     set({ primaryAdapter: id });
   },
 
-  updateStatus: (instanceId, status) =>
+  updateStatus: (instanceId, status, lastActivityAt) =>
     set((state) => {
       const nextStatuses = new Map(state.statuses);
       nextStatuses.set(instanceId, status);
       const nextInstances = new Map(state.instances);
       const existing = nextInstances.get(instanceId);
       if (existing) {
-        nextInstances.set(instanceId, { ...existing, status });
+        nextInstances.set(instanceId, {
+          ...existing,
+          status,
+          last_activity_at: lastActivityAt ?? existing.last_activity_at,
+        });
       }
       return { statuses: nextStatuses, instances: nextInstances };
     }),
@@ -425,8 +486,17 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       // Primary is always in the set; discussion makes no sense without one.
       if (primary) participantIds.add(primary.instance_id);
       // Source instance (launched from ExpandedAgentCard) is auto-added too.
-      if (opts?.sourceInstanceId && opts.sourceInstanceId !== primary?.instance_id) {
-        participantIds.add(opts.sourceInstanceId);
+      const sourceInstanceId = opts?.sourceInstanceId ?? null;
+      const sourceInstance = sourceInstanceId
+        ? state.instances.get(sourceInstanceId)
+        : null;
+      if (
+        sourceInstance &&
+        sourceInstance.ended_at === null &&
+        !sourceInstance.hidden &&
+        sourceInstance.instance_id !== primary?.instance_id
+      ) {
+        participantIds.add(sourceInstance.instance_id);
       }
       return {
         discussion: {
@@ -467,6 +537,10 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       const primary = resolvePrimaryInstance(state.instances);
       // Guard: primary can't be toggled off
       if (primary?.instance_id === instanceId) return state;
+      const instance = state.instances.get(instanceId);
+      if (!instance || instance.ended_at !== null || instance.hidden) {
+        return state;
+      }
       const next = new Set(state.discussion.participantIds);
       if (next.has(instanceId)) next.delete(instanceId);
       else next.add(instanceId);
@@ -476,17 +550,20 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   startDiscussion: () => {
     const state = get();
     const participants: AgentInstanceInfo[] = [];
+    const liveInstances = new Map(
+      getLiveAgentInstances(state.instances).map((info) => [info.instance_id, info] as const),
+    );
     const primary = resolvePrimaryInstance(state.instances);
     if (primary && state.discussion.participantIds.has(primary.instance_id)) {
       participants.push(primary);
     }
     state.discussion.participantIds.forEach((id) => {
       if (id === primary?.instance_id) return;
-      const info = state.instances.get(id);
+      const info = liveInstances.get(id);
       if (info) participants.push(info);
     });
     const openers = buildOpeningMessages(state.discussion.direction, participants);
-    const participantIds = [...state.discussion.participantIds];
+    const participantIds = participants.map((participant) => participant.instance_id);
     const topic = state.discussion.direction;
     const maxRounds = state.discussion.rules.maxRounds;
 
@@ -496,16 +573,19 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         ...s.discussion,
         step: 4,
         messages: openers,
+        artifacts: collectArtifacts(openers),
         currentRound: 1,
         paused: false,
+        backendState: "starting",
+        backendError: null,
+        discussionId: null,
+        sandboxInstanceIds: [],
       },
     }));
 
     // B3: Fire-and-forget backend call; store discussionId + sandboxInstanceIds on success
     startBackendDiscussion(topic, participantIds, maxRounds)
       .then((session) => {
-        // B3.1: Extract sandbox instance IDs from backend response
-        // Backend InstanceId is newtype { "0": "uuid" }, but Tauri may serialize as string
         const sandboxIds = (session.sandbox_instance_ids ?? []).map((id: string | { "0": string }) =>
           typeof id === "string" ? id : id["0"]
         );
@@ -514,13 +594,24 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
             ...s.discussion,
             discussionId: typeof session.id === "string" ? session.id : (session.id as unknown as { "0": string })["0"],
             sandboxInstanceIds: sandboxIds,
+            backendState: "active",
+            backendError: null,
           },
         }));
       })
       .catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
         console.error("[agentStore] startBackendDiscussion failed:", err);
-        // Discussion continues in UI-only mode; backend will be unavailable
-        // but user can still interject locally.
+        set((s) => ({
+          discussion: {
+            ...s.discussion,
+            paused: true,
+            backendState: "failed",
+            backendError: message,
+            discussionId: null,
+            sandboxInstanceIds: [],
+          },
+        }));
       });
   },
 
@@ -530,20 +621,66 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   resumeDiscussion: () =>
     set((state) => ({ discussion: { ...state.discussion, paused: false } })),
 
-  endDiscussion: () => {
+  endDiscussion: async () => {
     const { discussion } = get();
     const discussionId = discussion.discussionId;
 
-    // Reset UI immediately
-    set(() => ({
-      discussion: { ...EMPTY_WIZARD, participantIds: new Set() },
+    set((state) => ({
+      discussion: {
+        ...state.discussion,
+        paused: true,
+        backendState: discussionId ? "ending" : state.discussion.backendState,
+        backendError: null,
+      },
     }));
 
-    // B3: Notify backend (fire-and-forget)
-    if (discussionId) {
-      endBackendDiscussion(discussionId).catch((err) => {
-        console.warn("[agentStore] endBackendDiscussion failed:", err);
-      });
+    if (!discussionId) {
+      const now = Date.now();
+      set((state) => ({
+        discussion: {
+          ...state.discussion,
+          discussionId: null,
+          sandboxInstanceIds: [],
+          backendState:
+            state.discussion.backendState === "failed" ? "failed" : "idle",
+        },
+      }));
+      return {
+        discussion_id: "local-discussion",
+        topic: discussion.direction || "Discussion",
+        total_rounds: discussion.currentRound,
+        summary_text:
+          discussion.backendState === "failed"
+            ? "Backend discussion failed to start. Review the local transcript and artifacts before closing."
+            : "Local discussion ended. Review artifacts before saving or discarding.",
+        ended_at: now,
+      };
+    }
+
+    try {
+      const summary = await endBackendDiscussion(discussionId);
+      set((state) => ({
+        discussion: {
+          ...state.discussion,
+          paused: true,
+          discussionId: null,
+          sandboxInstanceIds: [],
+          backendState: "idle",
+          backendError: null,
+        },
+      }));
+      return summary;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        discussion: {
+          ...state.discussion,
+          paused: true,
+          backendState: "failed",
+          backendError: message,
+        },
+      }));
+      throw error;
     }
   },
 
@@ -551,6 +688,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
     const trimmed = text.trim();
     if (!trimmed) return;
     const state = get();
+    const codeBlocks = parseCodeBlocks(trimmed);
     const optimisticMsg: DiscussionMessage = {
       id: `m-${Date.now()}-u`,
       authorInstanceId: "user",
@@ -561,7 +699,9 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       interject: true,
       time: Date.now(),
       body: trimmed,
-      codeBlocks: null,
+      codeBlocks,
+      deliveryState: "pending",
+      deliveryError: null,
     };
 
     // Optimistic UI: show message immediately
@@ -569,12 +709,13 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       discussion: {
         ...s.discussion,
         messages: [...s.discussion.messages, optimisticMsg],
+        artifacts: upsertArtifactsForMessage(s.discussion.artifacts, optimisticMsg),
       },
     }));
 
     // B3/B3.1: Send to backend + inject into sandbox PTYs (not workspace instances)
     const discussionId = state.discussion.discussionId;
-    if (discussionId) {
+    if (discussionId && state.discussion.backendState !== "failed") {
       const targetIds = state.discussion.sandboxInstanceIds.length > 0
         ? state.discussion.sandboxInstanceIds
         : [...state.discussion.participantIds];
@@ -586,17 +727,51 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
             discussion: {
               ...s.discussion,
               messages: s.discussion.messages.map((m) =>
-                m.id === optimisticMsg.id ? { ...confirmed, interject: true } : m,
+                m.id === optimisticMsg.id
+                  ? {
+                      ...confirmed,
+                      interject: true,
+                      deliveryState: "confirmed",
+                      deliveryError: null,
+                    }
+                  : m,
+              ),
+              artifacts: replaceArtifactsForMessage(
+                s.discussion.artifacts,
+                optimisticMsg.id,
+                confirmed,
               ),
             },
           }));
         })
         .catch((err) => {
           console.warn("[agentStore] sendMessageWithInjection failed:", err);
-          // Optimistic message stays in UI; user sees it even if backend failed
+          const message = err instanceof Error ? err.message : String(err);
+          set((s) => ({
+            discussion: {
+              ...s.discussion,
+              messages: s.discussion.messages.map((m) =>
+                m.id === optimisticMsg.id
+                  ? {
+                      ...m,
+                      deliveryState: "failed",
+                      deliveryError: message,
+                    }
+                  : m,
+              ),
+            },
+          }));
         });
     }
   },
+
+  toggleDiscussionArtifactPin: (artifactId) =>
+    set((state) => ({
+      discussion: {
+        ...state.discussion,
+        artifacts: toggleDiscussionArtifactPinInList(state.discussion.artifacts, artifactId),
+      },
+    })),
 
   appendDiscussionMessage: (msg) =>
     set((state) => {
@@ -608,6 +783,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         discussion: {
           ...state.discussion,
           messages: [...state.discussion.messages, msg],
+          artifacts: upsertArtifactsForMessage(state.discussion.artifacts, msg),
         },
       };
     }),

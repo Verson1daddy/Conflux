@@ -4,6 +4,7 @@
 // Matches design/conflux.pen frame "Search 命令面板" (GY7OQ).
 
 import { type FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getLiveAgentInstances } from "@/lib/workspace-status";
 import { useAgentStore } from "@/stores/agentStore";
 
 // ===== Icons =====
@@ -62,6 +63,7 @@ interface SearchPaletteProps {
   onAddAgent?: () => void;
   onSettings?: () => void;
   onDiscussion?: () => void;
+  onDiscussionReview?: () => void;
 }
 
 // ===== Status dot colors =====
@@ -96,6 +98,7 @@ const SearchPalette: FC<SearchPaletteProps> = ({
   onAddAgent,
   onSettings,
   onDiscussion,
+  onDiscussionReview,
 }) => {
   const [query, setQuery] = useState("");
   const [selectedIdx, setSelectedIdx] = useState(0);
@@ -119,9 +122,12 @@ const SearchPalette: FC<SearchPaletteProps> = ({
     if (onDiscussion) {
       result.push({ id: "cmd-discussion", type: "command", title: "New Discussion", subtitle: "Start a multi-agent discussion", icon: ICON_MSG, action: () => { onClose(); onDiscussion(); } });
     }
+    if (onDiscussionReview) {
+      result.push({ id: "cmd-discussion-review", type: "command", title: "Last Discussion Review", subtitle: "Open the most recently saved discussion review", icon: ICON_MSG, action: () => { onClose(); onDiscussionReview(); } });
+    }
 
     // Agent instances
-    instances.forEach((inst) => {
+    getLiveAgentInstances(instances).forEach((inst) => {
       result.push({
         id: `agent-${inst.instance_id}`,
         type: "agent",
@@ -150,7 +156,7 @@ const SearchPalette: FC<SearchPaletteProps> = ({
     }
 
     return result;
-  }, [instances, onClose, onAddAgent, onSettings, onDiscussion, setExpandedCard]);
+  }, [instances, onClose, onAddAgent, onSettings, onDiscussion, onDiscussionReview, setExpandedCard]);
 
   // Filter
   const filtered = useMemo(() => {

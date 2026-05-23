@@ -16,8 +16,8 @@ use crate::core::{
     DiscussionMessage, DiscussionSession, InstanceId, LayoutMode, PackSortStrategy, Position,
     SessionEvent, SessionSummary, Size, WorkspaceLayout,
 };
-use crate::AppState;
 use crate::persistence::{query as db_query, session as db_session};
+use crate::AppState;
 
 /// 列出会话摘要
 ///
@@ -187,9 +187,7 @@ pub async fn auto_pack_layout(
                     smart_size_slot(&inst.status, is_primary)
                 }
                 CardSizePreset::Uniform => CardSizeSlot::Mini,
-                CardSizePreset::Shuffle => shuffle_size_slot(
-                    &inst.instance_id.0,
-                ),
+                CardSizePreset::Shuffle => shuffle_size_slot(&inst.instance_id.0),
             };
             (inst.instance_id.clone(), slot)
         })
@@ -225,11 +223,11 @@ pub async fn auto_pack_layout(
 /// 基于合约定义：1 格基准 = 200x140px, gap 8px
 fn slot_to_pixels(slot: &CardSizeSlot) -> (f64, f64) {
     match slot {
-        CardSizeSlot::Mini => (200.0, 140.0),     // 1x1
-        CardSizeSlot::Small => (200.0, 288.0),    // 1x2
-        CardSizeSlot::Medium => (408.0, 288.0),   // 2x2
-        CardSizeSlot::Large => (408.0, 436.0),    // 2x3
-        CardSizeSlot::Wide => (616.0, 288.0),     // 3x2
+        CardSizeSlot::Mini => (200.0, 140.0),   // 1x1
+        CardSizeSlot::Small => (200.0, 288.0),  // 1x2
+        CardSizeSlot::Medium => (408.0, 288.0), // 2x2
+        CardSizeSlot::Large => (408.0, 436.0),  // 2x3
+        CardSizeSlot::Wide => (616.0, 288.0),   // 3x2
     }
 }
 
@@ -395,9 +393,9 @@ mod tests {
     #[test]
     fn test_shelf_pack_line_wrap() {
         let items = vec![
-            (InstanceId("a".to_string()), CardSizeSlot::Wide),   // 616x288
-            (InstanceId("b".to_string()), CardSizeSlot::Wide),   // 616x288 — 放不下同行
-            (InstanceId("c".to_string()), CardSizeSlot::Mini),   // 200x140
+            (InstanceId("a".to_string()), CardSizeSlot::Wide), // 616x288
+            (InstanceId("b".to_string()), CardSizeSlot::Wide), // 616x288 — 放不下同行
+            (InstanceId("c".to_string()), CardSizeSlot::Mini), // 200x140
         ];
 
         // canvas_width=1200, gap=8
@@ -420,16 +418,34 @@ mod tests {
 
     #[test]
     fn test_smart_size_slot() {
-        assert_eq!(smart_size_slot(&crate::core::AgentStatus::Thinking, false), CardSizeSlot::Medium);
-        assert_eq!(smart_size_slot(&crate::core::AgentStatus::Idle, false), CardSizeSlot::Small);
-        assert_eq!(smart_size_slot(&crate::core::AgentStatus::Done, false), CardSizeSlot::Mini);
-        assert_eq!(smart_size_slot(&crate::core::AgentStatus::Idle, true), CardSizeSlot::Large);
+        assert_eq!(
+            smart_size_slot(&crate::core::AgentStatus::Thinking, false),
+            CardSizeSlot::Medium
+        );
+        assert_eq!(
+            smart_size_slot(&crate::core::AgentStatus::Idle, false),
+            CardSizeSlot::Small
+        );
+        assert_eq!(
+            smart_size_slot(&crate::core::AgentStatus::Done, false),
+            CardSizeSlot::Mini
+        );
+        assert_eq!(
+            smart_size_slot(&crate::core::AgentStatus::Idle, true),
+            CardSizeSlot::Large
+        );
     }
 
     #[test]
     fn test_activity_score() {
-        assert!(activity_score(&crate::core::AgentStatus::Thinking) > activity_score(&crate::core::AgentStatus::Idle));
-        assert!(activity_score(&crate::core::AgentStatus::Idle) > activity_score(&crate::core::AgentStatus::Done));
+        assert!(
+            activity_score(&crate::core::AgentStatus::Thinking)
+                > activity_score(&crate::core::AgentStatus::Idle)
+        );
+        assert!(
+            activity_score(&crate::core::AgentStatus::Idle)
+                > activity_score(&crate::core::AgentStatus::Done)
+        );
     }
 
     #[test]

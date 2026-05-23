@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::adapter::toml_parser;
 use crate::adapter::traits::AgentAdapter;
-use crate::core::{AdapterConfig, AdapterInfo, AdapterId, ConfluxError};
+use crate::core::{AdapterConfig, AdapterId, AdapterInfo, ConfluxError};
 
 /// 适配器注册表——发现、注册、查询适配器
 pub struct AdapterRegistry {
@@ -91,6 +91,16 @@ impl AdapterRegistry {
                 is_builtin: self.builtins.contains(id),
             })
             .collect()
+    }
+
+    pub fn registered_configs(&self) -> Vec<(String, AdapterConfig, bool)> {
+        let mut configs: Vec<_> = self
+            .configs
+            .iter()
+            .map(|(id, config)| (id.clone(), config.clone(), self.builtins.contains(id)))
+            .collect();
+        configs.sort_by(|a, b| a.0.cmp(&b.0));
+        configs
     }
 
     /// 从 TOML 文件注册自定义适配器
@@ -226,8 +236,9 @@ impl AgentAdapter for GenericTomlAdapter {
         _working_dir: &str,
         _args: &[String],
     ) -> Result<Box<dyn crate::adapter::traits::AgentInstance>, ConfluxError> {
-        // BE-2: PtyManager::spawn() 尚未实现
-        todo!("BE-2: PtyManager::spawn() — 等待 PTY 管理器完成后对接")
+        Err(ConfluxError::InvalidConfig {
+            message: "GenericTomlAdapter::spawn is not a runnable path; use create_agent_instance/PtyManager::spawn".to_string(),
+        })
     }
 
     fn parse_output(&self, raw_line: &str) -> Option<ConfluxEvent> {
