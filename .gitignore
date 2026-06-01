@@ -47,6 +47,9 @@ design-systems/
 
 # Generated outputs
 output/
+coordination/reports/v1-smoke/**
+!coordination/reports/v1-smoke/**/
+!coordination/reports/v1-smoke/**/summary.md
 
 # Claude Code Git hygiene
 .env.*
