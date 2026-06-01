@@ -33,8 +33,8 @@ const StatusBar: FC<StatusBarProps> = ({ onOpenSession }) => {
         <button
           onClick={onOpenSession}
           className="flex items-center gap-1 px-2 py-0.5 rounded text-[#6B7280] hover:text-[#B8D4E3] hover:bg-[#2A2A2A] transition-colors shrink-0"
-          title="Session playback"
-          aria-label="Open session playback"
+          title="Session event timeline"
+          aria-label="Open session event timeline"
         >
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="10"/>

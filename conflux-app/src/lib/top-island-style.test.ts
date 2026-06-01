@@ -1,5 +1,12 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+
+declare const require: {
+  (id: "node:fs"): {
+    readFileSync(path: URL, encoding: "utf8"): string;
+  };
+};
+
+const { readFileSync } = require("node:fs");
 
 const css = readFileSync(new URL("../index.css", import.meta.url), "utf8");
 const indexHtml = readFileSync(new URL("../../index.html", import.meta.url), "utf8");

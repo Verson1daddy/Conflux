@@ -69,7 +69,7 @@ export function summarizeSessionEvent(event: SessionEventLike): string {
   return `${eventType} event`;
 }
 
-export function hasTerminalReplayEvents(events: SessionEventLike[]): boolean {
+export function hasTerminalOutputEvents(events: SessionEventLike[]): boolean {
   return events.some((event) => {
     const parsed = parseSessionEventData(event);
     return event.event_type === "PtyOutput" || parsed?.eventType === "PtyOutput";

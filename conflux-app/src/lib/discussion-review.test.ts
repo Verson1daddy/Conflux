@@ -19,7 +19,7 @@ const summary: DiscussionSummary = {
 
 const artifacts: DiscussionArtifact[] = [
   {
-    id: "m-1-0",
+    id: "artifact-1",
     msgId: "m-1",
     authorName: "Claude",
     round: 2,
@@ -27,9 +27,11 @@ const artifacts: DiscussionArtifact[] = [
     lang: "ts",
     content: "export const pinned = true;",
     status: "pinned",
+    createdAt: 1_785_000_000_100,
+    updatedAt: 1_785_000_000_100,
   },
   {
-    id: "m-2-0",
+    id: "artifact-2",
     msgId: "m-2",
     authorName: "Codex",
     round: 3,
@@ -37,6 +39,8 @@ const artifacts: DiscussionArtifact[] = [
     lang: "rs",
     content: "fn draft() {}",
     status: "draft",
+    createdAt: 1_785_000_000_200,
+    updatedAt: 1_785_000_000_200,
   },
 ];
 
@@ -88,12 +92,31 @@ describe("discussion review snapshot", () => {
       artifacts,
       messages,
       saved_at: 1_785_000_001_000,
+      disposition: "pending_review",
       artifact_counts: {
         total: 2,
         pinned: 1,
         draft: 1,
       },
     });
+  });
+
+  it("records saved and discarded review dispositions", () => {
+    expect(buildDiscussionReviewSnapshot({
+      summary,
+      artifacts,
+      messages,
+      savedAt: 1_785_000_001_000,
+      disposition: "saved",
+    }).disposition).toBe("saved");
+
+    expect(buildDiscussionReviewSnapshot({
+      summary,
+      artifacts,
+      messages,
+      savedAt: 1_785_000_001_000,
+      disposition: "discarded",
+    }).disposition).toBe("discarded");
   });
 
   it("writes the canonical review payload to storage", () => {

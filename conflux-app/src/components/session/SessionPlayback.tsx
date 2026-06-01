@@ -8,7 +8,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import type { SessionSummary, SessionEvent } from "@/types";
 import { listSessions, querySessionEvents } from "@/lib/tauri-bridge";
 import {
-  hasTerminalReplayEvents,
+  hasTerminalOutputEvents,
   summarizeSessionEvent,
 } from "@/lib/session-events";
 import { SessionList } from "@/components/session/SessionList";
@@ -186,7 +186,7 @@ export function SessionPlayback() {
     events.length > 1
       ? (currentEventIndex / (events.length - 1)) * 100
       : 0;
-  const hasTerminalEvents = hasTerminalReplayEvents(events);
+  const hasTerminalEvents = hasTerminalOutputEvents(events);
 
   return (
     <div className="flex h-full bg-canvas-1">

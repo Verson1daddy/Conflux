@@ -1199,6 +1199,8 @@ const DiscussionPanel: FC = () => {
   const pauseAction = useAgentStore((s) => s.pauseDiscussion);
   const resume = useAgentStore((s) => s.resumeDiscussion);
   const endAction = useAgentStore((s) => s.endDiscussion);
+  const markReviewSaved = useAgentStore((s) => s.markDiscussionReviewSaved);
+  const markReviewDiscarded = useAgentStore((s) => s.markDiscussionReviewDiscarded);
   const interject = useAgentStore((s) => s.interjectDiscussion);
   const toggleArtifactPin = useAgentStore((s) => s.toggleDiscussionArtifactPin);
 
@@ -1258,14 +1260,26 @@ const DiscussionPanel: FC = () => {
       summary: lastSummary,
       artifacts,
       messages,
+      disposition: "saved",
     });
     saveDiscussionReviewSnapshot(localStorage, snapshot);
+    markReviewSaved();
     close();
-  }, [artifacts, close, lastSummary, messages]);
+  }, [artifacts, close, lastSummary, markReviewSaved, messages]);
 
   const discardEndedDiscussion = useCallback(() => {
+    if (lastSummary) {
+      const snapshot = buildDiscussionReviewSnapshot({
+        summary: lastSummary,
+        artifacts,
+        messages,
+        disposition: "discarded",
+      });
+      saveDiscussionReviewSnapshot(localStorage, snapshot);
+    }
+    markReviewDiscarded();
     close();
-  }, [close]);
+  }, [artifacts, close, lastSummary, markReviewDiscarded, messages]);
 
   const handleNext = useCallback(() => {
     if (step === 1 && directionFilled) setStep(2);

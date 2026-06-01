@@ -169,6 +169,7 @@ describe("agentStore discussion backend lifecycle", () => {
     expect(discussionMocks.endBackendDiscussion).not.toHaveBeenCalled();
     expect(summary?.summary_text).toContain("Backend discussion failed to start");
     expect(useAgentStore.getState().discussion.backendState).toBe("failed");
+    expect(useAgentStore.getState().discussion.lifecycleState).toBe("ended_pending_review");
   });
 
   it("marks the discussion backend state failed when ending the backend session throws", async () => {
@@ -198,16 +199,72 @@ describe("agentStore discussion backend lifecycle", () => {
     expect(useAgentStore.getState().discussion.backendState).toBe("failed");
     expect(useAgentStore.getState().discussion.backendError).toContain("end failed");
   });
+  it("marks discussions pending review after backend end succeeds", async () => {
+    discussionMocks.startBackendDiscussion.mockResolvedValue({
+      id: "discussion-1",
+      topic: "test",
+      participant_ids: [] as string[],
+      sandbox_instance_ids: ["sandbox-1"] as string[],
+      status: "active",
+      created_at: 1000,
+      ended_at: null,
+      max_rounds: 8,
+      current_round: 1,
+      summary: null,
+    });
+    discussionMocks.endBackendDiscussion.mockResolvedValue({
+      discussion_id: "discussion-1",
+      topic: "test",
+      total_rounds: 1,
+      summary_text: "done",
+      ended_at: 2000,
+    });
+
+    const { useAgentStore } = await import("./agentStore");
+    useAgentStore.getState().setInstances([agent("primary", { is_pinned: true })]);
+    useAgentStore.getState().openDiscussionWizard();
+    useAgentStore.getState().startDiscussion();
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await useAgentStore.getState().endDiscussion();
+
+    expect(useAgentStore.getState().discussion.lifecycleState).toBe("ended_pending_review");
+    expect(useAgentStore.getState().discussion.endedAt).toBe(2000);
+  });
+
+  it("tracks saved and discarded ended discussion reviews", async () => {
+    const { useAgentStore } = await import("./agentStore");
+    useAgentStore.setState((state) => ({
+      discussion: {
+        ...state.discussion,
+        lifecycleState: "ended_pending_review",
+        endedAt: 2000,
+      },
+    }));
+
+    useAgentStore.getState().markDiscussionReviewSaved();
+    expect(useAgentStore.getState().discussion.lifecycleState).toBe("ended_saved");
+
+    useAgentStore.setState((state) => ({
+      discussion: {
+        ...state.discussion,
+        lifecycleState: "ended_pending_review",
+      },
+    }));
+    useAgentStore.getState().markDiscussionReviewDiscarded();
+    expect(useAgentStore.getState().discussion.lifecycleState).toBe("ended_discarded");
+  });
+
   it("marks optimistic interjects pending before backend confirmation", async () => {
     let resolveInjection!: (value: {
       id: string;
-      type: string;
-      author_id: string | null;
-      author_role: string;
+      discussion_id: string;
+      sender: { type: "User" };
       content: string;
-      round_number: number | null;
-      created_at: string;
-      metadata: null;
+      round: number;
+      created_at: number;
+      code_blocks: null;
     }) => void;
 
     discussionMocks.sendMessageWithInjection.mockImplementation(
@@ -237,16 +294,20 @@ describe("agentStore discussion backend lifecycle", () => {
 
     resolveInjection({
       id: "backend-msg-1",
-      type: "user_message",
-      author_id: null,
-      author_role: "user",
+      discussion_id: "discussion-1",
+      sender: { type: "User" },
       content: "Need a quick check",
-      round_number: 1,
-      created_at: new Date(2000).toISOString(),
-      metadata: null,
+      round: 1,
+      created_at: 2000,
+      code_blocks: null,
     });
     await Promise.resolve();
     await Promise.resolve();
+
+    const confirmedMessages = useAgentStore.getState().discussion.messages;
+    const lastMessage = confirmedMessages[confirmedMessages.length - 1];
+    expect(lastMessage?.deliveryState).toBe("confirmed");
+    expect(lastMessage?.deliveryError).toBeNull();
   });
 
   it("marks interjects failed when backend injection rejects", async () => {

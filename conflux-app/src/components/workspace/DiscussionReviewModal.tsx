@@ -23,6 +23,12 @@ const formatSavedAt = (savedAt: number): string => {
   return new Date(savedAt).toLocaleString();
 };
 
+const dispositionLabel = (disposition: DiscussionReviewSnapshot["disposition"]): string => {
+  if (disposition === "saved") return "Saved";
+  if (disposition === "discarded") return "Discarded";
+  return "Pending review";
+};
+
 const DiscussionReviewModal: FC<DiscussionReviewModalProps> = ({
   visible,
   snapshot,
@@ -83,7 +89,7 @@ const DiscussionReviewModal: FC<DiscussionReviewModalProps> = ({
                   fontSize: 11,
                 }}
               >
-                Saved {formatSavedAt(snapshot.saved_at)}
+                Saved {formatSavedAt(snapshot.saved_at)} · {dispositionLabel(snapshot.disposition)}
               </span>
             )}
           </div>

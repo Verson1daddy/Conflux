@@ -21,69 +21,86 @@ export interface ArtifactRecord {
   lang: string;
   content: string;
   status: ArtifactStatus;
+  createdAt: number;
+  updatedAt: number;
 }
 
-function artifactId(msgId: string, blockIdx: number): string {
-  return `${msgId}-${blockIdx}`;
+function artifactId(now: number, sequence: number): string {
+  return `artifact-${now}-${sequence}`;
 }
 
 function buildArtifacts(
   message: ArtifactSourceMessage,
-  statusByBlockIdx: Map<number, ArtifactStatus> = new Map(),
+  previousByBlockIdx: Map<number, ArtifactRecord> = new Map(),
+  now = Date.now(),
+  sequenceOffset = 0,
 ): ArtifactRecord[] {
   if (!message.codeBlocks?.length) return [];
 
-  return message.codeBlocks.map((block, blockIdx) => ({
-    id: artifactId(message.id, blockIdx),
-    msgId: message.id,
-    authorName: message.authorName,
-    round: message.round,
-    blockIdx,
-    lang: block.lang,
-    content: block.content,
-    status: statusByBlockIdx.get(blockIdx) ?? "draft",
-  }));
+  return message.codeBlocks.map((block, blockIdx) => {
+    const previous = previousByBlockIdx.get(blockIdx);
+    return {
+      id: previous?.id ?? artifactId(now, sequenceOffset + blockIdx),
+      msgId: message.id,
+      authorName: message.authorName,
+      round: message.round,
+      blockIdx,
+      lang: block.lang,
+      content: block.content,
+      status: previous?.status ?? "draft",
+      createdAt: previous?.createdAt ?? now,
+      updatedAt: previous && previous.content === block.content ? previous.updatedAt : now,
+    };
+  });
 }
 
-export function collectArtifacts(messages: ArtifactSourceMessage[]): ArtifactRecord[] {
-  return messages.flatMap((message) => buildArtifacts(message));
+export function collectArtifacts(messages: ArtifactSourceMessage[], now = Date.now()): ArtifactRecord[] {
+  let sequenceOffset = 0;
+  return messages.flatMap((message) => {
+    const artifacts = buildArtifacts(message, undefined, now, sequenceOffset);
+    sequenceOffset += artifacts.length;
+    return artifacts;
+  });
 }
 
 export function upsertArtifactsForMessage(
   artifacts: ArtifactRecord[],
   message: ArtifactSourceMessage,
+  now = Date.now(),
 ): ArtifactRecord[] {
-  const previousStatusByBlockIdx = new Map(
+  const previousByBlockIdx = new Map(
     artifacts
       .filter((artifact) => artifact.msgId === message.id)
-      .map((artifact) => [artifact.blockIdx, artifact.status]),
+      .map((artifact) => [artifact.blockIdx, artifact]),
   );
 
   const remaining = artifacts.filter((artifact) => artifact.msgId !== message.id);
-  return [...remaining, ...buildArtifacts(message, previousStatusByBlockIdx)];
+  return [...remaining, ...buildArtifacts(message, previousByBlockIdx, now, artifacts.length)];
 }
 
 export function replaceArtifactsForMessage(
   artifacts: ArtifactRecord[],
   previousMsgId: string,
   message: ArtifactSourceMessage,
+  now = Date.now(),
 ): ArtifactRecord[] {
-  const previousStatusByBlockIdx = new Map(
+  const previousByBlockIdx = new Map(
     artifacts
       .filter((artifact) => artifact.msgId === previousMsgId)
-      .map((artifact) => [artifact.blockIdx, artifact.status]),
+      .map((artifact) => [artifact.blockIdx, artifact]),
   );
 
   const remaining = artifacts.filter(
     (artifact) => artifact.msgId !== previousMsgId && artifact.msgId !== message.id,
   );
 
-  return [...remaining, ...buildArtifacts(message, previousStatusByBlockIdx)];
+  return [...remaining, ...buildArtifacts(message, previousByBlockIdx, now, artifacts.length)];
 }
 
 export function toggleArtifactPin(
   artifacts: ArtifactRecord[],
   artifactId: string,
+  now = Date.now(),
 ): ArtifactRecord[] {
   return artifacts.map((artifact) =>
     artifact.id !== artifactId
@@ -91,6 +108,7 @@ export function toggleArtifactPin(
       : {
           ...artifact,
           status: artifact.status === "pinned" ? "draft" : "pinned",
+          updatedAt: now,
         },
   );
 }

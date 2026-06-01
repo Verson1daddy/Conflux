@@ -290,7 +290,7 @@ export default function App() {
             <button
               onClick={() => setSessionVisible(false)}
               className="absolute top-4 right-4 z-10 flex items-center justify-center w-8 h-8 rounded-lg hover:bg-[#3A3A3A] text-[#B8B3B0] hover:text-[#F2F2F2] transition-colors"
-              aria-label="Close session playback"
+              aria-label="Close session event timeline"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M18 6 6 18M6 6l12 12" />

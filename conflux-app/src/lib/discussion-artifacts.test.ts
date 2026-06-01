@@ -20,11 +20,11 @@ describe("discussion artifacts", () => {
           { lang: "rs", content: "fn main() {}" },
         ],
       },
-    ]);
+    ], 1000);
 
     expect(artifacts).toEqual([
       {
-        id: "m-1-0",
+        id: "artifact-1000-0",
         msgId: "m-1",
         authorName: "Claude",
         round: 2,
@@ -32,9 +32,11 @@ describe("discussion artifacts", () => {
         lang: "ts",
         content: "const a = 1;",
         status: "draft",
+        createdAt: 1000,
+        updatedAt: 1000,
       },
       {
-        id: "m-1-1",
+        id: "artifact-1000-1",
         msgId: "m-1",
         authorName: "Claude",
         round: 2,
@@ -42,11 +44,29 @@ describe("discussion artifacts", () => {
         lang: "rs",
         content: "fn main() {}",
         status: "draft",
+        createdAt: 1000,
+        updatedAt: 1000,
       },
     ]);
   });
 
-  it("upsertArtifactsForMessage replaces artifacts for the same message id", () => {
+  it("collectArtifacts assigns lifecycle ids independent from message block coordinates", () => {
+    const artifacts = collectArtifacts([
+      {
+        id: "m-1",
+        authorName: "Claude",
+        round: 1,
+        codeBlocks: [{ lang: "ts", content: "const a = 1;" }],
+      },
+    ], 1000);
+
+    expect(artifacts[0]?.id).toBe("artifact-1000-0");
+    expect(artifacts[0]?.id).not.toBe("m-1-0");
+    expect(artifacts[0]?.msgId).toBe("m-1");
+    expect(artifacts[0]?.blockIdx).toBe(0);
+  });
+
+  it("upsertArtifactsForMessage preserves artifact identity across message updates", () => {
     const existing: ArtifactRecord[] = [
       {
         id: "m-1-0",
@@ -57,6 +77,8 @@ describe("discussion artifacts", () => {
         lang: "ts",
         content: "const oldValue = 1;",
         status: "pinned",
+        createdAt: 900,
+        updatedAt: 950,
       },
       {
         id: "m-2-0",
@@ -67,6 +89,8 @@ describe("discussion artifacts", () => {
         lang: "py",
         content: "print('keep me')",
         status: "draft",
+        createdAt: 1000,
+        updatedAt: 1000,
       },
     ];
 
@@ -75,7 +99,7 @@ describe("discussion artifacts", () => {
       authorName: "Claude",
       round: 2,
       codeBlocks: [{ lang: "ts", content: "const nextValue = 2;" }],
-    });
+    }, 1200);
 
     expect(next).toEqual([
       {
@@ -87,6 +111,8 @@ describe("discussion artifacts", () => {
         lang: "py",
         content: "print('keep me')",
         status: "draft",
+        createdAt: 1000,
+        updatedAt: 1000,
       },
       {
         id: "m-1-0",
@@ -97,14 +123,16 @@ describe("discussion artifacts", () => {
         lang: "ts",
         content: "const nextValue = 2;",
         status: "pinned",
+        createdAt: 900,
+        updatedAt: 1200,
       },
     ]);
   });
 
-  it("replaceArtifactsForMessage carries pin state from optimistic to confirmed message", () => {
+  it("replaceArtifactsForMessage carries lifecycle identity and pin state from optimistic to confirmed message", () => {
     const existing: ArtifactRecord[] = [
       {
-        id: "optimistic-0",
+        id: "optimistic-artifact",
         msgId: "optimistic",
         authorName: "You",
         round: 3,
@@ -112,6 +140,8 @@ describe("discussion artifacts", () => {
         lang: "ts",
         content: "console.log('draft')",
         status: "pinned",
+        createdAt: 900,
+        updatedAt: 950,
       },
     ];
 
@@ -120,11 +150,11 @@ describe("discussion artifacts", () => {
       authorName: "You",
       round: 3,
       codeBlocks: [{ lang: "ts", content: "console.log('draft')" }],
-    });
+    }, 1200);
 
     expect(next).toEqual([
       {
-        id: "confirmed-0",
+        id: "optimistic-artifact",
         msgId: "confirmed",
         authorName: "You",
         round: 3,
@@ -132,6 +162,8 @@ describe("discussion artifacts", () => {
         lang: "ts",
         content: "console.log('draft')",
         status: "pinned",
+        createdAt: 900,
+        updatedAt: 950,
       },
     ]);
   });
@@ -147,6 +179,8 @@ describe("discussion artifacts", () => {
         lang: "ts",
         content: "const a = 1;",
         status: "draft",
+        createdAt: 1000,
+        updatedAt: 1000,
       },
       {
         id: "b-0",
@@ -157,10 +191,12 @@ describe("discussion artifacts", () => {
         lang: "py",
         content: "print('b')",
         status: "pinned",
+        createdAt: 900,
+        updatedAt: 950,
       },
     ];
 
-    expect(toggleArtifactPin(existing, "a-0")).toEqual([
+    expect(toggleArtifactPin(existing, "a-0", 1200)).toEqual([
       {
         id: "a-0",
         msgId: "a",
@@ -170,6 +206,8 @@ describe("discussion artifacts", () => {
         lang: "ts",
         content: "const a = 1;",
         status: "pinned",
+        createdAt: 1000,
+        updatedAt: 1200,
       },
       {
         id: "b-0",
@@ -180,6 +218,8 @@ describe("discussion artifacts", () => {
         lang: "py",
         content: "print('b')",
         status: "pinned",
+        createdAt: 900,
+        updatedAt: 950,
       },
     ]);
   });

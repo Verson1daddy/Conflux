@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  hasTerminalReplayEvents,
+  hasTerminalOutputEvents,
   summarizeSessionEvent,
 } from "./session-events";
 
@@ -71,9 +71,9 @@ describe("session event summaries", () => {
     ).toBe("Terminal output chunk (7 bytes)");
   });
 
-  it("detects whether a session has real terminal replay events", () => {
+  it("detects whether a session has real terminal output events", () => {
     expect(
-      hasTerminalReplayEvents([
+      hasTerminalOutputEvents([
         {
           ...baseEvent,
           event_type: "TaskCompleted",
@@ -86,7 +86,7 @@ describe("session event summaries", () => {
     ).toBe(false);
 
     expect(
-      hasTerminalReplayEvents([
+      hasTerminalOutputEvents([
         {
           ...baseEvent,
           event_type: "PtyOutput",

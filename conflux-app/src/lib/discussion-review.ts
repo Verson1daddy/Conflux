@@ -3,6 +3,8 @@ import type { DiscussionSummary } from "@/types";
 
 export const DISCUSSION_REVIEW_STORAGE_KEY = "conflux.lastDiscussionReview";
 
+export type DiscussionReviewDisposition = "pending_review" | "saved" | "discarded";
+
 export interface DiscussionReviewArtifactCounts {
   total: number;
   pinned: number;
@@ -14,6 +16,7 @@ export interface DiscussionReviewSnapshot {
   artifacts: DiscussionArtifact[];
   messages: DiscussionMessage[];
   saved_at: number;
+  disposition: DiscussionReviewDisposition;
   artifact_counts: DiscussionReviewArtifactCounts;
 }
 
@@ -22,6 +25,7 @@ export interface BuildDiscussionReviewSnapshotInput {
   artifacts: DiscussionArtifact[];
   messages: DiscussionMessage[];
   savedAt?: number;
+  disposition?: DiscussionReviewDisposition;
 }
 
 export interface DiscussionReviewStorage {
@@ -37,6 +41,7 @@ export function buildDiscussionReviewSnapshot({
   artifacts,
   messages,
   savedAt = Date.now(),
+  disposition = "pending_review",
 }: BuildDiscussionReviewSnapshotInput): DiscussionReviewSnapshot {
   const artifactCounts = artifacts.reduce<DiscussionReviewArtifactCounts>(
     (counts, artifact) => {
@@ -56,6 +61,7 @@ export function buildDiscussionReviewSnapshot({
       codeBlocks: message.codeBlocks?.map((block) => ({ ...block })) ?? null,
     })),
     saved_at: savedAt,
+    disposition,
     artifact_counts: artifactCounts,
   };
 }
@@ -89,8 +95,13 @@ function isDiscussionReviewSnapshot(value: unknown): value is DiscussionReviewSn
     Array.isArray(candidate.artifacts) &&
     Array.isArray(candidate.messages) &&
     typeof candidate.saved_at === "number" &&
+    isDiscussionReviewDisposition(candidate.disposition) &&
     isArtifactCounts(candidate.artifact_counts)
   );
+}
+
+function isDiscussionReviewDisposition(value: unknown): value is DiscussionReviewDisposition {
+  return value === "pending_review" || value === "saved" || value === "discarded";
 }
 
 function isDiscussionSummary(value: unknown): value is DiscussionSummary {

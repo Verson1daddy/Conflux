@@ -69,7 +69,16 @@ export interface DiscussionArtifact {
   lang: string;
   content: string;
   status: ArtifactStatus;
+  createdAt: number;
+  updatedAt: number;
 }
+
+export type DiscussionLifecycleState =
+  | "draft"
+  | "active"
+  | "ended_pending_review"
+  | "ended_saved"
+  | "ended_discarded";
 
 export interface DiscussionWizardState {
   open: boolean;
@@ -88,6 +97,8 @@ export interface DiscussionWizardState {
   artifacts: DiscussionArtifact[];
   currentRound: number;
   paused: boolean;
+  lifecycleState: DiscussionLifecycleState;
+  endedAt: number | null;
   /** Optional source instance when launched from ExpandedAgentCard */
   sourceInstanceId: string | null;
   /** B3: Backend discussion session ID (null before startDiscussion succeeds) */
@@ -122,6 +133,8 @@ const EMPTY_WIZARD: DiscussionWizardState = {
   artifacts: [],
   currentRound: 0,
   paused: false,
+  lifecycleState: "draft",
+  endedAt: null,
   sourceInstanceId: null,
   discussionId: null,
   sandboxInstanceIds: [],
@@ -194,6 +207,8 @@ interface AgentStoreState {
   pauseDiscussion: () => void;
   resumeDiscussion: () => void;
   endDiscussion: () => Promise<import("@/types").DiscussionSummary | null>;
+  markDiscussionReviewSaved: () => void;
+  markDiscussionReviewDiscarded: () => void;
   interjectDiscussion: (text: string) => void;
   toggleDiscussionArtifactPin: (artifactId: string) => void;
   /** B3: Append a backend-sourced message (e.g. from event subscription).
@@ -578,6 +593,8 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         paused: false,
         backendState: "starting",
         backendError: null,
+        lifecycleState: "active",
+        endedAt: null,
         discussionId: null,
         sandboxInstanceIds: [],
       },
@@ -643,6 +660,8 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
           sandboxInstanceIds: [],
           backendState:
             state.discussion.backendState === "failed" ? "failed" : "idle",
+          lifecycleState: "ended_pending_review",
+          endedAt: now,
         },
       }));
       return {
@@ -667,6 +686,8 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
           sandboxInstanceIds: [],
           backendState: "idle",
           backendError: null,
+          lifecycleState: "ended_pending_review",
+          endedAt: summary.ended_at,
         },
       }));
       return summary;
@@ -683,6 +704,22 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       throw error;
     }
   },
+
+  markDiscussionReviewSaved: () =>
+    set((state) => ({
+      discussion: {
+        ...state.discussion,
+        lifecycleState: "ended_saved",
+      },
+    })),
+
+  markDiscussionReviewDiscarded: () =>
+    set((state) => ({
+      discussion: {
+        ...state.discussion,
+        lifecycleState: "ended_discarded",
+      },
+    })),
 
   interjectDiscussion: (text) => {
     const trimmed = text.trim();

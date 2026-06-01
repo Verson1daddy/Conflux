@@ -23,76 +23,240 @@ import type { AgentStatus, AgentInstanceInfo } from "@/types";
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 7;
 const ZOOM_SENSITIVITY = 0.0007;
-const GRID_LEVELS = [1280, 640, 320, 160, 80, 40, 20, 10, 5, 2.5, 1.25, 0.625, 0.3125] as const;
-const GRID_TARGET_MAJOR_PX = 168;
-const GRID_SIGMA = 1.05;
 
-function normalizeZoomForGrid(zoom: number): number {
+const GRID_BASE_SPACING = 5;
+const GRID_FREQUENCY_MIN_EXP = -3;
+const GRID_FREQUENCY_MAX_EXP = 9;
+const GRID_CROSSFADE_DISTANCE_THRESHOLD = 0.015;
+
+const GRID_VISUAL_CONFIG = {
+  majorTargetPx: 148,
+  majorBlendBandPx: [120, 196] as const,
+  blackClampPx: 5,
+  hideBelowPx: 1.5,
+  majorRampStartPx: 112,
+  majorRampEndPx: 184,
+  lineBudget: 1200,
+};
+
+const GRID_VISUAL_PRESET = {
+  major: { gray: 214, baseAlpha: 0.22, lineWidth: 1.15 },
+  subMajor: { gray: 156, baseAlpha: 0.12, lineWidth: 1 },
+  minor: { gray: 118, baseAlpha: 0.08, lineWidth: 1 },
+  micro: { gray: 88, baseAlpha: 0.04, lineWidth: 1 },
+  blackClamped: { gray: 24, baseAlpha: 0.9, lineWidth: 1 },
+} as const;
+
+type GridVisibleKind = "major" | "subMajor" | "minor" | "micro" | "majorCandidate";
+type GridVisualState = "weighted" | "blackClamped" | "hidden";
+
+type ResolvedGridLevelVisual = {
+  kind: GridVisibleKind;
+  worldSpacing: number;
+  pixelSize: number;
+  distanceToTarget: number;
+  alpha: number;
+  gray: number;
+  lineWidth: number;
+  state: GridVisualState;
+  visible: boolean;
+};
+
+function clampZoom(zoom: number) {
   return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom));
 }
 
-function levelDistance(levelSize: number, zoom: number) {
-  const pixelSize = levelSize * zoom;
-  return Math.abs(Math.log2(pixelSize / GRID_TARGET_MAJOR_PX));
+function getGridPixelSize(spacing: number, zoom: number) {
+  return spacing * zoom;
 }
 
-function gridWeight(distance: number) {
-  return Math.exp(-(distance * distance) / (2 * GRID_SIGMA * GRID_SIGMA));
+function getDistanceToTarget(pixelSize: number, targetPx: number) {
+  return Math.abs(Math.log2(pixelSize / targetPx));
 }
 
-type GridLevelVisual = {
-  size: number;
-  color: string;
-  lineWidth: number;
-  prominence: number;
-};
+function buildCandidateSpacings() {
+  return Array.from(
+    { length: GRID_FREQUENCY_MAX_EXP - GRID_FREQUENCY_MIN_EXP + 1 },
+    (_, index) => GRID_BASE_SPACING * 2 ** (GRID_FREQUENCY_MIN_EXP + index),
+  );
+}
 
-function resolveGridVisuals(zoom: number): GridLevelVisual[] {
-  const normalizedZoom = normalizeZoomForGrid(zoom);
-  const weighted = GRID_LEVELS.map((size) => {
-    const distance = levelDistance(size, normalizedZoom);
-    return { size, weight: gridWeight(distance) };
-  }).filter((level) => level.weight > 0.01);
+function weightForDistance(distanceToTarget: number) {
+  return Math.max(0, 1 - distanceToTarget / 1.6);
+}
 
-  const maxWeight = Math.max(...weighted.map((level) => level.weight), 1);
-  const majorLevels = weighted.map((level) => {
-    const prominence = level.weight / maxWeight;
-    const eased = Math.pow(prominence, 0.82);
-    const brightness = Math.round(176 + eased * 28);
-    const alpha = 0.018 + level.weight * (0.12 + eased * 0.08);
-    const lineWidth = eased > 0.94 ? 1.2 : eased > 0.62 ? 1.02 : 1;
+function getMajorRampWeight(pixelSize: number) {
+  const { majorRampStartPx, majorRampEndPx } = GRID_VISUAL_CONFIG;
+  const progress = (pixelSize - majorRampStartPx) / (majorRampEndPx - majorRampStartPx);
+  return Math.max(0, Math.min(1, progress));
+}
 
+function resolveRetirementState(pixelSize: number): GridVisualState {
+  if (pixelSize <= GRID_VISUAL_CONFIG.hideBelowPx) {
+    return "hidden";
+  }
+  if (pixelSize <= GRID_VISUAL_CONFIG.blackClampPx) {
+    return "blackClamped";
+  }
+  return "weighted";
+}
+
+function resolveWeightedStyle(
+  kind: "major" | "subMajor" | "minor" | "micro",
+  weight: number,
+  pixelSize?: number,
+) {
+  const preset = GRID_VISUAL_PRESET[kind];
+  const alpha = preset.baseAlpha * weight;
+
+  if (kind === "major") {
+    const rampWeight = pixelSize ? getMajorRampWeight(pixelSize) : 1;
     return {
-      size: level.size,
-      color: `rgba(${brightness}, ${brightness}, ${brightness}, ${Math.min(0.16, alpha)})`,
-      lineWidth,
-      prominence: eased,
-    } satisfies GridLevelVisual;
-  });
-
-  const fineLevels = GRID_LEVELS.filter((size) => size <= 10).map((size, index, arr) => {
-    const progress = 1 - index / Math.max(1, arr.length - 1);
-    const alpha = 0.018 + progress * 0.026;
-    const brightness = Math.round(124 + progress * 20);
-
-    return {
-      size,
-      color: `rgba(${brightness}, ${brightness}, ${brightness}, ${Math.min(0.065, alpha)})`,
-      lineWidth: 1,
-      prominence: 0.16 + progress * 0.12,
-    } satisfies GridLevelVisual;
-  });
-
-  const merged = new Map<number, GridLevelVisual>();
-  for (const level of fineLevels) merged.set(level.size, level);
-  for (const level of majorLevels) {
-    const existing = merged.get(level.size);
-    if (!existing || existing.prominence < level.prominence) {
-      merged.set(level.size, level);
-    }
+      gray: preset.gray,
+      alpha: 0.08 + alpha * (0.35 + rampWeight * 0.55),
+      lineWidth: preset.lineWidth,
+    };
   }
 
-  return [...merged.values()];
+  return {
+    gray: preset.gray,
+    alpha,
+    lineWidth: preset.lineWidth,
+  };
+}
+
+function getAlignedGridStart(screenStart: number) {
+  return Math.round(screenStart) + 0.5;
+}
+
+export function resolveGridVisuals(zoom: number): ResolvedGridLevelVisual[] {
+  const normalizedZoom = clampZoom(zoom);
+  const candidates = buildCandidateSpacings()
+    .map((worldSpacing) => {
+      const pixelSize = getGridPixelSize(worldSpacing, normalizedZoom);
+      return {
+        worldSpacing,
+        pixelSize,
+        distanceToTarget: getDistanceToTarget(pixelSize, GRID_VISUAL_CONFIG.majorTargetPx),
+        state: resolveRetirementState(pixelSize),
+      };
+    })
+    .sort((a, b) => a.distanceToTarget - b.distanceToTarget);
+
+  const primary = candidates[0];
+  const secondary = candidates.find(
+    (candidate) =>
+      candidate !== primary &&
+      candidate.state === "weighted" &&
+      candidate.distanceToTarget - primary.distanceToTarget <= GRID_CROSSFADE_DISTANCE_THRESHOLD,
+  );
+
+  const majorCandidates = [primary, secondary].filter(
+    (candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate),
+  );
+
+  const majorLevels = majorCandidates.map((candidate, _index, all) => {
+    const style = resolveWeightedStyle(
+      all.length === 1 ? "major" : "major",
+      all.length === 1 ? 1 : weightForDistance(candidate.distanceToTarget),
+      candidate.pixelSize,
+    );
+
+    return {
+      kind: all.length === 1 ? "major" : "majorCandidate",
+      worldSpacing: candidate.worldSpacing,
+      pixelSize: candidate.pixelSize,
+      distanceToTarget: candidate.distanceToTarget,
+      alpha: style.alpha,
+      gray: style.gray,
+      lineWidth: style.lineWidth,
+      state: candidate.state,
+      visible: candidate.state !== "hidden" && style.alpha > 0,
+    } satisfies ResolvedGridLevelVisual;
+  });
+
+  const anchorSpacing = primary.worldSpacing;
+  const subMajorSpacing = anchorSpacing / 2;
+  const minorSpacing = anchorSpacing / 4;
+  const microSpacing = anchorSpacing / 8;
+
+  const resolveDetailLevel = (
+    worldSpacing: number,
+    kind: "subMajor" | "minor" | "micro",
+    weight: number,
+    forceHidden = false,
+  ): ResolvedGridLevelVisual => {
+    const pixelSize = getGridPixelSize(worldSpacing, normalizedZoom);
+    const distanceToTarget = getDistanceToTarget(pixelSize, GRID_VISUAL_CONFIG.majorTargetPx);
+    const state = forceHidden ? "hidden" : resolveRetirementState(pixelSize);
+
+    if (state === "hidden") {
+      return {
+        kind,
+        worldSpacing,
+        pixelSize,
+        distanceToTarget,
+        alpha: 0,
+        gray: 0,
+        lineWidth: 0,
+        state: "hidden",
+        visible: false,
+      };
+    }
+
+    if (state === "blackClamped") {
+      return {
+        kind,
+        worldSpacing,
+        pixelSize,
+        distanceToTarget,
+        alpha: GRID_VISUAL_PRESET.blackClamped.baseAlpha,
+        gray: GRID_VISUAL_PRESET.blackClamped.gray,
+        lineWidth: GRID_VISUAL_PRESET.blackClamped.lineWidth,
+        state: "blackClamped",
+        visible: true,
+      };
+    }
+
+    const style = resolveWeightedStyle(kind, weight);
+    return {
+      kind,
+      worldSpacing,
+      pixelSize,
+      distanceToTarget,
+      alpha: style.alpha,
+      gray: style.gray,
+      lineWidth: style.lineWidth,
+      state: "weighted",
+      visible: true,
+    };
+  };
+
+  const detailLevels: ResolvedGridLevelVisual[] = [
+    resolveDetailLevel(subMajorSpacing, "subMajor", 0.78),
+    resolveDetailLevel(minorSpacing, "minor", 0.56),
+    resolveDetailLevel(microSpacing, "micro", 0.32),
+  ];
+
+  const clampedRetirementSpacing = anchorSpacing / 32;
+  const clampedRetirement = {
+    ...resolveDetailLevel(clampedRetirementSpacing, "micro", 0.18),
+    visible: false,
+  } satisfies ResolvedGridLevelVisual;
+  const hiddenRetirementSpacing = anchorSpacing / 64;
+  const hiddenRetirement = resolveDetailLevel(hiddenRetirementSpacing, "micro", 0, true);
+
+  const visibleRuntimeLevels = [...majorLevels, ...detailLevels]
+    .filter((level) => level.visible)
+    .slice(0, 4);
+
+  const retirementLevels: ResolvedGridLevelVisual[] = [];
+  retirementLevels.push(clampedRetirement);
+  if (hiddenRetirement.state === "hidden") {
+    retirementLevels.push(hiddenRetirement);
+  }
+
+  return [...visibleRuntimeLevels, ...retirementLevels];
 }
 
 interface CanvasProps {
@@ -151,8 +315,11 @@ function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
   const liveZoom = useRef(storeZoom);
   const livePan = useRef({ x: storePan.x, y: storePan.y });
   const spaceHeldRef = useRef(false);
+  const isInteractingRef = useRef(false);
+  const interactionSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const commitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const zoomRafRef = useRef<number | null>(null);
+  const gridDrawRafRef = useRef<number | null>(null);
   const previousCardCountRef = useRef(visibleCards.length);
 
   useEffect(() => {
@@ -186,39 +353,45 @@ function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
     ctx.scale(dpr, dpr);
 
     const levels = resolveGridVisuals(liveZoom.current)
-      .sort((a, b) => a.size - b.size)
-      .map((level) => ({
-        ...level,
-        pixelSize: level.size * liveZoom.current,
-      }))
-      .filter((level) => level.pixelSize >= 2.5);
+      .filter((level) => level.visible)
+      .filter(
+        (level) =>
+          (width / level.pixelSize) + (height / level.pixelSize) <= GRID_VISUAL_CONFIG.lineBudget,
+      )
+      .sort((a, b) => a.worldSpacing - b.worldSpacing);
 
     for (const level of levels) {
-      const worldSpacing = level.size;
+      const worldSpacing = level.worldSpacing;
       const worldLeft = -livePan.current.x / liveZoom.current;
       const worldTop = -livePan.current.y / liveZoom.current;
       const worldRight = (width - livePan.current.x) / liveZoom.current;
       const worldBottom = (height - livePan.current.y) / liveZoom.current;
-
       const startWorldX = Math.floor(worldLeft / worldSpacing) * worldSpacing;
       const startWorldY = Math.floor(worldTop / worldSpacing) * worldSpacing;
 
+      const startScreenX = livePan.current.x + startWorldX * liveZoom.current;
+      const alignedStartX = getAlignedGridStart(startScreenX);
+      const xPhaseOffset = alignedStartX - startScreenX;
+      const startScreenY = livePan.current.y + startWorldY * liveZoom.current;
+      const alignedStartY = getAlignedGridStart(startScreenY);
+      const yPhaseOffset = alignedStartY - startScreenY;
+
       ctx.beginPath();
-      ctx.strokeStyle = level.color;
+      ctx.strokeStyle = `rgba(${level.gray}, ${level.gray}, ${level.gray}, ${level.alpha})`;
       ctx.lineWidth = level.lineWidth;
-      ctx.shadowBlur = level.prominence > 0.95 ? 0.55 : 0;
-      ctx.shadowColor = level.prominence > 0.95 ? "rgba(255,255,255,0.035)" : "transparent";
+      ctx.shadowBlur = 0;
+      ctx.shadowColor = "transparent";
 
       for (let worldX = startWorldX; worldX <= worldRight + worldSpacing; worldX += worldSpacing) {
         const screenX = livePan.current.x + worldX * liveZoom.current;
-        const alignedX = Math.round(screenX) + 0.5;
+        const alignedX = screenX + xPhaseOffset;
         ctx.moveTo(alignedX, 0);
         ctx.lineTo(alignedX, height);
       }
 
       for (let worldY = startWorldY; worldY <= worldBottom + worldSpacing; worldY += worldSpacing) {
         const screenY = livePan.current.y + worldY * liveZoom.current;
-        const alignedY = Math.round(screenY) + 0.5;
+        const alignedY = screenY + yPhaseOffset;
         ctx.moveTo(0, alignedY);
         ctx.lineTo(width, alignedY);
       }
@@ -229,6 +402,29 @@ function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
       ctx.stroke();
     }
   }, []);
+
+  const scheduleGridDraw = useCallback(() => {
+    if (gridDrawRafRef.current !== null) {
+      cancelAnimationFrame(gridDrawRafRef.current);
+    }
+    gridDrawRafRef.current = requestAnimationFrame(() => {
+      gridDrawRafRef.current = null;
+      drawGrid();
+    });
+  }, [drawGrid]);
+
+  const markInteraction = useCallback(() => {
+    isInteractingRef.current = true;
+    if (interactionSettleTimerRef.current) {
+      clearTimeout(interactionSettleTimerRef.current);
+    }
+    interactionSettleTimerRef.current = setTimeout(() => {
+      isInteractingRef.current = false;
+      if (gridDrawRafRef.current === null) {
+        scheduleGridDraw();
+      }
+    }, 180);
+  }, [scheduleGridDraw]);
 
   const enableZoomTransition = useCallback(() => {
     const el = transformLayerRef.current;
@@ -243,21 +439,34 @@ function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
   }, []);
 
   const applyTransform = useCallback(() => {
-    const el = transformLayerRef.current;
-    if (el) {
-      el.style.transform = `translate(${livePan.current.x}px,${livePan.current.y}px) scale(${liveZoom.current})`;
-    }
     const gridEl = worldGridRef.current;
     if (gridEl) {
       drawGrid();
+    }
+    const el = transformLayerRef.current;
+    if (el) {
+      el.style.transform = `translate(${livePan.current.x}px,${livePan.current.y}px) scale(${liveZoom.current})`;
     }
     const zi = zoomIndicatorRef.current;
     if (zi) {
       zi.textContent = `${Math.round(liveZoom.current * 100)}%`;
     }
-  }, []);
+  }, [drawGrid]);
 
   const scheduleCommit = useCallback(() => {
+    if (isInteractingRef.current) {
+      if (commitTimer.current) clearTimeout(commitTimer.current);
+      commitTimer.current = setTimeout(() => {
+        if (isInteractingRef.current) {
+          scheduleCommit();
+          return;
+        }
+        setZoom(liveZoom.current);
+        setPan({ ...livePan.current });
+      }, 100);
+      return;
+    }
+
     if (commitTimer.current) clearTimeout(commitTimer.current);
     commitTimer.current = setTimeout(() => {
       setZoom(liveZoom.current);
@@ -309,6 +518,7 @@ function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
         x: cursorX - worldX * newZoom,
         y: cursorY - worldY * newZoom,
       };
+      markInteraction();
       enableZoomTransition();
       applyTransform();
       scheduleCommit();
@@ -316,7 +526,7 @@ function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
 
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [applyTransform, scheduleCommit, enableZoomTransition]);
+  }, [applyTransform, scheduleCommit, enableZoomTransition, markInteraction]);
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
@@ -344,6 +554,7 @@ function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
           x: startPX + (me.clientX - startMX),
           y: startPY + (me.clientY - startMY),
         };
+        markInteraction();
         applyTransform();
       };
 
@@ -362,7 +573,7 @@ function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
     },
-    [selectCard, setPan, applyTransform]
+    [selectCard, setPan, applyTransform, markInteraction]
   );
 
   const handleFitAll = useCallback(() => {
@@ -380,34 +591,28 @@ function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
   useEffect(() => {
     const container = containerRef.current;
     if (!container || typeof ResizeObserver === "undefined") {
-      drawGrid();
+      scheduleGridDraw();
       return;
     }
 
     const observer = new ResizeObserver(() => {
-      drawGrid();
+      scheduleGridDraw();
     });
     observer.observe(container);
-    drawGrid();
+    scheduleGridDraw();
 
-    return () => observer.disconnect();
-  }, [drawGrid]);
-
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container || typeof ResizeObserver === "undefined") {
-      drawGrid();
-      return;
-    }
-
-    const observer = new ResizeObserver(() => {
-      drawGrid();
-    });
-    observer.observe(container);
-    drawGrid();
-
-    return () => observer.disconnect();
-  }, [drawGrid]);
+    return () => {
+      observer.disconnect();
+      if (gridDrawRafRef.current !== null) {
+        cancelAnimationFrame(gridDrawRafRef.current);
+        gridDrawRafRef.current = null;
+      }
+      if (interactionSettleTimerRef.current) {
+        clearTimeout(interactionSettleTimerRef.current);
+        interactionSettleTimerRef.current = null;
+      }
+    };
+  }, [scheduleGridDraw]);
 
   useEffect(() => {
     if (shouldFailOpenPinnedFilter) {

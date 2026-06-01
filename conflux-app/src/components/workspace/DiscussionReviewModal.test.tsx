@@ -36,6 +36,8 @@ const snapshot: DiscussionReviewSnapshot = {
       lang: "ts",
       content: "export const plan = true;",
       status: "pinned",
+      createdAt: 1_785_000_000_100,
+      updatedAt: 1_785_000_000_100,
     },
     {
       id: "m-2-0",
@@ -46,10 +48,13 @@ const snapshot: DiscussionReviewSnapshot = {
       lang: "rs",
       content: "fn audit() {}",
       status: "draft",
+      createdAt: 1_785_000_000_200,
+      updatedAt: 1_785_000_000_200,
     },
   ],
   messages: [],
   saved_at: 1_785_000_001_000,
+  disposition: "saved",
   artifact_counts: {
     total: 2,
     pinned: 1,
@@ -74,6 +79,7 @@ describe("DiscussionReviewModal", () => {
     const text = collectText(renderer.toJSON());
 
     expect(text).toContain("Last Discussion Review");
+    expect(text).toContain("Saved");
     expect(text).toContain("V1 closure");
     expect(text).toContain("Keep the remaining release work staged and audited.");
     expect(text).toContain("2 artifacts");
