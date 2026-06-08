@@ -27,6 +27,7 @@ use tauri::Manager;
 
 use crate::adapter::registry::AdapterRegistry;
 use crate::core::{AgentInstanceInfo, IslandMode, StdinInjectionPolicy};
+use crate::orchestration::attention::AttentionQueue;
 use crate::orchestration::coordinator::Coordinator;
 use crate::orchestration::discussion::DiscussionEngine;
 use crate::pty::manager::PtyManager;
@@ -69,6 +70,8 @@ pub struct AppState {
     pub coordinator: Coordinator,
     /// Coordinator 事件缓冲：最近 10 分钟内的事件（timestamp, event）
     pub recent_events: RwLock<Vec<(u64, crate::core::ConfluxEvent)>>,
+    /// 控制面语义层 P2：后端 owned 的唯一注意力队列（ingest/resolve/defer/ignore/restore）
+    pub attention_queue: RwLock<AttentionQueue>,
 }
 
 impl AppState {
@@ -78,6 +81,12 @@ impl AppState {
     /// CRIT-01 修复：不再使用相对路径，由 run() 中的 setup hook 传入安全目录。
     pub fn new(db_path: &str) -> Self {
         let db_conn = persistence::schema::init_database(db_path).expect("SQLite 数据库初始化失败");
+
+        // 控制面 P2：从持久层恢复注意力队列（活跃 + 被忽略项）
+        let mut attention_queue = AttentionQueue::new();
+        if let Err(e) = attention_queue.reload_from_db(&db_conn) {
+            log::warn!("注意力队列启动恢复失败（继续以空队列运行）: {e}");
+        }
 
         Self {
             pty_manager: Arc::new(PtyManager::new()),
@@ -96,6 +105,7 @@ impl AppState {
             discussion_engine: RwLock::new(DiscussionEngine::new()),
             coordinator: Coordinator,
             recent_events: RwLock::new(Vec::new()),
+            attention_queue: RwLock::new(attention_queue),
         }
     }
 
@@ -301,6 +311,12 @@ pub fn run() {
             commands::orchestration::end_discussion,
             commands::orchestration::toggle_pin_instance,
             commands::orchestration::get_pinned_instances,
+            // 控制面 P2: 注意力队列
+            commands::attention::list_attention_items,
+            commands::attention::resolve_attention_item,
+            commands::attention::defer_attention_item,
+            commands::attention::ignore_attention_item,
+            commands::attention::restore_attention_item,
             // BE-4: 持久化查询
             commands::persistence::list_sessions,
             commands::persistence::query_session_events,

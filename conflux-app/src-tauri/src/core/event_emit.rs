@@ -32,6 +32,8 @@ pub mod channels {
     pub const PTY_OUTPUT: &str = "conflux://pty-output";
     pub const STDIN_INJECTED: &str = "conflux://stdin-injected";
     pub const PROCESS_EXITED: &str = "conflux://process-exited";
+    /// 控制面 P2：注意力队列活跃项变更（前端订阅刷新 attention 列表）
+    pub const ATTENTION_UPDATED: &str = "conflux://attention-updated";
 }
 
 /// 将 ConfluxEvent 派发到统一通道 + 对应的分类型通道
@@ -209,9 +211,64 @@ pub fn emit_conflux_event(app: &AppHandle, event: &ConfluxEvent) {
         }
     }
 
+    // 控制面 P2：把必上浮事件 ingest 进唯一注意力队列，新增项时 emit attention_updated
+    if let Some(state) = app.try_state::<crate::AppState>() {
+        ingest_into_attention_queue(app, &state, event);
+    }
+
     // C-Δ1 Coordinator 激活：事件缓冲 + 协调检测 + 指令注入
     if let Some(state) = app.try_state::<crate::AppState>() {
         trigger_coordinator(app, &state, event);
+    }
+}
+
+/// 控制面 P2：把事件 ingest 进注意力队列；若产生新活跃项则 emit `attention_updated`。
+///
+/// 锁顺序（防死锁）：先 `attention_queue`(write) 再 `db`(Mutex)，与 commands/attention.rs
+/// 一致。两把锁在本函数内**同时持有的临界区仅包住 ingest 一次落库**，emit 在释放锁后进行。
+fn ingest_into_attention_queue(
+    app: &AppHandle,
+    state: &crate::AppState,
+    event: &ConfluxEvent,
+) {
+    // 跳过高频 PtyOutput——map 阶段也会返回 None，这里提前短路省去取锁
+    if matches!(event, ConfluxEvent::PtyOutput { .. }) {
+        return;
+    }
+
+    let new_item = {
+        let mut queue = state.attention_queue.write();
+        let conn = state.db.lock();
+        match queue.ingest(&conn, event) {
+            Ok(item) => item,
+            Err(e) => {
+                log::warn!("注意力队列 ingest 失败: {e}");
+                None
+            }
+        }
+    };
+
+    if new_item.is_some() {
+        emit_attention_updated(app);
+    }
+}
+
+/// emit 注意力队列活跃项快照到前端（释放队列锁后调用，避免 emit 期间持锁）。
+pub fn emit_attention_updated(app: &AppHandle) {
+    let active = if let Some(state) = app.try_state::<crate::AppState>() {
+        let queue = state.attention_queue.read();
+        queue.list_active()
+    } else {
+        return;
+    };
+
+    let payload: Vec<serde_json::Value> = active
+        .iter()
+        .map(crate::orchestration::attention::attention_item_to_json)
+        .collect();
+
+    if let Err(e) = app.emit(channels::ATTENTION_UPDATED, &payload) {
+        log::warn!("emit attention_updated failed: {}", e);
     }
 }
 

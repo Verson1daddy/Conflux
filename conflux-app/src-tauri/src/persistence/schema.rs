@@ -84,6 +84,26 @@ BEGIN
     SELECT RAISE(ABORT, 'audit_events is append-only');
 END;
 
+-- 控制面语义层 P2（F1 契约 §4.1）：注意力队列项（可变状态——非 append-only）
+-- 后端 owned 的唯一注意力队列的持久化镜像；resolve/defer/ignore/restore 走 UPDATE。
+CREATE TABLE IF NOT EXISTS attention_items (
+    attention_item_id TEXT PRIMARY KEY,
+    instance_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    priority TEXT NOT NULL,
+    source_event_id TEXT,
+    interaction_id TEXT,
+    payload_summary TEXT NOT NULL,
+    available_actions TEXT NOT NULL,    -- JSON 数组（InteractionAction[]）
+    jump_back_target_id TEXT,           -- P4 占位字段
+    created_at INTEGER NOT NULL,
+    resolved_at INTEGER,
+    resolution TEXT,                    -- NULL = active；非 NULL = 已处置
+    audit_event_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_attention_items_active ON attention_items(resolution, priority, created_at);
+CREATE INDEX IF NOT EXISTS idx_attention_items_instance_kind ON attention_items(instance_id, kind, resolution);
+
 CREATE TABLE IF NOT EXISTS discussions (
     discussion_id TEXT PRIMARY KEY,
     topic TEXT NOT NULL,
@@ -390,6 +410,7 @@ mod tests {
             "discussion_messages",
             "workspace_layouts",
             "audit_events",
+            "attention_items",
         ];
 
         for table_name in &expected_tables {

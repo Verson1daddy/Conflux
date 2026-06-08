@@ -21,3 +21,6 @@ pub mod query;
 
 /// 控制面语义层 P1: 不可变审计事件持久化
 pub mod audit;
+
+/// 控制面语义层 P2: 注意力队列项持久化
+pub mod attention;

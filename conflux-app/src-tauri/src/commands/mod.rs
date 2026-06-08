@@ -3,6 +3,7 @@
 
 pub mod adapter;
 pub mod agent;
+pub mod attention;
 pub mod orchestration;
 pub mod persistence;
 pub mod pty_ops;

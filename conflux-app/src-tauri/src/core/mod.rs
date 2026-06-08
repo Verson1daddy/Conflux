@@ -17,6 +17,9 @@ pub mod error;
 /// 控制面语义层 P1: 不可变审计事件（AuditEvent 及枚举）
 pub mod audit;
 
+/// 控制面语义层 P2/P3: 待处理交互共享枚举（PendingInteraction 体系）
+pub mod interaction;
+
 /// 控制面 P1.5: stdin 注入唯一入口（MF-1 / CRIT-01，契约 §13.1）
 pub mod injection;
 
@@ -93,6 +96,11 @@ pub use audit::AuditAction;
 pub use audit::AuditActor;
 pub use audit::AuditEvent;
 pub use audit::AuditResult;
+
+// 控制面语义层 P2/P3：待处理交互共享枚举
+pub use interaction::InteractionAction;
+pub use interaction::InteractionKind;
+pub use interaction::InteractionResolution;
 
 // 注入唯一入口（控制面 P1.5 / MF-1）
 pub use injection::inject_with_policy;

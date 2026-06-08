@@ -14,3 +14,6 @@ pub mod context;
 
 /// 主框架协调器
 pub mod coordinator;
+
+/// 控制面语义层 P2: 注意力队列引擎（AttentionItem + AttentionQueue）
+pub mod attention;
