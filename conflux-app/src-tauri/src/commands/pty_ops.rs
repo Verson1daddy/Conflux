@@ -4,26 +4,19 @@
 
 use tauri::{AppHandle, State};
 
-use crate::core::event_emit::emit_conflux_event;
-use crate::core::{ConfluxError, ConfluxEvent, InjectionSource, InstanceId, PermissionDecision};
+use crate::core::injection::inject_with_policy;
+use crate::core::{ConfluxError, InjectionSource, InstanceId, PermissionDecision};
 use crate::AppState;
 
-fn should_enforce_stdin_injection_policy(source: &InjectionSource) -> bool {
-    matches!(
-        source,
-        InjectionSource::OrchestrationAuto | InjectionSource::DiscussionUserMessage
-    )
-}
-
-/// 向 Agent 实例的 stdin 注入内容
+/// 向 Agent 实例的 stdin 注入内容（IPC command）。
 ///
-/// 自动/批量注入前执行 StdinInjectionPolicy 安全检查：
-/// 1. 内容长度不超过 max_injection_length
-/// 2. 速率不超过 rate_limit_per_minute
-/// 3. 不包含 forbidden_patterns 中的模式
+/// MF-1（契约 §13.1）：本命令是 `inject_with_policy` 唯一入口的**薄包装**，
+/// 行为不变。policy 检查（长度 / forbidden_patterns / 速率）、实际注入、
+/// `StdinInjected` emit 全部收敛在 `inject_with_policy` 内。
 ///
-/// 用户在展开终端里直接打字（UserDirect）不走该策略；否则逐键输入会
-/// 被自动注入的限速误伤。
+/// 自动/批量注入（OrchestrationAuto / DiscussionUserMessage）走 StdinInjectionPolicy；
+/// 用户在展开终端里直接打字（UserDirect）不走该策略——否则逐键输入会被自动注入的
+/// 限速误伤。
 ///
 /// # 参数
 /// - `instance_id`: 目标实例标识
@@ -38,96 +31,7 @@ pub async fn inject_stdin(
     source: Option<InjectionSource>,
 ) -> Result<(), ConfluxError> {
     let source_resolved = source.unwrap_or(InjectionSource::UserDirect);
-
-    // 1. 验证实例存在
-    {
-        let map = state.instance_adapter_map.read();
-        if !map.contains_key(&instance_id.0) {
-            return Err(ConfluxError::InstanceNotFound {
-                instance_id: instance_id.0.clone(),
-            });
-        }
-    }
-
-    let enforce_policy = should_enforce_stdin_injection_policy(&source_resolved);
-
-    // 2. 执行 StdinInjectionPolicy 安全检查
-    if enforce_policy {
-        let policy = state.stdin_policy.read();
-
-        // 长度检查
-        if input.len() > policy.max_injection_length {
-            return Err(ConfluxError::OrchestrationError {
-                message: format!(
-                    "注入内容超过最大长度限制: {} > {}",
-                    input.len(),
-                    policy.max_injection_length
-                ),
-            });
-        }
-
-        // 禁止模式检查（case-insensitive）
-        for pattern in &policy.forbidden_patterns {
-            if input.to_lowercase().contains(&pattern.to_lowercase()) {
-                return Err(ConfluxError::OrchestrationError {
-                    message: format!("注入内容包含禁止模式: '{}'", pattern),
-                });
-            }
-        }
-    }
-
-    // 3. 速率限制检查
-    if enforce_policy {
-        let mut counter = state.injection_rate_counter.write();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-
-        let window_start = now - 60; // 1 分钟窗口
-        counter.retain(|&ts| ts > window_start);
-
-        let max_rate = state.stdin_policy.read().rate_limit_per_minute;
-        if counter.len() as u32 >= max_rate {
-            return Err(ConfluxError::OrchestrationError {
-                message: format!(
-                    "注入速率超限: 过去 1 分钟内已注入 {} 次（限制 {}）",
-                    counter.len(),
-                    max_rate
-                ),
-            });
-        }
-
-        counter.push(now);
-    }
-
-    // 4. 执行注入
-    state.pty_manager.inject_stdin(&instance_id.0, &input)?;
-
-    // 5. B3 契约 1：emit StdinInjected 事件
-    // UTF-8 安全截断：避免在多字节字符中间切断导致 panic
-    let preview = if input.len() > 200 {
-        match input.char_indices().take_while(|(i, _)| *i < 200).last() {
-            Some((i, c)) => input[..i + c.len_utf8()].to_string(),
-            None => String::new(),
-        }
-    } else {
-        input.clone()
-    };
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-    let event = ConfluxEvent::StdinInjected {
-        instance_id: instance_id.clone(),
-        source: source_resolved,
-        content_preview: preview,
-        content_length: input.len(),
-        timestamp: now_ms,
-    };
-    emit_conflux_event(&app, &event);
-
-    Ok(())
+    inject_with_policy(&app, &state, &instance_id.0, &input, source_resolved)
 }
 
 /// 调整 Agent 实例的 PTY 终端尺寸
@@ -201,30 +105,23 @@ pub async fn respond_to_permission(
         permission_id
     );
 
-    // 安全说明：此处绕过 StdinInjectionPolicy，因为注入内容固定为 "Y\r"/"N\r"。
-    // 若未来扩展为接受用户自定义内容，必须引入 policy 检查。
-    state.pty_manager.inject_stdin(&instance_id.0, input)?;
-
-    // B3 契约 1：emit StdinInjected 事件（source = PermissionResponse）
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-    let event = ConfluxEvent::StdinInjected {
-        instance_id: instance_id.clone(),
-        source: InjectionSource::PermissionResponse,
-        content_preview: input.to_string(),
-        content_length: input.len(),
-        timestamp: now_ms,
-    };
-    emit_conflux_event(&app, &event);
-
-    Ok(())
+    // MF-1（契约 §13.1）：固定 Y/N 响应也经唯一入口 `inject_with_policy`，不裸调
+    // `pty_manager.inject_stdin`。source=PermissionResponse 不触发 StdinInjectionPolicy
+    // （内容固定为 "Y\r"/"N\r"），行为与原直调一致；同时保证全代码库注入 chokepoint 唯一。
+    // 若未来扩展为接受用户自定义内容，应改用受 policy 的 source。
+    inject_with_policy(
+        &app,
+        &state,
+        &instance_id.0,
+        input,
+        InjectionSource::PermissionResponse,
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::core::injection::should_enforce_stdin_injection_policy;
+    use crate::core::InjectionSource;
 
     #[test]
     fn user_direct_bypasses_automated_injection_policy() {

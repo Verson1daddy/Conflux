@@ -3,8 +3,6 @@
 // 当多个 Agent 状态发生变化时，协调器分析事件流并决定是否需要通知主框架
 
 use crate::core::ConfluxEvent;
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine;
 
 /// 主框架协调器
 ///
@@ -32,11 +30,20 @@ impl Coordinator {
 
     /// 判断是否需要触发协调
     ///
-    /// 冻结契约（contracts_phase_c.md）中的 4 个触发条件：
+    /// 触发条件**仅**基于系统侧结构化信号（status / 完成数 / 错误率 / 静默），
+    /// **绝不**由被审计对象自身的 PTY/输出内容控制。
+    ///
+    /// 触发条件：
     /// 1. 任意 3 个不同实例在 5 分钟内各自完成 >=2 个 TaskCompleted
     /// 2. 任一实例的 ErrorOccurred 数 >= 该实例 TaskCompleted 数的 20%
     /// 3. 连续 10 分钟没有任何 AgentStatusChanged
-    /// 4. 任一实例输出中出现“需要协调”关键词
+    ///
+    /// CRIT-02 / MF-3 修复（契约 §13.4）：原第 4 条「任一实例输出中出现『需要协调』
+    /// 关键词即触发」已**删除**。该条件以被审计 agent 自身的 PTY 输出明文子串作为
+    /// 自动协调注入的开关，构成 confused-deputy / indirect prompt injection 后门——
+    /// 任意被接管 agent 只需打印「需要协调」即可诱发跨 agent 自动注入。触发集合现在
+    /// **只**接受系统侧不可被内容伪造的结构化信号；当无可信触发条件命中时默认返回
+    /// false（宁可不触发，不可被内容触发）。
     pub fn should_coordinate(events: &[ConfluxEvent]) -> bool {
         if events.is_empty() {
             return false;
@@ -54,10 +61,7 @@ impl Coordinator {
             return true;
         }
 
-        if Self::has_coordination_keyword(events) {
-            return true;
-        }
-
+        // CRIT-02 / MF-3：不再有任何基于不可信内容（PTY 输出子串）的触发分支。
         false
     }
 
@@ -133,18 +137,6 @@ impl Coordinator {
         }
     }
 
-    fn has_coordination_keyword(events: &[ConfluxEvent]) -> bool {
-        events.iter().any(|event| match event {
-            ConfluxEvent::PtyOutput { data, .. } => BASE64
-                .decode(data)
-                .ok()
-                .and_then(|bytes| String::from_utf8(bytes).ok())
-                .is_some_and(|text| text.contains("需要协调")),
-            ConfluxEvent::ErrorOccurred { error_message, .. } => error_message.contains("需要协调"),
-            _ => false,
-        })
-    }
-
     fn event_timestamp_secs(event: &ConfluxEvent) -> u64 {
         match event {
             ConfluxEvent::AgentStatusChanged { timestamp, .. } => (*timestamp).max(0) as u64 / 1000,
@@ -170,6 +162,8 @@ impl Coordinator {
 mod tests {
     use super::*;
     use crate::core::{AgentStatus, ErrorSeverity, InstanceId};
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use base64::Engine;
     use std::sync::{Mutex, OnceLock};
 
     static TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -384,15 +378,38 @@ mod tests {
         assert!(Coordinator::should_coordinate(&events));
     }
 
+    /// CRIT-02 / MF-3 后门中和回归测试（契约 §13.4）。
+    ///
+    /// 一条携带「需要协调」明文（base64 编码）的 PtyOutput 事件**不得**再触发自动协调。
+    /// 这是 indirect prompt injection 后门的红线：被审计 agent 的输出内容绝不能成为
+    /// 跨 agent 自动注入的开关。
     #[test]
-    fn test_should_coordinate_keyword_in_output() {
+    fn pty_output_keyword_no_longer_triggers_coordination() {
         let encoded = BASE64.encode("当前任务卡住了，需要协调".as_bytes());
         let events = vec![ConfluxEvent::PtyOutput {
             instance_id: InstanceId("a".to_string()),
             data: encoded,
             timestamp: 1000,
         }];
-        assert!(Coordinator::should_coordinate(&events));
+        assert!(
+            !Coordinator::should_coordinate(&events),
+            "PTY 输出中的『需要协调』子串绝不能触发自动协调（CRIT-02 后门）"
+        );
+    }
+
+    /// 同理：ErrorOccurred 的 error_message 含「需要协调」也不得触发（内容侧后门面）。
+    #[test]
+    fn error_message_keyword_no_longer_triggers_coordination() {
+        let events = vec![ConfluxEvent::ErrorOccurred {
+            instance_id: InstanceId("a".to_string()),
+            error_message: "需要协调".to_string(),
+            severity: ErrorSeverity::Warning,
+            timestamp: 1000,
+        }];
+        assert!(
+            !Coordinator::should_coordinate(&events),
+            "ErrorOccurred 消息中的『需要协调』子串绝不能触发自动协调（CRIT-02 后门）"
+        );
     }
 
     #[test]

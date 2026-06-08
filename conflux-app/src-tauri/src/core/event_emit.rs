@@ -11,7 +11,8 @@
 //   超过 10 分钟的事件自动淘汰；
 //   若 Coordinator::should_coordinate() 返回 true，
 //   则从 ContextAggregator 聚合上下文，构建协调指令，
-//   通过 inject_stdin 注入到目标 PTY，并发出 CoordinationCommand 事件。
+//   通过唯一注入入口 inject_with_policy(OrchestrationAuto) 注入到目标 PTY，
+//   并发出 CoordinationCommand 事件。
 
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -273,7 +274,7 @@ fn to_agent_state_detail(
 /// 1. 缓冲事件（每 10 分钟窗口，超过则淘汰）
 /// 2. 检查是否满足协调条件（Coordinator::should_coordinate）
 /// 3. 若满足，聚合上下文并构建调度指令
-/// 4. 通过 inject_stdin 注入到目标 PTY
+/// 4. 通过唯一注入入口 inject_with_policy(OrchestrationAuto) 注入到目标 PTY
 /// 5. 发出 CoordinationCommand 事件
 fn trigger_coordinator(app: &AppHandle, state: &crate::AppState, event: &ConfluxEvent) {
     if matches!(event, ConfluxEvent::CoordinationCommand { .. }) {
@@ -330,8 +331,21 @@ fn trigger_coordinator(app: &AppHandle, state: &crate::AppState, event: &Conflux
     let command_text = Coordinator::build_coordination_prompt(&context, template);
 
     let input = format!("{command_text}\n");
-    if let Err(e) = state.pty_manager.inject_stdin(&target_instance, &input) {
-        log::warn!("Coordinator: inject_stdin 到 {} 失败: {e}", target_instance);
+    // MF-1 / CRIT-01（契约 §13.1）：coordinator 自动注入改走唯一入口 `inject_with_policy`
+    // （source=OrchestrationAuto，受 StdinInjectionPolicy 闸 + 速率限制 + 后续 P3 审计），
+    // **不再裸调** `pty_manager.inject_stdin`。注意：本路径仍受 env-gated 开关保护
+    // （`auto_injection_enabled()` 默认 off，上方已检查），开关语义不变。
+    if let Err(e) = crate::core::injection::inject_with_policy(
+        app,
+        state,
+        &target_instance,
+        &input,
+        crate::core::InjectionSource::OrchestrationAuto,
+    ) {
+        log::warn!(
+            "Coordinator: inject_with_policy 到 {} 失败: {e}",
+            target_instance
+        );
         return;
     }
 
