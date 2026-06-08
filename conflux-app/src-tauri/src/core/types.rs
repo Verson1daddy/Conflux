@@ -613,7 +613,7 @@ pub struct AgentInstanceInfo {
 // ===== 附录 B1: stdin 注入安全策略 =====
 
 /// stdin 注入来源分类（附录 B1——修复 CRIT-01）
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InjectionSource {
     /// 用户在 UI 中直接输入（无需额外确认）
@@ -689,4 +689,25 @@ pub enum ErrorSeverity {
     Error,
     /// 致命错误
     Fatal,
+}
+
+// ===== 控制面语义层 P1: 事件来源分类 =====
+
+/// 持久化事件的来源通道（F1 控制面契约 §2.1 / §5.4）
+///
+/// 标注 `session_events.source_kind`，区分 hook / PTY / runtime / 用户动作 / 系统。
+/// V1 不强制接 Claude Code hooks，但 `Hook` 通道先留好。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceKind {
+    /// 来自 CLI hook（Claude Code/Codex hooks，V1 预留）
+    Hook,
+    /// 来自 PTY 输出解析
+    Pty,
+    /// 来自运行时（进程生命周期、状态机）
+    Runtime,
+    /// 来自用户动作（UI 触发）
+    UserAction,
+    /// 来自系统内部（编排、讨论引擎等）
+    System,
 }

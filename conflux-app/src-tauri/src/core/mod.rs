@@ -14,6 +14,9 @@ pub mod event_emit;
 /// 统一错误类型（ConfluxError enum）
 pub mod error;
 
+/// 控制面语义层 P1: 不可变审计事件（AuditEvent 及枚举）
+pub mod audit;
+
 // ===== Re-exports（方便外部模块直接使用） =====
 
 // 标识符类型
@@ -80,6 +83,13 @@ pub use types::ErrorSeverity;
 pub use types::EventPriority;
 pub use types::InjectionSource;
 pub use types::StdinInjectionPolicy;
+
+// 控制面语义层 P1
+pub use types::SourceKind;
+pub use audit::AuditAction;
+pub use audit::AuditActor;
+pub use audit::AuditEvent;
+pub use audit::AuditResult;
 
 // 事件
 pub use event::ConfluxEvent;

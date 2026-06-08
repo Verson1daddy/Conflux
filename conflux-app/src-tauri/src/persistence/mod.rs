@@ -18,3 +18,6 @@ pub mod session;
 
 /// 通用查询（布局、讨论等）
 pub mod query;
+
+/// 控制面语义层 P1: 不可变审计事件持久化
+pub mod audit;

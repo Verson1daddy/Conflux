@@ -45,12 +45,44 @@ CREATE TABLE IF NOT EXISTS session_events (
     instance_id TEXT NOT NULL,
     event_type TEXT NOT NULL,
     data TEXT NOT NULL,
-    timestamp INTEGER NOT NULL
+    timestamp INTEGER NOT NULL,
+    -- 控制面语义层 P1（F1 契约 §2.2）：统一 AgentEvent 持久化字段
+    event_id TEXT,          -- 事件唯一 ID（PersistedEvent.event_id）
+    source_kind TEXT,       -- hook|pty|runtime|user_action|system
+    correlation_id TEXT     -- 关联 interaction/audit
     -- HIGH-05 修复：移除 FK 约束，因为 DiscussionMessage 等事件使用 "system" 作为
     -- instance_id，而 agent_instances 表中无对应行。通过应用层保证引用完整性。
 );
 CREATE INDEX IF NOT EXISTS idx_session_events_instance_ts ON session_events(instance_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_session_events_type ON session_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_session_events_corr ON session_events(correlation_id);
+
+-- 控制面语义层 P1（F1 契约 §7.2 + §13.6）：不可变审计事件表（append-only）
+CREATE TABLE IF NOT EXISTS audit_events (
+    audit_event_id TEXT PRIMARY KEY,
+    actor TEXT NOT NULL,
+    action TEXT NOT NULL,
+    instance_id TEXT,
+    source_event_id TEXT,
+    interaction_id TEXT,
+    injection_source TEXT,
+    result TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    rationale_ref TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_events_instance_ts ON audit_events(instance_id, created_at);
+
+-- 不可变触发器（MF-7，§13.6）：审计表仅 INSERT，拒绝 UPDATE/DELETE
+CREATE TRIGGER IF NOT EXISTS audit_events_no_update
+BEFORE UPDATE ON audit_events
+BEGIN
+    SELECT RAISE(ABORT, 'audit_events is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
+BEFORE DELETE ON audit_events
+BEGIN
+    SELECT RAISE(ABORT, 'audit_events is append-only');
+END;
 
 CREATE TABLE IF NOT EXISTS discussions (
     discussion_id TEXT PRIMARY KEY,
@@ -119,8 +151,73 @@ pub fn init_database(path: &str) -> Result<Connection, ConfluxError> {
             message: format!("Schema 初始化失败: {}", e),
         })?;
 
+    // 控制面语义层 P1：存量库幂等迁移（给旧 session_events 补新列）
+    migrate_session_events(&conn)?;
+
     log::debug!("SQLite 数据库初始化完成: {}", path);
     Ok(conn)
+}
+
+/// 给存量 `session_events` 表幂等补齐控制面 P1 新列（F1 契约 §2.2）
+///
+/// 新建库已在 CREATE TABLE 时带上 `event_id`/`source_kind`/`correlation_id`，
+/// 此函数针对**旧 schema**（不含这三列）的存量库做 `ALTER TABLE ADD COLUMN`。
+/// 通过 `PRAGMA table_info` 检测列是否存在，缺哪列补哪列；重复调用不报错（幂等）。
+pub fn migrate_session_events(conn: &Connection) -> Result<(), ConfluxError> {
+    let existing = session_events_columns(conn)?;
+
+    // (列名, 列定义) — 均为可空 TEXT，向后兼容旧数据
+    let new_columns = [
+        ("event_id", "TEXT"),
+        ("source_kind", "TEXT"),
+        ("correlation_id", "TEXT"),
+    ];
+
+    for (col, ty) in new_columns {
+        if !existing.iter().any(|c| c == col) {
+            conn.execute_batch(&format!(
+                "ALTER TABLE session_events ADD COLUMN {} {};",
+                col, ty
+            ))
+            .map_err(|e| ConfluxError::DatabaseError {
+                message: format!("session_events 迁移失败（ADD COLUMN {}）: {}", col, e),
+            })?;
+        }
+    }
+
+    // correlation_id 索引（IF NOT EXISTS 幂等；列存在后再建保证安全）
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_session_events_corr ON session_events(correlation_id);",
+    )
+    .map_err(|e| ConfluxError::DatabaseError {
+        message: format!("idx_session_events_corr 创建失败: {}", e),
+    })?;
+
+    Ok(())
+}
+
+/// 读取 `session_events` 表的当前列名集合（PRAGMA table_info）
+fn session_events_columns(conn: &Connection) -> Result<Vec<String>, ConfluxError> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(session_events)")
+        .map_err(|e| ConfluxError::DatabaseError {
+            message: format!("PRAGMA table_info(session_events) 准备失败: {}", e),
+        })?;
+
+    // PRAGMA table_info 列序：cid(0), name(1), type(2), notnull(3), dflt_value(4), pk(5)
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| ConfluxError::DatabaseError {
+            message: format!("PRAGMA table_info(session_events) 查询失败: {}", e),
+        })?;
+
+    let mut cols = Vec::new();
+    for r in rows {
+        cols.push(r.map_err(|e| ConfluxError::DatabaseError {
+            message: format!("PRAGMA table_info(session_events) 行解析失败: {}", e),
+        })?);
+    }
+    Ok(cols)
 }
 
 pub fn sync_adapter_configs_from_registry(
@@ -269,11 +366,22 @@ mod tests {
         .expect("first agent instance insert should pass after single adapter upsert");
     }
 
+    /// 读取 session_events 当前列名集合（测试辅助）
+    fn columns_of(conn: &Connection, table: &str) -> Vec<String> {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({})", table))
+            .expect("PRAGMA 准备应成功");
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("PRAGMA 查询应成功");
+        rows.map(|r| r.expect("行解析应成功")).collect()
+    }
+
     #[test]
     fn test_init_database_creates_all_tables() {
         let conn = init_database(":memory:").expect("内存数据库初始化应成功");
 
-        // 验证所有 6 张表都存在
+        // 验证所有表都存在（含新增 audit_events）
         let expected_tables = [
             "adapter_configs",
             "agent_instances",
@@ -281,6 +389,7 @@ mod tests {
             "discussions",
             "discussion_messages",
             "workspace_layouts",
+            "audit_events",
         ];
 
         for table_name in &expected_tables {
@@ -321,5 +430,76 @@ mod tests {
             1_000,
         )
         .expect("同步内置 adapter 后首个 agent instance 插入应成功");
+    }
+
+    #[test]
+    fn test_new_db_has_session_events_control_plane_columns() {
+        let conn = init_database(":memory:").expect("内存数据库初始化应成功");
+        let cols = columns_of(&conn, "session_events");
+        for expected in ["event_id", "source_kind", "correlation_id"] {
+            assert!(
+                cols.iter().any(|c| c == expected),
+                "新建库 session_events 应含列 {}",
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_migrate_session_events_upgrades_old_schema() {
+        // 模拟旧 schema：手动建不含控制面新列的 session_events
+        let conn = Connection::open(":memory:").expect("打开内存库应成功");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE session_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                instance_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                data TEXT NOT NULL,
+                timestamp INTEGER NOT NULL
+            );
+            INSERT INTO session_events (instance_id, event_type, data, timestamp)
+            VALUES ('inst-old', 'status_changed', '{}', 100);
+            "#,
+        )
+        .expect("旧 schema 建表 + 插入应成功");
+
+        // 迁移前：不含新列
+        let before = columns_of(&conn, "session_events");
+        for missing in ["event_id", "source_kind", "correlation_id"] {
+            assert!(!before.iter().any(|c| c == missing));
+        }
+
+        // 执行迁移
+        migrate_session_events(&conn).expect("session_events 迁移应成功");
+
+        // 迁移后：三列已补齐，旧数据保留
+        let after = columns_of(&conn, "session_events");
+        for expected in ["event_id", "source_kind", "correlation_id"] {
+            assert!(
+                after.iter().any(|c| c == expected),
+                "迁移后 session_events 应含列 {}",
+                expected
+            );
+        }
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM session_events", [], |r| r.get(0))
+            .expect("计数应成功");
+        assert_eq!(count, 1, "迁移不应丢失旧数据");
+    }
+
+    #[test]
+    fn test_migrate_session_events_is_idempotent() {
+        let conn = init_database(":memory:").expect("内存数据库初始化应成功");
+        // init_database 已调用一次迁移；重复调用必须不报错
+        migrate_session_events(&conn).expect("重复迁移应成功（幂等）");
+        migrate_session_events(&conn).expect("第三次迁移应成功（幂等）");
+
+        let cols = columns_of(&conn, "session_events");
+        // 三列仅各一份，不应重复添加
+        for expected in ["event_id", "source_kind", "correlation_id"] {
+            let n = cols.iter().filter(|c| *c == expected).count();
+            assert_eq!(n, 1, "列 {} 不应被重复添加", expected);
+        }
     }
 }
