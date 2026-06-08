@@ -6,6 +6,7 @@ import { focusAgentCard, respondToPermission } from "@/lib/tauri-bridge";
 import { COMPACT_WINDOW_METRICS, px } from "@/lib/compact-window-metrics";
 import { getLiveAgentInstances } from "@/lib/workspace-status";
 import type { AgentStatus, NotificationItem, PermissionDecision } from "@/types";
+import { ConfluxBrandMark } from "./ConfluxBrandMark";
 
 interface SidebarProps {
   expanded: boolean;
@@ -32,26 +33,6 @@ const STATUS_LABELS: Record<AgentStatus, string> = {
   done: "Done",
   error: "Error",
 };
-
-function LayersIcon() {
-  return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" />
-      <path d="m22 12-8.58 3.91a2 2 0 0 1-1.66 0L3.18 12" opacity="0.6" />
-      <path d="m22 17-8.58 3.91a2 2 0 0 1-1.66 0L3.18 17" opacity="0.3" />
-    </svg>
-  );
-}
 
 function CloseIcon() {
   return (
@@ -195,6 +176,32 @@ function notificationPresentation(notification: NotificationItem) {
   } as const;
 }
 
+function SidebarEmptyAgentState() {
+  return (
+    <div className="sidebar-panel__empty-mascot" aria-label="暂时还没创建 agent 框架哦">
+      <div className="sidebar-panel__mascot-figure" aria-hidden="true">
+        <span className="sidebar-panel__mascot-hair" />
+        <span className="sidebar-panel__mascot-face">
+          <span className="sidebar-panel__mascot-eye sidebar-panel__mascot-eye--left" />
+          <span className="sidebar-panel__mascot-eye sidebar-panel__mascot-eye--right" />
+          <span className="sidebar-panel__mascot-mouth" />
+        </span>
+        <span className="sidebar-panel__mascot-bow" />
+      </div>
+      <span className="sidebar-panel__empty-copy">
+        <span className="sidebar-panel__empty-title">暂时还没创建 agent 框架哦</span>
+        <span className="sidebar-panel__empty-text">创建后会在这里显示运行状态和需要处理的事项</span>
+      </span>
+    </div>
+  );
+}
+
+function SidebarEmptyNotificationState() {
+  return (
+    <p className="sidebar-panel__empty-quiet">暂无需要处理的事项</p>
+  );
+}
+
 export const Sidebar: FC<SidebarProps> = ({
   expanded,
   onCollapse,
@@ -297,14 +304,7 @@ export const Sidebar: FC<SidebarProps> = ({
         } as CSSProperties
       }
     >
-      <header className="sidebar-panel__header">
-        <div className="sidebar-panel__logo">
-          <span className="sidebar-panel__logo-mark" aria-hidden="true">
-            <LayersIcon />
-          </span>
-          <span className="sidebar-panel__header-title">Conflux</span>
-        </div>
-
+      <div className="sidebar-panel__spine">
         <div
           className="sidebar-panel__drag-handle"
           onPointerDown={(event) => {
@@ -315,7 +315,6 @@ export const Sidebar: FC<SidebarProps> = ({
           }}
           aria-hidden="true"
         />
-        <span className="sidebar-panel__header-spacer" aria-hidden="true" />
         <button
           type="button"
           className="sidebar-panel__header-action"
@@ -340,7 +339,7 @@ export const Sidebar: FC<SidebarProps> = ({
         >
           <CloseIcon />
         </button>
-      </header>
+      </div>
 
       <div
         className="sidebar-panel__band"
@@ -352,53 +351,64 @@ export const Sidebar: FC<SidebarProps> = ({
           } as CSSProperties
         }
       >
+        <header className="sidebar-panel__header">
+          <div className="sidebar-panel__logo">
+            <span className="sidebar-panel__logo-mark" aria-hidden="true">
+              <ConfluxBrandMark artwork="light" />
+            </span>
+            <span className="sidebar-panel__header-copy">
+              <span className="sidebar-panel__header-title">Conflux</span>
+              <span className="sidebar-panel__header-subtitle">Assistant rail</span>
+            </span>
+          </div>
+        </header>
         <div className="sidebar-panel__body sidebar-panel__body--stack">
-          <p className="sidebar-panel__eyebrow">Assistant</p>
-        <section className="sidebar-panel__section sidebar-panel__section--plain">
-          <div className="sidebar-panel__section-header">
-            <span className="sidebar-panel__section-label">Agents</span>
-            <span className="sidebar-panel__section-count">{agents.length}</span>
-          </div>
+          <p className="sidebar-panel__eyebrow">Attention</p>
+          <section className="sidebar-panel__section sidebar-panel__section--plain sidebar-panel__section--agents">
+            <div className="sidebar-panel__section-header">
+              <span className="sidebar-panel__section-label">Live agents</span>
+              <span className="sidebar-panel__section-count">{agents.length}</span>
+            </div>
 
-          <div className="sidebar-panel__list">
-            {visibleAgents.length === 0 ? (
-              <p className="sidebar-panel__empty">No active agents</p>
-            ) : (
-              visibleAgents.map((agent) => (
-                <button
-                  key={agent.instance_id}
-                  type="button"
-                  className="sidebar-panel__agent"
-                  onClick={() => void handleAgentClick(agent.instance_id)}
-                >
-                  <span
-                    className="sidebar-panel__agent-dot"
-                    style={{ background: STATUS_DOT_COLORS[agent.status] }}
-                  />
-                  <div className="sidebar-panel__agent-copy">
-                    <span className="sidebar-panel__agent-name">
-                      {agentDisplayLabel(agent)}
+            <div className="sidebar-panel__list">
+              {visibleAgents.length === 0 ? (
+                <SidebarEmptyAgentState />
+              ) : (
+                visibleAgents.map((agent) => (
+                  <button
+                    key={agent.instance_id}
+                    type="button"
+                    className="sidebar-panel__agent"
+                    onClick={() => void handleAgentClick(agent.instance_id)}
+                  >
+                    <span
+                      className="sidebar-panel__agent-dot"
+                      style={{ background: STATUS_DOT_COLORS[agent.status] }}
+                    />
+                    <div className="sidebar-panel__agent-copy">
+                      <span className="sidebar-panel__agent-name">
+                        {agentDisplayLabel(agent)}
+                      </span>
+                      <span className="sidebar-panel__agent-status">
+                        {STATUS_LABELS[agent.status]}
+                      </span>
+                    </div>
+                    <span className="sidebar-panel__agent-time">
+                      {agent.ended_at
+                        ? "ended"
+                        : agent.status === "idle"
+                          ? "--"
+                          : formatElapsedTime(agent.last_activity_at)}
                     </span>
-                    <span className="sidebar-panel__agent-status">
-                      {STATUS_LABELS[agent.status]}
-                    </span>
-                  </div>
-                  <span className="sidebar-panel__agent-time">
-                    {agent.ended_at
-                      ? "ended"
-                      : agent.status === "idle"
-                        ? "--"
-                        : formatElapsedTime(agent.last_activity_at)}
-                  </span>
-                </button>
-              ))
-            )}
-          </div>
-        </section>
+                  </button>
+                ))
+              )}
+            </div>
+          </section>
 
-        <section className="sidebar-panel__section sidebar-panel__section--plain">
+          <section className="sidebar-panel__section sidebar-panel__section--plain sidebar-panel__section--notifications">
           <div className="sidebar-panel__section-header">
-            <span className="sidebar-panel__section-label">Notifications</span>
+            <span className="sidebar-panel__section-label">Needs attention</span>
             <span className="sidebar-panel__section-count">
               {unreadNotifications.length}
             </span>
@@ -406,7 +416,7 @@ export const Sidebar: FC<SidebarProps> = ({
 
           <div className="sidebar-panel__list">
             {activityNotifications.length === 0 ? (
-              <p className="sidebar-panel__empty">No unread notifications</p>
+              <SidebarEmptyNotificationState />
             ) : (
               activityNotifications.map((notification) => {
                 const presentation = notificationPresentation(notification);
@@ -474,30 +484,30 @@ export const Sidebar: FC<SidebarProps> = ({
               })
             )}
           </div>
-        </section>
+          </section>
 
-        <div className="sidebar-panel__footer">
-          <button
-            type="button"
-            className="sidebar-panel__action sidebar-panel__action--primary"
-            onClick={onOpenWorkspace}
-            onPointerDown={(event) => {
-              event.stopPropagation();
-            }}
-          >
-            Open Workspace
-          </button>
-          <button
-            type="button"
-            className="sidebar-panel__action sidebar-panel__action--secondary"
-            onClick={onCollapse}
-            onPointerDown={(event) => {
-              event.stopPropagation();
-            }}
-          >
-            Dismiss
-          </button>
-        </div>
+          <div className="sidebar-panel__footer">
+            <button
+              type="button"
+              className="sidebar-panel__action sidebar-panel__action--primary"
+              onClick={onOpenWorkspace}
+              onPointerDown={(event) => {
+                event.stopPropagation();
+              }}
+            >
+              Open workspace
+            </button>
+            <button
+              type="button"
+              className="sidebar-panel__action sidebar-panel__action--secondary"
+              onClick={onCollapse}
+              onPointerDown={(event) => {
+                event.stopPropagation();
+              }}
+            >
+              Dismiss
+            </button>
+          </div>
         </div>
       </div>
     </aside>

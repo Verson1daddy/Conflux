@@ -11,6 +11,7 @@ import { COMPACT_WINDOW_METRICS, px } from "@/lib/compact-window-metrics";
 import { getLiveAgentInstances } from "@/lib/workspace-status";
 import { useIslandStore } from "@/stores/islandStore";
 import { useAgentStore } from "@/stores/agentStore";
+import { ConfluxBrandMark } from "./ConfluxBrandMark";
 
 interface TopIslandProps {
   presentation?: TopIslandPresentation;
@@ -21,26 +22,6 @@ interface TopIslandProps {
 }
 
 export type TopIslandPresentation = "collapsed" | "expanded";
-
-function LayersIcon({ color = "#B8D4E3", size = 13 }: { color?: string; size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke={color}
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" />
-      <path d="m22 12-8.58 3.91a2 2 0 0 1-1.66 0L3.18 12" opacity="0.6" />
-      <path d="m22 17-8.58 3.91a2 2 0 0 1-1.66 0L3.18 17" opacity="0.3" />
-    </svg>
-  );
-}
 
 function ChevronDownIcon({ color = "rgba(255,255,255,0.72)" }: { color?: string }) {
   return (
@@ -177,10 +158,14 @@ export const TopIsland: FC<TopIslandProps> = ({
   const leadingTone = visualState === "permission" ? "warning" : visualState === "active" ? "success" : "idle";
 
   const collapsedCopy = useMemo(() => {
-    if (activeCount > 0) return `${activeCount} Active`;
-    if (instanceCount > 0) return `${instanceCount} Agents`;
-    return "Idle";
-  }, [activeCount, instanceCount]);
+    if (instanceCount > 0) {
+      return `Conflux · ${instanceCount} ${instanceCount === 1 ? "agent" : "agents"}`;
+    }
+    if (unreadCount > 0) {
+      return `Conflux · ${unreadCount} update${unreadCount === 1 ? "" : "s"}`;
+    }
+    return "Conflux · idle";
+  }, [instanceCount, unreadCount]);
 
   const popoverAnchor = useMemo(
     () => ({
@@ -306,18 +291,11 @@ export const TopIsland: FC<TopIslandProps> = ({
       >
         {!isExpanded ? (
           <>
-            <span
-              className="top-island-capsule__leading"
-              data-indicator="dot"
-              data-tone={leadingTone}
-              aria-hidden="true"
-            >
-              <span className="top-island-capsule__dot" />
+            <span className="top-island-capsule__brand-mark" aria-hidden="true">
+              <ConfluxBrandMark artwork="light" />
             </span>
             <span className="top-island-capsule__primary">{collapsedCopy}</span>
-            <span className="top-island-capsule__compact-mark" aria-hidden="true">
-              <LayersIcon />
-            </span>
+            <span className="top-island-capsule__state-dot" data-visual-state={visualState} aria-hidden="true" />
           </>
         ) : shellKind === "unread" ? (
           <>
@@ -329,7 +307,7 @@ export const TopIsland: FC<TopIslandProps> = ({
             <span className="top-island-capsule__primary">{primaryCopy}</span>
             <span className="top-island-capsule__brand">
               <span className="top-island-capsule__brand-mark" aria-hidden="true">
-                <LayersIcon />
+                <ConfluxBrandMark artwork="light" />
               </span>
             <span className="top-island-capsule__brand-copy">Conflux</span>
             </span>
@@ -349,7 +327,7 @@ export const TopIsland: FC<TopIslandProps> = ({
             <span className="top-island-capsule__separator" aria-hidden="true" />
             <span className="top-island-capsule__brand">
               <span className="top-island-capsule__brand-mark" aria-hidden="true">
-                <LayersIcon />
+                <ConfluxBrandMark artwork="light" />
               </span>
             <span className="top-island-capsule__brand-copy">Conflux</span>
             </span>

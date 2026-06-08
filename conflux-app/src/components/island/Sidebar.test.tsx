@@ -83,7 +83,7 @@ describe("Sidebar notifications", () => {
       .findAll(
         (node) =>
           classNameIncludes(node.props.className, "sidebar-panel__section-header") &&
-          nodeContainsText(node, "Notifications")
+          nodeContainsText(node, "Needs attention")
       )[0];
     const count = notificationHeader?.findByProps({
       className: "sidebar-panel__section-count",
@@ -91,6 +91,156 @@ describe("Sidebar notifications", () => {
 
     expect(count?.children).toEqual(["6"]);
   });
+  it("uses brand rail semantics instead of open or hide labels", async () => {
+    vi.doMock("@/stores/islandStore", () => ({
+      useIslandStore: (
+        selector: (state: {
+          notifications: [];
+          removePermissionRequest: ReturnType<typeof vi.fn>;
+          clearNotification: ReturnType<typeof vi.fn>;
+        }) => unknown
+      ) =>
+        selector({
+          notifications: [],
+          removePermissionRequest: vi.fn(),
+          clearNotification: vi.fn(),
+        }),
+    }));
+    vi.doMock("@/stores/agentStore", () => ({
+      agentDisplayLabel: (agent: { instance_id: string }) => agent.instance_id,
+      useAgentStore: (selector: (state: { instances: Map<string, unknown> }) => unknown) =>
+        selector({ instances: new Map() }),
+    }));
+    vi.doMock("@/lib/tauri-bridge", () => ({
+      focusAgentCard: vi.fn(),
+      respondToPermission: vi.fn(),
+    }));
+
+    const { Sidebar } = await import("./Sidebar");
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        createElement(Sidebar, {
+          expanded: true,
+          onCollapse: () => undefined,
+          onOpenWorkspace: () => undefined,
+          onUndock: vi.fn(),
+        })
+      );
+    });
+
+    const spineBrand = renderer.root.findAllByProps({ className: "sidebar-panel__spine-brand" });
+    const logoBrand = renderer.root.findAllByProps({ className: "sidebar-panel__logo-mark" });
+
+    expect(spineBrand).toHaveLength(0);
+    expect(logoBrand).toHaveLength(1);
+    expect(nodeContainsText(renderer.root, "Conflux")).toBe(true);
+    expect(nodeContainsText(renderer.root, "Assistant rail")).toBe(true);
+    expect(nodeContainsText(renderer.root, "Open workspace")).toBe(true);
+    expect(nodeContainsText(renderer.root, "open")).toBe(false);
+    expect(nodeContainsText(renderer.root, "hide")).toBe(false);
+  });
+
+  it("structures the expanded rail as a spine plus the 220px attention band", async () => {
+    vi.doMock("@/stores/islandStore", () => ({
+      useIslandStore: (
+        selector: (state: {
+          notifications: [];
+          removePermissionRequest: ReturnType<typeof vi.fn>;
+          clearNotification: ReturnType<typeof vi.fn>;
+        }) => unknown
+      ) =>
+        selector({
+          notifications: [],
+          removePermissionRequest: vi.fn(),
+          clearNotification: vi.fn(),
+        }),
+    }));
+    vi.doMock("@/stores/agentStore", () => ({
+      agentDisplayLabel: (agent: { instance_id: string }) => agent.instance_id,
+      useAgentStore: (selector: (state: { instances: Map<string, unknown> }) => unknown) =>
+        selector({ instances: new Map() }),
+    }));
+    vi.doMock("@/lib/tauri-bridge", () => ({
+      focusAgentCard: vi.fn(),
+      respondToPermission: vi.fn(),
+    }));
+
+    const { Sidebar } = await import("./Sidebar");
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        createElement(Sidebar, {
+          expanded: true,
+          onCollapse: () => undefined,
+          onOpenWorkspace: () => undefined,
+          onUndock: vi.fn(),
+        })
+      );
+    });
+
+    const spine = renderer.root.findByProps({ className: "sidebar-panel__spine" });
+    const band = renderer.root.findByProps({ className: "sidebar-panel__band" });
+    const header = renderer.root.findByProps({ className: "sidebar-panel__header" });
+
+    expect(spine.parent?.props["data-testid"]).toBe("sidebar-panel");
+    expect(band.parent?.props["data-testid"]).toBe("sidebar-panel");
+    expect(header.parent?.props.className).toBe("sidebar-panel__band");
+    expect(
+      header.findAll((node) => classNameIncludes(node.props.className, "sidebar-panel__drag-handle"))
+    ).toHaveLength(0);
+  });
+
+  it("keeps the empty sidebar dense without fabricating live data", async () => {
+    vi.doMock("@/stores/islandStore", () => ({
+      useIslandStore: (
+        selector: (state: {
+          notifications: [];
+          removePermissionRequest: ReturnType<typeof vi.fn>;
+          clearNotification: ReturnType<typeof vi.fn>;
+        }) => unknown
+      ) =>
+        selector({
+          notifications: [],
+          removePermissionRequest: vi.fn(),
+          clearNotification: vi.fn(),
+        }),
+    }));
+    vi.doMock("@/stores/agentStore", () => ({
+      agentDisplayLabel: (agent: { instance_id: string }) => agent.instance_id,
+      useAgentStore: (selector: (state: { instances: Map<string, unknown> }) => unknown) =>
+        selector({ instances: new Map() }),
+    }));
+    vi.doMock("@/lib/tauri-bridge", () => ({
+      focusAgentCard: vi.fn(),
+      respondToPermission: vi.fn(),
+    }));
+
+    const { Sidebar } = await import("./Sidebar");
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        createElement(Sidebar, {
+          expanded: true,
+          onCollapse: () => undefined,
+          onOpenWorkspace: () => undefined,
+          onUndock: vi.fn(),
+        })
+      );
+    });
+
+    expect(renderer.root.findAllByProps({ className: "sidebar-panel__empty-mascot" })).toHaveLength(1);
+    expect(renderer.root.findAllByProps({ className: "sidebar-panel__empty-agent-slot" })).toHaveLength(0);
+    expect(renderer.root.findAllByProps({ className: "sidebar-panel__empty-notification-slot" })).toHaveLength(0);
+    expect(nodeContainsText(renderer.root, "暂时还没创建 agent 框架哦")).toBe(true);
+    expect(nodeContainsText(renderer.root, "创建后会在这里显示运行状态和需要处理的事项")).toBe(true);
+    expect(nodeContainsText(renderer.root, "Standing by")).toBe(false);
+    expect(nodeContainsText(renderer.root, "Quiet queue")).toBe(false);
+    expect(nodeContainsText(renderer.root, "Boundary: monitor, approve, jump back.")).toBe(false);
+    expect(renderer.root.findAllByProps({ className: "sidebar-panel__agent" })).toHaveLength(0);
+    expect(renderer.root.findAllByProps({ className: "sidebar-panel__notification" })).toHaveLength(0);
+  });
+
   it("renders an undock action in the sidebar header", async () => {
     vi.doMock("@/stores/islandStore", () => ({
       useIslandStore: (

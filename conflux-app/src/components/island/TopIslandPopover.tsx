@@ -18,6 +18,7 @@ import { respondToPermission, setTopIslandPopoverHeight } from "@/lib/tauri-brid
 import { useIslandStore } from "@/stores/islandStore";
 import { useAgentStore } from "@/stores/agentStore";
 import type { AgentInstanceInfo, NotificationItem, PermissionDecision } from "@/types";
+import { ConfluxBrandMark } from "./ConfluxBrandMark";
 
 interface TopIslandPopoverProps {
   anchor: { x: number; y: number };
@@ -353,8 +354,14 @@ export const TopIslandPopover: FC<TopIslandPopoverProps> = ({
         ),
       } as CSSProperties}
     >
-      <div className="top-island-bubble__eyebrow-row">
-        <span className="top-island-bubble__eyebrow">{formatViewTitle(view)}</span>
+      <div className="top-island-bubble__brand-row">
+        <span className="top-island-bubble__brand-mark" aria-hidden="true">
+          <ConfluxBrandMark artwork="light" />
+        </span>
+        <span className="top-island-bubble__brand-copy">
+          <span className="top-island-bubble__brand-title">Conflux attention</span>
+          <span className="top-island-bubble__eyebrow">{formatViewTitle(view)}</span>
+        </span>
         <span className="top-island-bubble__status" data-visual-state={visualState}>
           {formatStatusLabel(visualState)}
         </span>
@@ -389,7 +396,7 @@ export const TopIslandPopover: FC<TopIslandPopoverProps> = ({
           onClick={onRestoreWorkspace}
           className="top-island-popover__button top-island-bubble__button top-island-popover__button--primary top-island-bubble__button--primary"
         >
-          Open Workspace
+          Open workspace
         </button>
         <button
           type="button"

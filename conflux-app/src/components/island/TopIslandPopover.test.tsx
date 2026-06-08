@@ -92,6 +92,43 @@ describe("TopIslandPopover lifecycle", () => {
     vi.resetModules();
   });
 
+  it("uses a branded attention heading", () => {
+    let renderer!: TestRenderer.ReactTestRenderer;
+
+    act(() => {
+      renderer = TestRenderer.create(
+        createElement(TopIslandPopover, {
+          anchor: { x: 200, y: 64 },
+          view: "details",
+          onClose: vi.fn(),
+          onRestoreWorkspace: vi.fn(),
+        }),
+        {
+          createNodeMock: (element) =>
+            typeof element.props.className === "string" &&
+            element.props.className.includes("top-island-popover")
+              ? createPopoverNode()
+              : null,
+        }
+      );
+    });
+
+    expect(
+      renderer.root.findAll((node) => node.children.includes("Conflux attention")).length
+    ).toBeGreaterThan(0);
+    expect(
+      renderer.root.findAll(
+        (node) =>
+          node.type === "img" &&
+          typeof node.props.className === "string" &&
+          node.props.className.includes("conflux-brand-mark")
+      ).length
+    ).toBeGreaterThan(0);
+    expect(
+      renderer.root.findAll((node) => node.children.includes("Open workspace")).length
+    ).toBeGreaterThan(0);
+  });
+
   it("ignores stale resize callbacks after the popover unmounts", () => {
     let renderer!: TestRenderer.ReactTestRenderer;
 
