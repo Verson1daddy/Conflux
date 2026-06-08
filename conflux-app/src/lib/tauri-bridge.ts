@@ -516,7 +516,6 @@ export async function setIslandDetailPresentation(
     | "none"
     | "top_island_expanded"
     | "top_island_popover"
-    | "float_ball_panel"
     | "sidebar_expanded"
     | "sidebar_floating",
   mode?: IslandMode
@@ -526,7 +525,6 @@ export async function setIslandDetailPresentation(
       | "none"
       | "top_island_expanded"
       | "top_island_popover"
-      | "float_ball_panel"
       | "sidebar_expanded"
       | "sidebar_floating";
     mode?: IslandMode;
@@ -543,14 +541,6 @@ export async function setTopIslandPopoverHeight(height: number): Promise<void> {
   return invoke<void>("set_top_island_popover_height", {
     height,
   });
-}
-
-export async function showFloatBallPanelWindow(): Promise<void> {
-  return invoke<void>("show_float_ball_panel_window");
-}
-
-export async function hideFloatBallPanelWindow(): Promise<void> {
-  return invoke<void>("hide_float_ball_panel_window");
 }
 
 export async function markIslandWindowReady(): Promise<void> {

@@ -7,17 +7,13 @@ use crate::AppState;
 
 const WORKSPACE_WINDOW_LABEL: &str = "main";
 const ISLAND_WINDOW_LABEL: &str = "island";
-const FLOAT_PANEL_WINDOW_LABEL: &str = "float_panel";
 const APP_INDEX_URL: &str = "index.html";
 const ISLAND_WINDOW_URL: &str = "index.html?confluxWindow=island";
-const FLOAT_PANEL_WINDOW_URL: &str = "index.html?confluxWindow=float_panel";
 const COMPACT_DETAIL_RESET_EVENT: &str = "compact-detail-reset";
 const DETAIL_RESET_SOURCE_ISLAND_WINDOW: &str = "island_window";
-const DETAIL_RESET_SOURCE_FLOAT_PANEL: &str = "float_panel";
 const DETAIL_NONE: &str = "none";
 const DETAIL_TOP_ISLAND_EXPANDED: &str = "top_island_expanded";
 const DETAIL_TOP_ISLAND_POPOVER: &str = "top_island_popover";
-const DETAIL_FLOAT_BALL_PANEL: &str = "float_ball_panel";
 const DETAIL_SIDEBAR_EXPANDED: &str = "sidebar_expanded";
 const DETAIL_SIDEBAR_FLOATING: &str = "sidebar_floating";
 const TOP_ISLAND_EXPANDED_WIDTH: f64 = 420.0;
@@ -32,11 +28,6 @@ const SIDEBAR_DOCK_TAB_WIDTH: f64 = 48.0;
 const SIDEBAR_DOCK_TAB_HEIGHT: f64 = 260.0;
 const SIDEBAR_EXPANDED_WIDTH: f64 = 300.0;
 const SIDEBAR_FLOATING_HEIGHT: f64 = 720.0;
-const FLOAT_BALL_BUTTON_SIZE: f64 = 52.0;
-const FLOAT_BALL_WINDOW_PADDING: f64 = 6.0;
-const FLOAT_BALL_WINDOW_SIZE: f64 = FLOAT_BALL_BUTTON_SIZE + FLOAT_BALL_WINDOW_PADDING * 2.0;
-const FLOAT_BALL_PANEL_WIDTH: f64 = 340.0;
-const FLOAT_BALL_PANEL_HEIGHT: f64 = 336.0;
 
 #[tauri::command]
 pub async fn open_workspace_window(app: tauri::AppHandle) -> Result<(), ConfluxError> {
@@ -164,16 +155,6 @@ pub async fn set_top_island_popover_height(
 }
 
 #[tauri::command]
-pub async fn show_float_ball_panel_window(app: tauri::AppHandle) -> Result<(), ConfluxError> {
-    show_float_ball_panel_window_for_app(&app)
-}
-
-#[tauri::command]
-pub async fn hide_float_ball_panel_window(app: tauri::AppHandle) -> Result<(), ConfluxError> {
-    hide_float_ball_panel_window_for_app(&app)
-}
-
-#[tauri::command]
 pub async fn mark_island_window_ready(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
@@ -189,7 +170,7 @@ pub async fn quit_application<R: Runtime>(app: tauri::AppHandle<R>) -> Result<()
 }
 
 pub(crate) fn should_restore_window_state(label: &str) -> bool {
-    label != ISLAND_WINDOW_LABEL && label != FLOAT_PANEL_WINDOW_LABEL
+    label != ISLAND_WINDOW_LABEL
 }
 
 pub(crate) fn show_workspace_only_for_app<R: Runtime>(
@@ -197,7 +178,6 @@ pub(crate) fn show_workspace_only_for_app<R: Runtime>(
     state: &AppState,
 ) -> Result<(), ConfluxError> {
     destroy_island_window_for_app(app, state)?;
-    destroy_float_panel_window_for_app(app)?;
 
     let workspace_window = get_workspace_window(app)?;
     workspace_window.show().map_err(window_error)?;
@@ -211,14 +191,7 @@ pub(crate) fn show_compact_mode_only_for_app<R: Runtime>(
     state: &AppState,
     mode: IslandMode,
 ) -> Result<(), ConfluxError> {
-    let should_keep_float_panel_warm = mode == IslandMode::FloatBall;
-    if !should_keep_float_panel_warm {
-        destroy_float_panel_window_for_app(app)?;
-    }
     prepare_compact_mode_only_for_app(app, state, mode)?;
-    if should_keep_float_panel_warm {
-        prepare_hidden_float_panel_window_for_app(app)?;
-    }
     present_pending_compact_mode_for_app(app, state)?;
     schedule_compact_ready_fallback(app.clone());
     Ok(())
@@ -229,7 +202,6 @@ pub(crate) fn hide_island_window_for_app<R: Runtime>(
     state: &AppState,
 ) -> Result<(), ConfluxError> {
     destroy_island_window_for_app(app, state)?;
-    destroy_float_panel_window_for_app(app)?;
     Ok(())
 }
 
@@ -250,7 +222,6 @@ fn prepare_compact_mode_only_for_app<R: Runtime>(
     if previous_mode != mode {
         reset_compact_window_state(state);
         emit_compact_detail_reset(app, DETAIL_RESET_SOURCE_ISLAND_WINDOW)?;
-        destroy_float_panel_window_for_app(app)?;
     }
 
     {
@@ -419,77 +390,6 @@ fn destroy_island_window_for_app<R: Runtime>(
     Ok(true)
 }
 
-fn show_float_ball_panel_window_for_app<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> Result<(), ConfluxError> {
-    let panel_window = ensure_float_panel_window(app)?;
-    let config = float_panel_window_config();
-
-    apply_island_window_config_for_app(
-        app,
-        &panel_window,
-        config.width,
-        config.height,
-        config.placement,
-        config.always_on_top,
-    )?;
-    panel_window.show().map_err(window_error)?;
-    panel_window.unminimize().map_err(window_error)?;
-    reassert_compact_window_topmost(&panel_window, true)?;
-    Ok(())
-}
-
-fn hide_float_ball_panel_window_for_app<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> Result<(), ConfluxError> {
-    hide_float_panel_window_for_app(app)?;
-    emit_compact_detail_reset(app, DETAIL_RESET_SOURCE_FLOAT_PANEL)?;
-    Ok(())
-}
-
-fn prepare_hidden_float_panel_window_for_app<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> Result<(), ConfluxError> {
-    let panel_window = ensure_float_panel_window(app)?;
-    let was_visible = panel_window.is_visible().map_err(window_error)?;
-    let config = float_panel_window_config();
-
-    apply_island_window_config_for_app(
-        app,
-        &panel_window,
-        config.width,
-        config.height,
-        config.placement,
-        config.always_on_top,
-    )?;
-    if !was_visible {
-        panel_window.hide().map_err(window_error)?;
-    }
-    Ok(())
-}
-
-fn hide_float_panel_window_for_app<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> Result<bool, ConfluxError> {
-    let Some(panel_window) = app.get_webview_window(FLOAT_PANEL_WINDOW_LABEL) else {
-        return Ok(false);
-    };
-
-    panel_window.hide().map_err(window_error)?;
-    Ok(true)
-}
-
-fn destroy_float_panel_window_for_app<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> Result<bool, ConfluxError> {
-    let Some(panel_window) = app.get_webview_window(FLOAT_PANEL_WINDOW_LABEL) else {
-        return Ok(false);
-    };
-
-    panel_window.destroy().map_err(window_error)?;
-    Ok(true)
-}
-
 fn emit_compact_detail_reset<R: Runtime>(
     app: &tauri::AppHandle<R>,
     source: &str,
@@ -520,7 +420,6 @@ fn set_island_mode_and_refresh<R: Runtime>(
         return show_compact_mode_only_for_app(app, state, mode);
     }
 
-    let should_keep_float_panel_warm = mode == IslandMode::FloatBall;
     {
         let mut current_mode = state.island_mode.write();
         *current_mode = mode.clone();
@@ -559,12 +458,6 @@ fn set_island_mode_and_refresh<R: Runtime>(
                 island_window.set_focus().map_err(window_error)?;
             }
         }
-    }
-
-    if should_keep_float_panel_warm {
-        prepare_hidden_float_panel_window_for_app(app)?;
-    } else {
-        destroy_float_panel_window_for_app(app)?;
     }
 
     Ok(())
@@ -615,40 +508,6 @@ fn ensure_island_window<R: Runtime>(
     Ok(window)
 }
 
-fn ensure_float_panel_window<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> Result<WebviewWindow<R>, ConfluxError> {
-    if let Some(window) = app.get_webview_window(FLOAT_PANEL_WINDOW_LABEL) {
-        return Ok(window);
-    }
-
-    let config = float_panel_window_config();
-    let monitor = monitor_metrics_for_app(app)?;
-    let position =
-        calculate_window_position(&monitor, config.width, config.height, &config.placement)?;
-
-    let window = tauri::WebviewWindowBuilder::new(
-        app,
-        FLOAT_PANEL_WINDOW_LABEL,
-        tauri::WebviewUrl::App(compact_webview_url_for_label(FLOAT_PANEL_WINDOW_LABEL).into()),
-    )
-    .title("Conflux Float Panel")
-    .visible(false)
-    .transparent(true)
-    .decorations(false)
-    .resizable(false)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .inner_size(config.width, config.height)
-    .position(position.x, position.y)
-    .build()
-    .map_err(window_error)?;
-
-    window.set_shadow(false).map_err(window_error)?;
-
-    Ok(window)
-}
-
 fn get_workspace_window<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<WebviewWindow<R>, ConfluxError> {
@@ -661,7 +520,6 @@ fn get_workspace_window<R: Runtime>(
 fn compact_webview_url_for_label(label: &str) -> &'static str {
     match label {
         ISLAND_WINDOW_LABEL => ISLAND_WINDOW_URL,
-        FLOAT_PANEL_WINDOW_LABEL => FLOAT_PANEL_WINDOW_URL,
         _ => APP_INDEX_URL,
     }
 }
@@ -685,7 +543,6 @@ enum IslandDetailPresentation {
     None,
     TopIslandExpanded,
     TopIslandPopover,
-    FloatBallPanel,
     SidebarExpanded,
     SidebarFloating,
 }
@@ -696,8 +553,6 @@ enum WindowPlacement {
     RightEdgeCentered,
     RightEdgeFullHeight,
     TopRightInset { x_margin: f64, y_margin: f64 },
-    BottomRight,
-    BottomRightOffset { x_margin: f64, y_margin: f64 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -896,24 +751,6 @@ fn island_window_config_for_detail(
             },
             always_on_top: true,
         },
-        IslandMode::FloatBall => IslandWindowConfig {
-            width: FLOAT_BALL_WINDOW_SIZE,
-            height: FLOAT_BALL_WINDOW_SIZE,
-            placement: WindowPlacement::BottomRight,
-            always_on_top: true,
-        },
-    }
-}
-
-fn float_panel_window_config() -> IslandWindowConfig {
-    IslandWindowConfig {
-        width: FLOAT_BALL_PANEL_WIDTH,
-        height: FLOAT_BALL_PANEL_HEIGHT,
-        placement: WindowPlacement::BottomRightOffset {
-            x_margin: 16.0,
-            y_margin: FLOAT_BALL_WINDOW_SIZE + 24.0,
-        },
-        always_on_top: true,
     }
 }
 
@@ -1071,9 +908,6 @@ fn detail_presentation_for_mode(mode: &IslandMode, detail: &str) -> IslandDetail
         (IslandMode::TopIsland, DETAIL_TOP_ISLAND_POPOVER) => {
             IslandDetailPresentation::TopIslandPopover
         }
-        (IslandMode::FloatBall, DETAIL_FLOAT_BALL_PANEL) => {
-            IslandDetailPresentation::FloatBallPanel
-        }
         (IslandMode::Sidebar, DETAIL_SIDEBAR_EXPANDED) => IslandDetailPresentation::SidebarExpanded,
         (IslandMode::Sidebar, DETAIL_SIDEBAR_FLOATING) => IslandDetailPresentation::SidebarFloating,
         _ => IslandDetailPresentation::None,
@@ -1085,7 +919,6 @@ fn detail_key_for_presentation(detail: IslandDetailPresentation) -> &'static str
         IslandDetailPresentation::None => DETAIL_NONE,
         IslandDetailPresentation::TopIslandExpanded => DETAIL_TOP_ISLAND_EXPANDED,
         IslandDetailPresentation::TopIslandPopover => DETAIL_TOP_ISLAND_POPOVER,
-        IslandDetailPresentation::FloatBallPanel => DETAIL_FLOAT_BALL_PANEL,
         IslandDetailPresentation::SidebarExpanded => DETAIL_SIDEBAR_EXPANDED,
         IslandDetailPresentation::SidebarFloating => DETAIL_SIDEBAR_FLOATING,
     }
@@ -1096,7 +929,6 @@ fn detail_presentation_label(detail: IslandDetailPresentation) -> &'static str {
         IslandDetailPresentation::None => "none",
         IslandDetailPresentation::TopIslandExpanded => "top_island_expanded",
         IslandDetailPresentation::TopIslandPopover => "top_island_popover",
-        IslandDetailPresentation::FloatBallPanel => "float_ball_panel",
         IslandDetailPresentation::SidebarExpanded => "sidebar_expanded",
         IslandDetailPresentation::SidebarFloating => "sidebar_floating",
     }
@@ -1143,10 +975,6 @@ fn window_placement_label(placement: WindowPlacement) -> String {
         WindowPlacement::RightEdgeFullHeight => "right_edge_full_height".to_string(),
         WindowPlacement::TopRightInset { x_margin, y_margin } => {
             format!("top_right_inset:{x_margin}:{y_margin}")
-        }
-        WindowPlacement::BottomRight => "bottom_right".to_string(),
-        WindowPlacement::BottomRightOffset { x_margin, y_margin } => {
-            format!("bottom_right_offset:{x_margin}:{y_margin}")
         }
     }
 }
@@ -1314,17 +1142,6 @@ fn calculate_window_position(
             let y = monitor.origin_y + y_margin;
             tauri::LogicalPosition::new(x, y)
         }
-        WindowPlacement::BottomRight => {
-            let margin = 16.0;
-            let x = monitor.origin_x + monitor.width - width - margin;
-            let y = monitor.origin_y + monitor.height - height - margin;
-            tauri::LogicalPosition::new(x, y)
-        }
-        WindowPlacement::BottomRightOffset { x_margin, y_margin } => {
-            let x = monitor.origin_x + monitor.width - width - x_margin;
-            let y = monitor.origin_y + monitor.height - height - y_margin;
-            tauri::LogicalPosition::new(x, y)
-        }
     };
 
     Ok(position)
@@ -1356,7 +1173,6 @@ mod tests {
     #[test]
     fn island_window_is_skipped_from_initial_restore() {
         assert!(!should_restore_window_state("island"));
-        assert!(!should_restore_window_state("float_panel"));
         assert!(should_restore_window_state("main"));
         assert!(should_restore_window_state("workspace"));
     }
@@ -1370,16 +1186,10 @@ mod tests {
         let sidebar = island_window_config(&IslandMode::Sidebar);
         assert_eq!(sidebar.width, 48.0);
         assert_eq!(sidebar.height, 260.0);
-
-        let float_ball = island_window_config(&IslandMode::FloatBall);
-        assert_eq!(FLOAT_BALL_BUTTON_SIZE, 52.0);
-        assert_eq!(FLOAT_BALL_WINDOW_PADDING, 6.0);
-        assert_eq!(float_ball.width, 64.0);
-        assert_eq!(float_ball.height, 64.0);
     }
 
     #[test]
-    fn detail_presentations_do_not_resize_the_float_ball_window() {
+    fn detail_presentations_keep_top_island_window_shape() {
         let top =
             island_window_config_for_detail(&IslandMode::TopIsland, IslandDetailPresentation::None);
         let top_expanded = island_window_config_for_detail(
@@ -1395,13 +1205,6 @@ mod tests {
         );
         assert_eq!(top_detail.width, top.width);
         assert_eq!(top_detail.height, 244.0);
-
-        let float_detail = island_window_config_for_detail(
-            &IslandMode::FloatBall,
-            IslandDetailPresentation::FloatBallPanel,
-        );
-        assert_eq!(float_detail.width, 64.0);
-        assert_eq!(float_detail.height, 64.0);
     }
 
     #[test]
@@ -1432,28 +1235,15 @@ mod tests {
             DETAIL_NONE
         ));
         assert!(!should_apply_top_island_popover_height(
-            &IslandMode::FloatBall,
-            DETAIL_TOP_ISLAND_POPOVER
-        ));
-        assert!(!should_apply_top_island_popover_height(
             &IslandMode::Sidebar,
             DETAIL_TOP_ISLAND_POPOVER
         ));
     }
 
     #[test]
-    fn float_panel_uses_a_separate_window_shape() {
-        let panel = float_panel_window_config();
-        assert_eq!(panel.width, 340.0);
-        assert_eq!(panel.height, 336.0);
-        assert!(panel.always_on_top);
-    }
-
-    #[test]
     fn compact_surfaces_are_configured_above_other_windows() {
         assert!(island_window_config(&IslandMode::TopIsland).always_on_top);
         assert!(island_window_config(&IslandMode::Sidebar).always_on_top);
-        assert!(island_window_config(&IslandMode::FloatBall).always_on_top);
     }
 
     #[test]
@@ -1592,7 +1382,6 @@ mod tests {
     #[test]
     fn close_action_compact_modes_are_not_quit() {
         assert!(!is_quit_action("top_island"));
-        assert!(!is_quit_action("float_ball"));
         assert!(!is_quit_action("sidebar"));
         assert!(is_quit_action("quit"));
     }
@@ -1602,10 +1391,6 @@ mod tests {
         assert_eq!(
             compact_mode_for_action("top_island"),
             Some(IslandMode::TopIsland)
-        );
-        assert_eq!(
-            compact_mode_for_action("float_ball"),
-            Some(IslandMode::FloatBall)
         );
         assert_eq!(
             compact_mode_for_action("sidebar"),
@@ -1619,10 +1404,6 @@ mod tests {
         assert_eq!(
             compact_webview_url_for_label(ISLAND_WINDOW_LABEL),
             "index.html?confluxWindow=island"
-        );
-        assert_eq!(
-            compact_webview_url_for_label(FLOAT_PANEL_WINDOW_LABEL),
-            "index.html?confluxWindow=float_panel"
         );
     }
 
@@ -1762,7 +1543,6 @@ pub(crate) fn is_quit_action(action: &str) -> bool {
 pub(crate) fn compact_mode_for_action(action: &str) -> Option<IslandMode> {
     match action {
         "top_island" => Some(IslandMode::TopIsland),
-        "float_ball" => Some(IslandMode::FloatBall),
         "sidebar" => Some(IslandMode::Sidebar),
         _ => None,
     }

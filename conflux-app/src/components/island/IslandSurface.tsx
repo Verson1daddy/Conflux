@@ -7,7 +7,6 @@ interface IslandSurfaceProps extends PropsWithChildren {
 
 const SURFACE_CLASS_BY_MODE: Record<IslandMode, string> = {
   top_island: "flex h-full w-full items-start justify-center",
-  float_ball: "grid h-full w-full place-items-center",
   sidebar: "grid h-full w-full place-items-center",
 };
 

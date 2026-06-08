@@ -225,7 +225,7 @@ export async function onIslandModeChanged(
   });
 }
 
-export type CompactDetailResetSource = "island_window" | "float_panel";
+export type CompactDetailResetSource = "island_window";
 
 export async function onCompactDetailReset(
   callback: (source: CompactDetailResetSource) => void

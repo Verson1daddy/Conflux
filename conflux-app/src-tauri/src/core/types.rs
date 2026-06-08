@@ -322,8 +322,6 @@ pub enum IslandMode {
     TopIsland,
     /// 侧边栏模式
     Sidebar,
-    /// 悬浮球模式
-    FloatBall,
 }
 
 // ===== 工作台布局 =====

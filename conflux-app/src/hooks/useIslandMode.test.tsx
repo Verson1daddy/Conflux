@@ -104,7 +104,7 @@ describe("useIslandMode hydration", () => {
 
   it("lets compact island windows use the backend mode as the native geometry authority", async () => {
     const setMode = vi.fn();
-    const getIslandMode = vi.fn().mockResolvedValue("float_ball");
+    const getIslandMode = vi.fn().mockResolvedValue("sidebar");
     const listener = vi.fn().mockResolvedValue(() => undefined);
     const localStorageMock = {
       getItem: vi.fn((key: string) =>
@@ -175,7 +175,7 @@ describe("useIslandMode hydration", () => {
     });
 
     expect(getIslandMode).toHaveBeenCalledTimes(1);
-    expect(setMode).toHaveBeenCalledWith("float_ball");
+    expect(setMode).toHaveBeenCalledWith("sidebar");
     expect(snapshots[snapshots.length - 1].isHydrated).toBe(true);
 
     await act(async () => {
@@ -185,7 +185,7 @@ describe("useIslandMode hydration", () => {
 
   it("lets compact island windows accept backend mode-change events over stale local preference", async () => {
     const setMode = vi.fn();
-    const getIslandMode = vi.fn().mockResolvedValue("float_ball");
+    const getIslandMode = vi.fn().mockResolvedValue("sidebar");
     const genericListener = vi.fn().mockResolvedValue(() => undefined);
     let islandModeHandler: ((mode: IslandMode) => void) | null = null;
 

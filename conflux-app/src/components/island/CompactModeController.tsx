@@ -8,10 +8,8 @@ import {
   useState,
 } from "react";
 import { onCompactDetailReset } from "@/lib/event-listener";
-import { writeFloatPanelSnapshot } from "@/lib/float-panel-snapshot";
 import {
   setIslandDetailPresentation,
-  showFloatBallPanelWindow,
   showWorkspaceOnly,
 } from "@/lib/tauri-bridge";
 import {
@@ -21,7 +19,6 @@ import {
 } from "@/lib/compact-mode";
 import { useIslandStore } from "@/stores/islandStore";
 import type { IslandMode } from "@/types";
-import { FloatBall } from "./FloatBall";
 import { IslandSurface } from "./IslandSurface";
 import { Sidebar } from "./Sidebar";
 import { SidebarHotzone } from "./SidebarHotzone";
@@ -124,8 +121,6 @@ function reduceSidebarState(state: SidebarState, action: SidebarAction): Sidebar
 
 export const CompactModeController: FC = () => {
   const mode = useIslandStore((state) => state.mode) as IslandMode;
-  const notifications = useIslandStore((state) => state.notifications);
-  const pendingPermissions = useIslandStore((state) => state.pendingPermissions);
   const pendingPermissionCount = useIslandStore((state) => state.pendingPermissions.length);
   const topIslandUnreadCount = useIslandStore((state) => state.unreadCount);
   const [detail, setDetail] = useState<CompactDetailState>({ kind: "none" });
@@ -136,7 +131,6 @@ export const CompactModeController: FC = () => {
   const [sidebarCloseEpoch, setSidebarCloseEpoch] = useState(0);
   const [topIslandPopoverWindowExpanded, setTopIslandPopoverWindowExpanded] = useState(false);
   const collapseTimeoutRef = useRef<number | null>(null);
-  const floatBallOpeningRef = useRef(false);
   const sidebarPresentationRequestRef = useRef(0);
 
   const clearSidebarCollapseTimeout = useCallback(() => {
@@ -233,32 +227,6 @@ export const CompactModeController: FC = () => {
     [detail.kind, mode],
   );
 
-  const toggleFloatBallPanel = useCallback(() => {
-    if (floatBallOpeningRef.current) {
-      return;
-    }
-
-    floatBallOpeningRef.current = true;
-    writeFloatPanelSnapshot({
-      notifications,
-      pendingPermissions,
-    });
-    void showFloatBallPanelWindow()
-      .then(() => {
-        setDetail((currentDetail) =>
-          nextDetailState({
-            currentMode: mode,
-            currentDetail,
-            action: { type: "open_float_ball_panel" },
-          })
-        );
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        floatBallOpeningRef.current = false;
-      });
-  }, [mode, notifications, pendingPermissions]);
-
   const sidebarExpanded = sidebar.intent !== "docked_idle";
   const sidebarDocked = sidebar.intent !== "floating_open";
   const showSidebarHotzone = sidebar.intent === "docked_idle";
@@ -308,17 +276,6 @@ export const CompactModeController: FC = () => {
   }, [clearSidebarCollapseTimeout, mode, sidebar.collapseArmed, sidebarWindowExpanded]);
 
   useEffect(() => clearSidebarCollapseTimeout, [clearSidebarCollapseTimeout]);
-
-  useEffect(() => {
-    if (detail.kind !== "float_ball_panel") {
-      return;
-    }
-
-    writeFloatPanelSnapshot({
-      notifications,
-      pendingPermissions,
-    });
-  }, [detail.kind, notifications, pendingPermissions]);
 
   useEffect(() => {
     if (mode !== "sidebar") {
@@ -395,16 +352,7 @@ export const CompactModeController: FC = () => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
 
-    onCompactDetailReset((source) => {
-      if (source === "float_panel") {
-        setDetail((currentDetail) =>
-          currentDetail.kind === "float_ball_panel"
-            ? { kind: "none" }
-            : currentDetail
-        );
-        return;
-      }
-
+    onCompactDetailReset(() => {
       setDetail({ kind: "none" });
       clearSidebarCollapseTimeout();
       dispatchSidebar({ type: "collapse" });
@@ -479,16 +427,6 @@ export const CompactModeController: FC = () => {
           )
         )}
       </div>
-    );
-  }
-
-  if (mode === "float_ball") {
-    return (
-      <>
-        <IslandSurface mode={mode}>
-          <FloatBall onToggleDetail={toggleFloatBallPanel} />
-        </IslandSurface>
-      </>
     );
   }
 

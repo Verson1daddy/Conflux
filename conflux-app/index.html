@@ -9,7 +9,7 @@
     <script>
       (() => {
         const label = new URLSearchParams(window.location.search).get("confluxWindow");
-        if (label === "island" || label === "float_panel") {
+        if (label === "island") {
           document.documentElement.dataset.windowLabel = label;
         }
       })();
@@ -27,10 +27,7 @@
 
       html[data-window-label="island"],
       html[data-window-label="island"] body,
-      html[data-window-label="island"] #root,
-      html[data-window-label="float_panel"],
-      html[data-window-label="float_panel"] body,
-      html[data-window-label="float_panel"] #root {
+      html[data-window-label="island"] #root {
         background: transparent !important;
         overflow: hidden;
       }

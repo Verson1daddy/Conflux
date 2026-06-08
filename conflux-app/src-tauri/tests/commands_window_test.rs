@@ -22,7 +22,6 @@ mod window_command_tests {
     enum IslandMode {
         TopIsland,
         Sidebar,
-        FloatBall,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,18 +48,10 @@ mod window_command_tests {
     }
 
     #[test]
-    fn test_island_mode_float_ball_serialization() {
-        let mode = IslandMode::FloatBall;
-        let json = serde_json::to_string(&mode).expect("序列化 FloatBall 失败");
-        assert_eq!(json, "\"float_ball\"");
-    }
-
-    #[test]
     fn test_island_mode_deserialization() {
         let cases = vec![
             ("\"top_island\"", IslandMode::TopIsland),
             ("\"sidebar\"", IslandMode::Sidebar),
-            ("\"float_ball\"", IslandMode::FloatBall),
         ];
 
         for (json_str, expected) in cases {
@@ -75,7 +66,6 @@ mod window_command_tests {
         let modes = vec![
             IslandMode::TopIsland,
             IslandMode::Sidebar,
-            IslandMode::FloatBall,
         ];
 
         for mode in modes {
@@ -200,9 +190,9 @@ mod window_command_tests {
     #[test]
     fn test_island_mode_changed_event_payload() {
         // island-mode-changed 事件发送的是 IslandMode
-        let payload = IslandMode::FloatBall;
+        let payload = IslandMode::Sidebar;
         let json = serde_json::to_string(&payload).expect("序列化事件载荷失败");
-        assert_eq!(json, "\"float_ball\"");
+        assert_eq!(json, "\"sidebar\"");
     }
 
     // ===== 边界情况测试 =====

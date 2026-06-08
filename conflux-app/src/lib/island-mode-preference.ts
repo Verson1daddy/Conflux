@@ -3,7 +3,6 @@ import type { IslandMode } from "@/types";
 const ISLAND_MODES = new Set<IslandMode>([
   "top_island",
   "sidebar",
-  "float_ball",
 ]);
 
 interface StorageReader {

@@ -5,12 +5,10 @@ import {
   type ReactNode,
   useImperativeHandle,
 } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 import TestRenderer, { act } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import {
   nextDetailState,
-  resolveFloatBallSemanticState,
   resolveSidebarVisibility,
   resolveTopIslandState,
   type CompactDetailState,
@@ -43,126 +41,8 @@ function TopIslandPopoverMock(props: {
   return createElement("top-island-popover", props);
 }
 
-async function renderFloatBallWithIslandState(input: {
-  notifications: Array<{ id: string; level: string; read: boolean }>;
-  pendingPermissions: Array<{ id: string }>;
-  unreadCount: number;
-}) {
-  vi.resetModules();
-  vi.doMock("@/stores/islandStore", () => ({
-    useIslandStore: (
-      selector: (state: {
-        notifications: Array<{ id: string; level: string; read: boolean }>;
-        pendingPermissions: Array<{ id: string }>;
-        unreadCount: number;
-      }) => unknown
-    ) =>
-      selector({
-        notifications: input.notifications,
-        pendingPermissions: input.pendingPermissions,
-        unreadCount: input.unreadCount,
-      }),
-  }));
-
-  try {
-    const { FloatBall } = await import("@/components/island/FloatBall");
-    return renderToStaticMarkup(
-      createElement(FloatBall, { onToggleDetail: () => undefined })
-    );
-  } finally {
-    vi.doUnmock("@/stores/islandStore");
-    vi.resetModules();
-  }
-}
-
 function classNameIncludes(value: unknown, token: string): boolean {
   return typeof value === "string" && value.split(/\s+/).includes(token);
-}
-
-async function renderFloatBallRendererWithIslandState(input: {
-  notifications: Array<{ id: string; level: string; read: boolean }>;
-  pendingPermissions: Array<{ id: string }>;
-  unreadCount: number;
-}) {
-  vi.resetModules();
-  vi.doMock("@/stores/islandStore", () => ({
-    useIslandStore: (
-      selector: (state: {
-        notifications: Array<{ id: string; level: string; read: boolean }>;
-        pendingPermissions: Array<{ id: string }>;
-        unreadCount: number;
-      }) => unknown
-    ) =>
-      selector({
-        notifications: input.notifications,
-        pendingPermissions: input.pendingPermissions,
-        unreadCount: input.unreadCount,
-      }),
-  }));
-
-  try {
-    const { FloatBall } = await import("@/components/island/FloatBall");
-    let renderer!: TestRenderer.ReactTestRenderer;
-
-    await act(async () => {
-      renderer = TestRenderer.create(
-        createElement(FloatBall, { onToggleDetail: () => undefined })
-      );
-    });
-
-    return renderer;
-  } finally {
-    vi.doUnmock("@/stores/islandStore");
-    vi.resetModules();
-  }
-}
-
-async function renderFloatBallPanelWithIslandState(input: {
-  notifications: Array<{
-    id: string;
-    level: string;
-    read: boolean;
-    source_adapter_name?: string;
-    content?: string;
-  }>;
-  pendingPermissions: Array<{
-    id: string;
-    action?: string;
-    description?: string;
-  }>;
-}) {
-  vi.resetModules();
-  vi.doMock("@/stores/islandStore", () => ({
-    useIslandStore: (
-      selector: (state: {
-        notifications: typeof input.notifications;
-        pendingPermissions: typeof input.pendingPermissions;
-      }) => unknown
-    ) =>
-      selector({
-        notifications: input.notifications,
-        pendingPermissions: input.pendingPermissions,
-      }),
-  }));
-
-  try {
-    const { FloatBallPanel } = await import("@/components/island/FloatBallPanel");
-    let renderer!: TestRenderer.ReactTestRenderer;
-
-    await act(async () => {
-      renderer = TestRenderer.create(
-        createElement(FloatBallPanel, {
-          onClose: () => undefined,
-          onOpenWorkspace: () => undefined,
-        })
-      );
-    });
-
-    return renderer;
-  } finally {
-    vi.doUnmock("@/stores/islandStore");
-    vi.resetModules();
-  }
 }
 
 async function renderTopIslandWithIslandState(input: {
@@ -284,12 +164,6 @@ async function renderCompactModeControllerForSidebarFlow(input?: {
       return createElement("island-surface", { ref, mode: props.mode }, props.children);
     }),
   }));
-  vi.doMock("@/components/island/FloatBall", () => ({
-    FloatBall: () => createElement("float-ball"),
-  }));
-  vi.doMock("@/components/island/FloatBallPanel", () => ({
-    FloatBallPanel: () => createElement("float-ball-panel"),
-  }));
   vi.doMock("@/components/island/TopIsland", () => ({
     TopIsland: () => createElement("top-island"),
   }));
@@ -315,8 +189,6 @@ async function renderCompactModeControllerForSidebarFlow(input?: {
     vi.doUnmock("@/components/island/SidebarHotzone");
     vi.doUnmock("@/components/island/Sidebar");
     vi.doUnmock("@/components/island/IslandSurface");
-    vi.doUnmock("@/components/island/FloatBall");
-    vi.doUnmock("@/components/island/FloatBallPanel");
     vi.doUnmock("@/components/island/TopIsland");
     vi.doUnmock("@/components/island/TopIslandPopover");
     vi.resetModules();
@@ -333,8 +205,6 @@ function cleanupCompactModeControllerSidebarMocks() {
   vi.doUnmock("@/components/island/SidebarHotzone");
   vi.doUnmock("@/components/island/Sidebar");
   vi.doUnmock("@/components/island/IslandSurface");
-  vi.doUnmock("@/components/island/FloatBall");
-  vi.doUnmock("@/components/island/FloatBallPanel");
   vi.doUnmock("@/components/island/TopIsland");
   vi.doUnmock("@/components/island/TopIslandPopover");
   vi.resetModules();
@@ -584,12 +454,6 @@ async function renderCompactModeControllerForTopIslandFlow(input?: {
       return createElement("island-surface", { mode: props.mode }, props.children);
     }),
   }));
-  vi.doMock("@/components/island/FloatBall", () => ({
-    FloatBall: () => createElement("float-ball"),
-  }));
-  vi.doMock("@/components/island/FloatBallPanel", () => ({
-    FloatBallPanel: () => createElement("float-ball-panel"),
-  }));
   vi.doMock("@/components/island/SidebarHotzone", () => ({
     SidebarHotzone: SidebarHotzoneMock,
   }));
@@ -615,8 +479,6 @@ async function renderCompactModeControllerForTopIslandFlow(input?: {
     vi.doUnmock("@/lib/tauri-bridge");
     vi.doUnmock("@/lib/event-listener");
     vi.doUnmock("@/components/island/IslandSurface");
-    vi.doUnmock("@/components/island/FloatBall");
-    vi.doUnmock("@/components/island/FloatBallPanel");
     vi.doUnmock("@/components/island/SidebarHotzone");
     vi.doUnmock("@/components/island/Sidebar");
     vi.doUnmock("@/components/island/TopIslandPopover");
@@ -631,143 +493,9 @@ function cleanupCompactModeControllerTopIslandMocks() {
   vi.doUnmock("@/lib/tauri-bridge");
   vi.doUnmock("@/lib/event-listener");
   vi.doUnmock("@/components/island/IslandSurface");
-  vi.doUnmock("@/components/island/FloatBall");
-  vi.doUnmock("@/components/island/FloatBallPanel");
   vi.doUnmock("@/components/island/SidebarHotzone");
   vi.doUnmock("@/components/island/Sidebar");
   vi.doUnmock("@/components/island/TopIslandPopover");
-  vi.resetModules();
-}
-
-async function renderCompactModeControllerForFloatBallFlow(input: {
-  notifications: Array<{
-    id: string;
-    level: string;
-    read: boolean;
-    source_adapter_name?: string;
-    content?: string;
-  }>;
-  pendingPermissions: Array<{
-    id: string;
-    instance_id: string;
-    action: string;
-    description: string;
-  }>;
-  unreadCount: number;
-  setIslandDetailPresentationMock?: ReturnType<typeof vi.fn>;
-  showFloatBallPanelWindowMock?: ReturnType<typeof vi.fn>;
-  hideFloatBallPanelWindowMock?: ReturnType<typeof vi.fn>;
-}) {
-  vi.resetModules();
-
-  const setMode = vi.fn();
-  const showWorkspaceOnly = vi.fn();
-  const setIslandDetailPresentation =
-    input.setIslandDetailPresentationMock ?? vi.fn().mockResolvedValue(undefined);
-  const showFloatBallPanelWindow =
-    input.showFloatBallPanelWindowMock ?? vi.fn().mockResolvedValue(undefined);
-  const hideFloatBallPanelWindow =
-    input.hideFloatBallPanelWindowMock ?? vi.fn().mockResolvedValue(undefined);
-  const writeFloatPanelSnapshot = vi.fn();
-  let compactDetailReset: (() => void) | undefined;
-
-  vi.doMock("@/stores/islandStore", () => ({
-    useIslandStore: (
-      selector: (state: {
-        mode: string;
-        setMode: typeof setMode;
-        notifications: typeof input.notifications;
-        pendingPermissions: typeof input.pendingPermissions;
-        unreadCount: number;
-      }) => unknown
-    ) =>
-      selector({
-        mode: "float_ball",
-        setMode,
-        notifications: input.notifications,
-        pendingPermissions: input.pendingPermissions,
-        unreadCount: input.unreadCount,
-      }),
-  }));
-  vi.doMock("@/lib/tauri-bridge", () => ({
-    hideFloatBallPanelWindow,
-    setIslandDetailPresentation,
-    showFloatBallPanelWindow,
-    showWorkspaceOnly,
-  }));
-  vi.doMock("@/lib/float-panel-snapshot", () => ({
-    writeFloatPanelSnapshot,
-  }));
-  vi.doMock("@/lib/event-listener", () => ({
-    onCompactDetailReset: vi.fn((callback: () => void) => {
-      compactDetailReset = callback;
-      return Promise.resolve(() => undefined);
-    }),
-  }));
-  vi.doMock("@/components/island/TopIsland", () => ({
-    TopIsland: () => createElement("top-island"),
-  }));
-  vi.doMock("@/components/island/TopIslandPopover", () => ({
-    TopIslandPopover: () => createElement("top-island-popover"),
-  }));
-  vi.doMock("@/components/island/SidebarHotzone", () => ({
-    SidebarHotzone: SidebarHotzoneMock,
-  }));
-  vi.doMock("@/components/island/Sidebar", () => ({
-    Sidebar: SidebarPanelMock,
-  }));
-
-  try {
-    const { CompactModeController } = await import("@/components/island/CompactModeController");
-    let renderer!: TestRenderer.ReactTestRenderer;
-
-    await act(async () => {
-      renderer = TestRenderer.create(createElement(CompactModeController));
-    });
-    await act(async () => {
-      await Promise.resolve();
-    });
-
-    return {
-      hideFloatBallPanelWindow,
-      renderer,
-      setIslandDetailPresentation,
-      setMode,
-      showFloatBallPanelWindow,
-      showWorkspaceOnly,
-      compactDetailReset: () => {
-        if (!compactDetailReset) {
-          throw new Error("compact detail reset listener was not registered");
-        }
-        compactDetailReset();
-      },
-      writeFloatPanelSnapshot,
-    };
-  } catch (error) {
-    vi.doUnmock("@/stores/islandStore");
-    vi.doUnmock("@/lib/tauri-bridge");
-    vi.doUnmock("@/lib/float-panel-snapshot");
-    vi.doUnmock("@/lib/event-listener");
-    vi.doUnmock("@/components/island/TopIsland");
-    vi.doUnmock("@/components/island/TopIslandPopover");
-    vi.doUnmock("@/components/island/SidebarHotzone");
-    vi.doUnmock("@/components/island/Sidebar");
-    vi.unstubAllGlobals();
-    vi.resetModules();
-    throw error;
-  }
-}
-
-function cleanupCompactModeControllerFloatBallMocks() {
-  vi.doUnmock("@/stores/islandStore");
-  vi.doUnmock("@/lib/tauri-bridge");
-  vi.doUnmock("@/lib/float-panel-snapshot");
-  vi.doUnmock("@/lib/event-listener");
-  vi.doUnmock("@/components/island/TopIsland");
-  vi.doUnmock("@/components/island/TopIslandPopover");
-  vi.doUnmock("@/components/island/SidebarHotzone");
-  vi.doUnmock("@/components/island/Sidebar");
-  vi.unstubAllGlobals();
   vi.resetModules();
 }
 
@@ -1089,7 +817,7 @@ describe("compact-mode", () => {
     expect(capsule.props["data-tauri-drag-region"]).toBe(true);
     expect(capsule.props.style?.["--top-island-width"]).toBe("180px");
     expect(capsule.props.style?.["--top-island-height"]).toBe("36px");
-    expect(JSON.stringify(renderer.toJSON())).toContain("Idle");
+    expect(JSON.stringify(renderer.toJSON())).toContain("Conflux · idle");
     expect(detailTriggers).toHaveLength(0);
   });
 
@@ -1137,137 +865,6 @@ describe("compact-mode", () => {
     expect(capsule.props["data-presentation"]).toBe("expanded");
     expect(capsule.props.style?.["--top-island-width"]).toBe("420px");
     expect(capsule.props.style?.["--top-island-height"]).toBe("44px");
-  });
-
-  it("maps float ball data to semantic states", () => {
-    expect(resolveFloatBallSemanticState({ unreadCount: 0, hasError: false })).toBe("normal");
-    expect(resolveFloatBallSemanticState({ unreadCount: 2, hasError: false })).toBe("notification");
-    expect(resolveFloatBallSemanticState({ unreadCount: 1, hasError: true })).toBe("error");
-  });
-
-  it("prefers error state over notification state for the float ball", () => {
-    expect(resolveFloatBallSemanticState({ unreadCount: 3, hasError: true })).toBe("error");
-  });
-
-  it("renders the real unread notification count in the float ball badge", async () => {
-    const html = await renderFloatBallWithIslandState({
-      notifications: [
-        { id: "notif-1", level: "info", read: false },
-        { id: "notif-2", level: "warning", read: false },
-      ],
-      pendingPermissions: [],
-      unreadCount: 0,
-    });
-
-    expect(html).toContain('aria-label="Float ball activity count 2"');
-    expect(html).toMatch(/<span[^>]*aria-label="Float ball activity count 2"[^>]*>2<\/span>/);
-  });
-
-  it("falls back to pending permission count when unread notifications are zero", async () => {
-    const html = await renderFloatBallWithIslandState({
-      notifications: [],
-      pendingPermissions: [{ id: "perm-1" }, { id: "perm-2" }],
-      unreadCount: 0,
-    });
-
-    expect(html).toContain('aria-label="Float ball activity count 2"');
-    expect(html).toMatch(/<span[^>]*aria-label="Float ball activity count 2"[^>]*>2<\/span>/);
-  });
-
-  it("adds unmatched pending permissions on top of unread notifications in mixed state", async () => {
-    const html = await renderFloatBallWithIslandState({
-      notifications: [{ id: "notif-1", level: "info", read: false }],
-      pendingPermissions: [{ id: "perm-1" }, { id: "perm-2" }],
-      unreadCount: 0,
-    });
-
-    expect(html).toContain('aria-label="Float ball activity count 3"');
-    expect(html).toMatch(/<span[^>]*aria-label="Float ball activity count 3"[^>]*>3<\/span>/);
-  });
-
-  it("does not double count pending permissions already represented by unread permission notifications", async () => {
-    const html = await renderFloatBallWithIslandState({
-      notifications: [
-        { id: "perm-1", level: "permission_required", read: false },
-        { id: "perm-2", level: "permission_required", read: false },
-      ],
-      pendingPermissions: [{ id: "perm-1" }, { id: "perm-2" }],
-      unreadCount: 0,
-    });
-
-    expect(html).toContain('aria-label="Float ball activity count 2"');
-    expect(html).toMatch(/<span[^>]*aria-label="Float ball activity count 2"[^>]*>2<\/span>/);
-  });
-
-  it("keeps the float ball panel summary aligned with the deduplicated badge count", async () => {
-    const renderer = await renderFloatBallPanelWithIslandState({
-      notifications: [
-        {
-          id: "perm-1",
-          level: "permission_required",
-          read: false,
-          source_adapter_name: "Codex",
-          content: "Permission needed: shell - Approve shell command",
-        },
-      ],
-      pendingPermissions: [
-        {
-          id: "perm-1",
-          action: "shell",
-          description: "Approve shell command",
-        },
-      ],
-    });
-
-    try {
-      const json = JSON.stringify(renderer.toJSON());
-
-      expect(json).toContain("1 pending permission");
-      expect(json).not.toContain("1 unread notification / 1 pending permission");
-    } finally {
-      await act(async () => {
-        renderer.unmount();
-      });
-    }
-  });
-
-  it("keeps stale permission notification ids separate from unmatched pending permissions", async () => {
-    const html = await renderFloatBallWithIslandState({
-      notifications: [
-        { id: "notif-stale", level: "permission_required", read: false },
-      ],
-      pendingPermissions: [{ id: "perm-1" }],
-      unreadCount: 0,
-    });
-
-    expect(html).toContain('aria-label="Float ball activity count 2"');
-    expect(html).toMatch(/<span[^>]*aria-label="Float ball activity count 2"[^>]*>2<\/span>/);
-  });
-
-  it("renders a float ball badge for unread error activity", async () => {
-    const html = await renderFloatBallWithIslandState({
-      notifications: [{ id: "notif-1", level: "error", read: false }],
-      pendingPermissions: [],
-      unreadCount: 0,
-    });
-
-    expect(html).toContain('aria-label="Float ball activity count 1"');
-  });
-
-  it("locks the float ball shell geometry to the pen baseline", async () => {
-    const renderer = await renderFloatBallRendererWithIslandState({
-      notifications: [{ id: "notif-1", level: "info", read: false }],
-      pendingPermissions: [],
-      unreadCount: 1,
-    });
-    const button = renderer.root.find(
-      (node) =>
-        node.type === "button" && classNameIncludes(node.props.className, "float-ball")
-    );
-
-    expect(classNameIncludes(button.props.className, "float-ball")).toBe(true);
-    expect(button.props.style?.["--float-ball-size"]).toBe("52px");
-    expect(button.props.children).not.toContain("Idle");
   });
 
   it("renders top island notification and quick reply actions instead of a blank expanded spacer", async () => {
@@ -1631,248 +1228,6 @@ describe("compact-mode", () => {
     }
   });
 
-  it("clicking float ball opens a separate panel window without resizing the ball window", async () => {
-    const {
-      hideFloatBallPanelWindow,
-      renderer,
-      setIslandDetailPresentation,
-      setMode,
-      showFloatBallPanelWindow,
-      writeFloatPanelSnapshot,
-    } = await renderCompactModeControllerForFloatBallFlow({
-      notifications: [
-        {
-          id: "notif-error",
-          level: "error",
-          read: false,
-          source_adapter_name: "Codex",
-          content: "Agent failed to continue",
-        },
-      ],
-      pendingPermissions: [
-        {
-          id: "perm-shell",
-          instance_id: "agent-7",
-          action: "shell",
-          description: "Approve shell command",
-        },
-      ],
-      unreadCount: 1,
-    });
-
-    try {
-      const floatBallButton = renderer.root.findByProps({
-        "aria-label": "Open float ball details",
-      });
-
-      expect(renderer.root.findAllByProps({ "data-testid": "float-ball-panel" })).toHaveLength(0);
-
-      await act(async () => {
-        floatBallButton.props.onClick();
-        await Promise.resolve();
-        await Promise.resolve();
-      });
-
-      expect(setMode).not.toHaveBeenCalled();
-      expect(writeFloatPanelSnapshot).toHaveBeenCalledWith({
-        notifications: expect.arrayContaining([
-          expect.objectContaining({ id: "notif-error" }),
-        ]),
-        pendingPermissions: expect.arrayContaining([
-          expect.objectContaining({ id: "perm-shell" }),
-        ]),
-      });
-      expect(showFloatBallPanelWindow).toHaveBeenCalledTimes(1);
-      expect(setIslandDetailPresentation).not.toHaveBeenCalledWith("float_ball_panel");
-      expect(renderer.root.findAllByProps({ "data-testid": "float-ball-panel" })).toHaveLength(0);
-
-      await act(async () => {
-        floatBallButton.props.onClick();
-        await Promise.resolve();
-        await Promise.resolve();
-      });
-
-      expect(renderer.root.findAllByProps({ "data-testid": "float-ball-panel" })).toHaveLength(0);
-      expect(showFloatBallPanelWindow).toHaveBeenCalledTimes(2);
-      expect(hideFloatBallPanelWindow).not.toHaveBeenCalled();
-      expect(setMode).not.toHaveBeenCalled();
-    } finally {
-      await act(async () => {
-        renderer.unmount();
-      });
-      cleanupCompactModeControllerFloatBallMocks();
-    }
-  });
-
-  it("reopens the float ball panel after Dismiss resets the compact detail state", async () => {
-    const {
-      compactDetailReset,
-      hideFloatBallPanelWindow,
-      renderer,
-      showFloatBallPanelWindow,
-    } = await renderCompactModeControllerForFloatBallFlow({
-      notifications: [],
-      pendingPermissions: [],
-      unreadCount: 0,
-    });
-
-    try {
-      const floatBallButton = renderer.root.findByProps({
-        "aria-label": "Open float ball details",
-      });
-
-      await act(async () => {
-        floatBallButton.props.onClick();
-        await Promise.resolve();
-        await Promise.resolve();
-      });
-      await act(async () => {
-        compactDetailReset();
-        await Promise.resolve();
-      });
-      const reopenedFloatBallButton = renderer.root.findByProps({
-        "aria-label": "Open float ball details",
-      });
-      await act(async () => {
-        reopenedFloatBallButton.props.onClick();
-        await Promise.resolve();
-        await Promise.resolve();
-      });
-
-      expect(showFloatBallPanelWindow).toHaveBeenCalledTimes(2);
-      expect(hideFloatBallPanelWindow).not.toHaveBeenCalled();
-    } finally {
-      await act(async () => {
-        renderer.unmount();
-      });
-      cleanupCompactModeControllerFloatBallMocks();
-    }
-  });
-
-  it("suppresses repeated float ball opens while the separate panel window is opening", async () => {
-    let resolvePanel!: () => void;
-    const showFloatBallPanelWindow = vi.fn(() => {
-      return new Promise<void>((resolve) => {
-        resolvePanel = resolve;
-      });
-    });
-    const { renderer } = await renderCompactModeControllerForFloatBallFlow({
-      notifications: [],
-      pendingPermissions: [],
-      unreadCount: 0,
-      showFloatBallPanelWindowMock: showFloatBallPanelWindow,
-    });
-
-    try {
-      const floatBallButton = renderer.root.findByProps({
-        "aria-label": "Open float ball details",
-      });
-
-      showFloatBallPanelWindow.mockClear();
-      await act(async () => {
-        floatBallButton.props.onClick();
-        floatBallButton.props.onClick();
-        await Promise.resolve();
-      });
-
-      expect(showFloatBallPanelWindow).toHaveBeenCalledTimes(1);
-      expect(renderer.root.findAllByProps({ "data-testid": "float-ball-panel" })).toHaveLength(0);
-
-      await act(async () => {
-        resolvePanel();
-        await Promise.resolve();
-        await Promise.resolve();
-      });
-
-      expect(renderer.root.findAllByProps({ "data-testid": "float-ball-panel" })).toHaveLength(0);
-    } finally {
-      await act(async () => {
-        renderer.unmount();
-      });
-      cleanupCompactModeControllerFloatBallMocks();
-    }
-  });
-
-  it("does not mark float ball detail open when the separate panel window fails", async () => {
-    const showFloatBallPanelWindow = vi
-      .fn()
-      .mockRejectedValue(new Error("panel window failed"));
-    const { renderer } = await renderCompactModeControllerForFloatBallFlow({
-      notifications: [],
-      pendingPermissions: [],
-      unreadCount: 0,
-      showFloatBallPanelWindowMock: showFloatBallPanelWindow,
-    });
-
-    try {
-      const floatBallButton = renderer.root.findByProps({
-        "aria-label": "Open float ball details",
-      });
-
-      await act(async () => {
-        floatBallButton.props.onClick();
-        await Promise.resolve();
-        await Promise.resolve();
-      });
-
-      expect(showFloatBallPanelWindow).toHaveBeenCalledTimes(1);
-      expect(renderer.root.findAllByProps({ "data-testid": "float-ball-panel" })).toHaveLength(0);
-    } finally {
-      await act(async () => {
-        renderer.unmount();
-      });
-      cleanupCompactModeControllerFloatBallMocks();
-    }
-  });
-
-  it("allows retrying the float ball panel after a failed open", async () => {
-    const showFloatBallPanelWindow = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("panel window failed"))
-      .mockResolvedValueOnce(undefined);
-    const { renderer } = await renderCompactModeControllerForFloatBallFlow({
-      notifications: [],
-      pendingPermissions: [],
-      unreadCount: 0,
-      showFloatBallPanelWindowMock: showFloatBallPanelWindow,
-    });
-
-    try {
-      const floatBallButton = renderer.root.findByProps({
-        "aria-label": "Open float ball details",
-      });
-
-      await act(async () => {
-        floatBallButton.props.onClick();
-        await Promise.resolve();
-        await Promise.resolve();
-      });
-      await act(async () => {
-        floatBallButton.props.onClick();
-        await Promise.resolve();
-        await Promise.resolve();
-      });
-
-      expect(showFloatBallPanelWindow).toHaveBeenCalledTimes(2);
-      expect(renderer.root.findAllByProps({ "data-testid": "float-ball-panel" })).toHaveLength(0);
-    } finally {
-      await act(async () => {
-        renderer.unmount();
-      });
-      cleanupCompactModeControllerFloatBallMocks();
-    }
-  });
-
-  it("closes detail explicitly when requested", () => {
-    const detail = nextDetailState({
-      currentMode: "float_ball",
-      currentDetail: { kind: "float_ball_panel" },
-      action: { type: "close_detail" },
-    });
-
-    expect(detail).toEqual({ kind: "none" });
-  });
-
   it("rejects illegal mode and action combinations", () => {
     const detail = nextDetailState({
       currentMode: "sidebar",
@@ -1889,30 +1244,6 @@ describe("compact-mode", () => {
     });
 
     expect(detail).toEqual({ kind: "none" });
-  });
-
-  it("normalizes an illegal current detail before opening the allowed one", () => {
-    const detail = nextDetailState({
-      currentMode: "float_ball",
-      currentDetail: {
-        kind: "top_island_popover",
-        anchor: { x: 600, y: 44 },
-        view: "details",
-      },
-      action: { type: "toggle_float_ball_panel" },
-    });
-
-    expect(detail).toEqual({ kind: "float_ball_panel" });
-  });
-
-  it("keeps the float ball panel detail open for idempotent show actions", () => {
-    const detail = nextDetailState({
-      currentMode: "float_ball",
-      currentDetail: { kind: "float_ball_panel" },
-      action: { type: "open_float_ball_panel" },
-    });
-
-    expect(detail).toEqual({ kind: "float_ball_panel" });
   });
 
   it("waits for native floating sidebar placement before mounting the floating panel", async () => {
@@ -2838,15 +2169,16 @@ describe("compact-mode", () => {
 
     try {
       const json = JSON.stringify(renderer.toJSON());
-      expect(json).toContain("Assistant");
-      expect(json).toContain("Open Workspace");
+      expect(json).toContain("Attention");
+      expect(json).toContain("Assistant rail");
+      expect(json).toContain("Open workspace");
       expect(json).toContain("Dismiss");
-      expect(json).toContain("Agents");
-      expect(json).toContain("Notifications");
+      expect(json).toContain("Live agents");
+      expect(json).toContain("Needs attention");
 
       const buttons = renderer.root.findAllByType("button");
       const openWorkspaceButton = buttons.find(
-        (node) => node.props.children === "Open Workspace"
+        (node) => node.props.children === "Open workspace"
       );
       const dismissButton = buttons.find((node) => node.props.children === "Dismiss");
 
@@ -3076,7 +2408,7 @@ describe("compact-mode", () => {
       expect(popoverRoot.props.style.top).toBe(180);
       expect(popoverRoot.props.style["--top-island-popover-width"]).toBe("232px");
       expect(popoverRoot.props.style["--top-island-popover-measure-height"]).toBe("168px");
-      expect(buttonLabels).toContain("Open Workspace");
+      expect(buttonLabels).toContain("Open workspace");
       expect(buttonLabels).toContain("Dismiss");
       expect(JSON.stringify(renderer.toJSON())).toContain("Mode");
     } finally {

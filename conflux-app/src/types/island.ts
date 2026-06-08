@@ -11,9 +11,8 @@ import type { InstanceId } from "./agent";
  * 对应 Rust IslandMode，serde rename_all = "snake_case"
  * top_island: 顶部岛模式（macOS 刘海风格）
  * sidebar: 侧边栏模式
- * float_ball: 悬浮球模式
  */
-export type IslandMode = "top_island" | "sidebar" | "float_ball";
+export type IslandMode = "top_island" | "sidebar";
 
 export type CloseAction = "quit" | "top_island" | "sidebar";
 

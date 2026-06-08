@@ -25,11 +25,6 @@ describe("compact window metrics", () => {
     expect(COMPACT_WINDOW_METRICS.sidebar.expandedWidth).toBe(300);
     expect(COMPACT_WINDOW_METRICS.sidebar.bandWidth).toBe(220);
     expect(COMPACT_WINDOW_METRICS.sidebar.floatingHeight).toBe(720);
-    expect(COMPACT_WINDOW_METRICS.floatBall.windowSize).toBe(64);
-    expect(COMPACT_WINDOW_METRICS.floatBall.windowPadding).toBe(6);
-    expect(COMPACT_WINDOW_METRICS.floatBall.buttonSize).toBe(52);
-    expect(COMPACT_WINDOW_METRICS.floatBall.panelWidth).toBe(340);
-    expect(COMPACT_WINDOW_METRICS.floatBall.panelHeight).toBe(336);
   });
 
   it("formats CSS pixel tokens from the frozen numeric values", () => {
@@ -39,9 +34,6 @@ describe("compact window metrics", () => {
     expect(px(COMPACT_WINDOW_METRICS.sidebar.dockTabHeight)).toBe("260px");
     expect(px(COMPACT_WINDOW_METRICS.sidebar.expandedWidth)).toBe("300px");
     expect(px(COMPACT_WINDOW_METRICS.sidebar.bandWidth)).toBe("220px");
-    expect(px(COMPACT_WINDOW_METRICS.floatBall.windowSize)).toBe("64px");
-    expect(px(COMPACT_WINDOW_METRICS.floatBall.windowPadding)).toBe("6px");
-    expect(px(COMPACT_WINDOW_METRICS.floatBall.panelWidth)).toBe("340px");
   });
 
   it("keeps the native top island viewport tall enough for the expanded capsule", () => {

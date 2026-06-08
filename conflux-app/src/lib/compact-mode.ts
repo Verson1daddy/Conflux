@@ -1,7 +1,6 @@
 import type { IslandMode } from "@/types";
 
 export type TopIslandVisualState = "active" | "permission" | "idle";
-export type FloatBallVisualState = "normal" | "notification" | "error";
 export type TopIslandPopoverView = "details" | "notifications" | "quick_reply";
 
 export type CompactDetailState =
@@ -10,8 +9,7 @@ export type CompactDetailState =
       kind: "top_island_popover";
       anchor: { x: number; y: number };
       view: TopIslandPopoverView;
-    }
-  | { kind: "float_ball_panel" };
+    };
 
 export function resolveTopIslandState(input: {
   activeCount: number;
@@ -23,23 +21,12 @@ export function resolveTopIslandState(input: {
   return "idle";
 }
 
-export function resolveFloatBallSemanticState(input: {
-  unreadCount: number;
-  hasError: boolean;
-}): FloatBallVisualState {
-  if (input.hasError) return "error";
-  if (input.unreadCount > 0) return "notification";
-  return "normal";
-}
-
 type CompactDetailAction =
   | {
       type: "toggle_top_island_popover";
       anchor: { x: number; y: number };
       view: TopIslandPopoverView;
     }
-  | { type: "toggle_float_ball_panel" }
-  | { type: "open_float_ball_panel" }
   | { type: "close_detail" };
 
 function normalizeDetailForMode(
@@ -48,7 +35,6 @@ function normalizeDetailForMode(
 ): CompactDetailState {
   if (detail.kind === "none") return detail;
   if (mode === "top_island" && detail.kind === "top_island_popover") return detail;
-  if (mode === "float_ball" && detail.kind === "float_ball_panel") return detail;
   return { kind: "none" };
 }
 
@@ -71,11 +57,7 @@ export function nextDetailState(input: {
           view: input.action.view,
         };
   }
-  if (input.currentMode !== "float_ball") return { kind: "none" };
-  if (input.action.type === "open_float_ball_panel") return { kind: "float_ball_panel" };
-  return normalizedDetail.kind === "float_ball_panel"
-    ? { kind: "none" }
-    : { kind: "float_ball_panel" };
+  return { kind: "none" };
 }
 
 export function resolveSidebarVisibility(input: {

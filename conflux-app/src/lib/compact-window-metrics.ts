@@ -20,13 +20,6 @@ export const COMPACT_WINDOW_METRICS = {
     bandWidth: 220,
     floatingHeight: 720,
   },
-  floatBall: {
-    windowSize: 64,
-    windowPadding: 6,
-    buttonSize: 52,
-    panelWidth: 340,
-    panelHeight: 336,
-  },
 } as const;
 
 export function px(value: number): string {

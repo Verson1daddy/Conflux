@@ -281,8 +281,6 @@ pub fn run() {
             commands::window::show_compact_mode_only,
             commands::window::set_island_detail_presentation,
             commands::window::set_top_island_popover_height,
-            commands::window::show_float_ball_panel_window,
-            commands::window::hide_float_ball_panel_window,
             commands::window::mark_island_window_ready,
             commands::window::debug_island_window_geometry,
             commands::window::hide_island_window,
