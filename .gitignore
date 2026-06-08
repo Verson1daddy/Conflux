@@ -52,6 +52,15 @@ coordination/reports/v1-smoke/**
 !coordination/reports/v1-smoke/**/
 !coordination/reports/v1-smoke/**/summary.md
 
+# Local agent/worktree archive exports
+coordination/worktree-archive/
+
+# Local test result dumps
+vitest-full-results.json
+
+# Runtime screenshot evidence
+conflux-app/*-runtime.png
+
 # Claude Code Git hygiene
 .env.*
 !.env.example
