@@ -215,6 +215,14 @@ pub async fn send_discussion_message(
     };
     emit_conflux_event(&app, &event);
 
+    // MF-10（§13.9）讨论消息注入治理——现状说明：
+    // 本命令**只入库（DiscussionEngine + SQLite）+ emit 到前端**，**不**向任何参与
+    // agent 的 PTY stdin 写入用户消息（无 inject_stdin / inject_with_policy 调用）。
+    // 按契约 §13.9「仅入库不等于已治理注入」，当前路径不构成治理注入，因此无需在此
+    // 写注入审计、也不强行造一条注入。
+    // 一旦未来把讨论用户消息真正注入到参与 agent stdin，该注入**必须**经唯一入口
+    // `inject_with_policy(source=DiscussionUserMessage)`（从而自动写 actor=User /
+    // action=DiscussionInjection 审计，MF-2/MF-6），不得旁路裸调 `pty_manager.inject_stdin`。
     Ok(msg)
 }
 

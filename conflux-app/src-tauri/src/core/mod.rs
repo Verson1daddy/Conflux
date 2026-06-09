@@ -97,10 +97,11 @@ pub use audit::AuditActor;
 pub use audit::AuditEvent;
 pub use audit::AuditResult;
 
-// 控制面语义层 P2/P3：待处理交互共享枚举
+// 控制面语义层 P2/P3：待处理交互共享枚举 + PendingInteraction
 pub use interaction::InteractionAction;
 pub use interaction::InteractionKind;
 pub use interaction::InteractionResolution;
+pub use interaction::PendingInteraction;
 
 // 注入唯一入口（控制面 P1.5 / MF-1）
 pub use injection::inject_with_policy;

@@ -4,7 +4,10 @@
 
 use tauri::{AppHandle, State};
 
+use crate::core::audit::AuditAction;
+use crate::core::event_emit::emit_attention_updated;
 use crate::core::injection::inject_with_policy;
+use crate::core::interaction::InteractionResolution;
 use crate::core::{ConfluxError, InjectionSource, InstanceId, PermissionDecision};
 use crate::AppState;
 
@@ -109,13 +112,78 @@ pub async fn respond_to_permission(
     // `pty_manager.inject_stdin`。source=PermissionResponse 不触发 StdinInjectionPolicy
     // （内容固定为 "Y\r"/"N\r"），行为与原直调一致；同时保证全代码库注入 chokepoint 唯一。
     // 若未来扩展为接受用户自定义内容，应改用受 policy 的 source。
+    //
+    // 注入审计（result=Ok，actor=User，injection_source=PermissionResponse）由
+    // `inject_with_policy` 内部按 source 硬编码写入（MF-2/MF-6）。
     inject_with_policy(
         &app,
         &state,
         &instance_id.0,
         input,
         InjectionSource::PermissionResponse,
-    )
+    )?;
+
+    // P3 权限流闭环：注入成功后 resolve 对应的活跃 AttentionItem（kind=Permission，
+    // interaction_id == permission_id），形成
+    // 「事件 → attention item → 用户 approve/deny → 注入 → 审计 → resolve」闭环。
+    //
+    // 语义各写各的（避免重复/遗漏审计）：
+    //   - 注入审计由上面的 `inject_with_policy` 写（injection_source=PermissionResponse）；
+    //   - resolve 审计由下面的 `AttentionQueue::resolve` 写（action=Approve/Deny，
+    //     与注入审计是两条不同语义的审计）。
+    //
+    // 找不到对应活跃项不视为错误（item 可能已被去重/defer/ignore，或事件未上浮）——
+    // 注入本身已生效，仅记日志。
+    let (resolution, action) = match decision {
+        PermissionDecision::Approve => (InteractionResolution::Approved, AuditAction::Approve),
+        PermissionDecision::Deny => (InteractionResolution::Denied, AuditAction::Deny),
+    };
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    let resolved = {
+        let mut queue = state.attention_queue.write();
+        // 找到匹配的活跃 Permission 项（按 interaction_id == permission_id）
+        let target_id = queue.list_active().into_iter().find_map(|it| {
+            if it.interaction_id.as_deref() == Some(permission_id.as_str()) {
+                Some(it.attention_item_id)
+            } else {
+                None
+            }
+        });
+
+        match target_id {
+            Some(ai_id) => {
+                let conn = state.db.lock();
+                match queue.resolve(&conn, &ai_id, resolution, action, now_ms) {
+                    Ok(_) => true,
+                    Err(e) => {
+                        log::warn!(
+                            "respond_to_permission: resolve 注意力项失败 (permission_id={}): {e}",
+                            permission_id
+                        );
+                        false
+                    }
+                }
+            }
+            None => {
+                log::debug!(
+                    "respond_to_permission: 无匹配活跃注意力项 (permission_id={})，仅注入未 resolve",
+                    permission_id
+                );
+                false
+            }
+        }
+    };
+
+    if resolved {
+        emit_attention_updated(&app);
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
