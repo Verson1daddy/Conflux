@@ -63,6 +63,7 @@ design-systems/
 
 # Runtime screenshot evidence
 conflux-app/*-runtime.png
+.workbench/runtime-screenshots/
 
 # Claude Code Git hygiene
 .env.*

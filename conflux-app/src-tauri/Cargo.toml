@@ -50,3 +50,12 @@ env_logger = "0.11"
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+
+# Release profile tuned for a small, lean Windows binary.
+# lto + codegen-units=1 + strip typically cut 30-50% off the binary size;
+# opt-level "s" optimizes for size without hurting an IO-bound PTY app.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
