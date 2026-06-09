@@ -94,7 +94,7 @@ conflux-app/
     src/tray.rs         System tray integration
 
 design/                 Icons, design handoffs, design tokens, Pencil source
-coordination/           Project workflow, reports, research, handoffs
+.workbench/coordination/  Project workflow, reports, research, handoffs (relocated)
 docs/                   Specs, plans, and roadmap notes
 ```
 
