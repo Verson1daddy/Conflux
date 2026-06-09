@@ -14,6 +14,50 @@ import {
   type CompactDetailState,
 } from "./compact-mode";
 import { COMPACT_WINDOW_METRICS } from "./compact-window-metrics";
+import type { AttentionItem } from "@/types/interaction";
+
+// 控制面 P5：权限态从后端 AttentionQueue 投影（attentionStore），不再走 islandStore。
+// 把测试里的轻量权限规格映射成后端 AttentionItem 形状。
+interface PermissionSpec {
+  id: string;
+  instance_id?: string;
+  action?: string;
+  description?: string;
+  content?: string;
+  created_at?: number;
+  raw_context?: string[];
+  timeout_seconds?: number;
+}
+
+function permissionAttentionItem(spec: PermissionSpec): AttentionItem {
+  return {
+    attention_item_id: `attn-${spec.id}`,
+    instance_id: spec.instance_id ?? "agent-1",
+    kind: "permission",
+    priority: "Critical",
+    source_event_id: null,
+    interaction_id: spec.id,
+    payload_summary: spec.description ?? spec.action ?? spec.content ?? "",
+    available_actions: ["approve", "deny"],
+    jump_back_target_id: null,
+    created_at: spec.created_at ?? 1000,
+    resolved_at: null,
+    resolution: null,
+    audit_event_id: null,
+    permission_context: spec.raw_context ?? null,
+    timeout_seconds: spec.timeout_seconds ?? null,
+  };
+}
+
+/** 装上 attentionStore 投影 mock（useActivePermissions 等 selector 直接返回映射后的活跃项）。 */
+function mockAttentionStore(specs?: PermissionSpec[]) {
+  const items = (specs ?? []).map(permissionAttentionItem);
+  vi.doMock("@/stores/attentionStore", () => ({
+    useActivePermissions: () => items,
+    useActiveAttentionItems: () => items,
+    useActiveAttentionCount: () => items.length,
+  }));
+}
 
 function SidebarHotzoneMock(props: {
   expanded: boolean;
@@ -89,6 +133,7 @@ async function renderTopIslandWithIslandState(input: {
         instances: input.instances ?? new Map(),
       }),
   }));
+  mockAttentionStore(input.pendingPermissions);
 
   try {
     const { TopIsland } = await import("@/components/island/TopIsland");
@@ -108,6 +153,7 @@ async function renderTopIslandWithIslandState(input: {
   } finally {
     vi.doUnmock("@/stores/islandStore");
     vi.doUnmock("@/stores/agentStore");
+    vi.doUnmock("@/stores/attentionStore");
     vi.resetModules();
   }
 }
@@ -219,6 +265,7 @@ async function renderSidebarAssistantPanel(input: {
     created_at: number;
     source_instance_id: string;
   }>;
+  permissions?: PermissionSpec[];
   instances?: Map<string, unknown>;
   respondToPermissionMock?: ReturnType<typeof vi.fn>;
 }) {
@@ -227,7 +274,6 @@ async function renderSidebarAssistantPanel(input: {
   const focusAgentCard = vi.fn();
   const respondToPermissionMock =
     input.respondToPermissionMock ?? vi.fn().mockResolvedValue(undefined);
-  const removePermissionRequest = vi.fn();
   const clearNotification = vi.fn();
   const onDismiss = vi.fn();
   const onOpenWorkspace = vi.fn();
@@ -236,13 +282,11 @@ async function renderSidebarAssistantPanel(input: {
     useIslandStore: (
       selector: (state: {
         notifications: typeof input.notifications;
-        removePermissionRequest: typeof removePermissionRequest;
         clearNotification: typeof clearNotification;
       }) => unknown
     ) =>
       selector({
         notifications: input.notifications,
-        removePermissionRequest,
         clearNotification,
       }),
   }));
@@ -266,6 +310,7 @@ async function renderSidebarAssistantPanel(input: {
           ]),
       }),
   }));
+  mockAttentionStore(input.permissions);
   vi.doMock("@/lib/tauri-bridge", () => ({
     focusAgentCard,
     respondToPermission: respondToPermissionMock,
@@ -290,13 +335,13 @@ async function renderSidebarAssistantPanel(input: {
       focusAgentCard,
       onDismiss,
       onOpenWorkspace,
-      removePermissionRequest,
       renderer,
       respondToPermissionMock,
     };
   } catch (error) {
     vi.doUnmock("@/stores/islandStore");
     vi.doUnmock("@/stores/agentStore");
+    vi.doUnmock("@/stores/attentionStore");
     vi.doUnmock("@/lib/tauri-bridge");
     vi.resetModules();
     throw error;
@@ -306,6 +351,7 @@ async function renderSidebarAssistantPanel(input: {
 function cleanupSidebarAssistantPanelMocks() {
   vi.doUnmock("@/stores/islandStore");
   vi.doUnmock("@/stores/agentStore");
+  vi.doUnmock("@/stores/attentionStore");
   vi.doUnmock("@/lib/tauri-bridge");
   vi.resetModules();
 }
@@ -356,6 +402,7 @@ async function renderSidebarWithIslandState(input: {
           ]),
       }),
   }));
+  mockAttentionStore();
   vi.doMock("@/lib/tauri-bridge", () => ({
     focusAgentCard: vi.fn(),
     respondToPermission: vi.fn(),
@@ -379,6 +426,7 @@ async function renderSidebarWithIslandState(input: {
   } finally {
     vi.doUnmock("@/stores/islandStore");
     vi.doUnmock("@/stores/agentStore");
+    vi.doUnmock("@/stores/attentionStore");
     vi.doUnmock("@/lib/tauri-bridge");
     vi.resetModules();
   }
@@ -429,6 +477,7 @@ async function renderCompactModeControllerForTopIslandFlow(input?: {
     useAgentStore: (selector: (state: { instances: Map<string, unknown> }) => unknown) =>
       selector({ instances: new Map() }),
   }));
+  mockAttentionStore(pendingPermissions);
   vi.doMock("@/lib/tauri-bridge", () => ({
     respondToPermission: vi.fn(),
     setIslandDetailPresentation,
@@ -476,6 +525,7 @@ async function renderCompactModeControllerForTopIslandFlow(input?: {
   } catch (error) {
     vi.doUnmock("@/stores/islandStore");
     vi.doUnmock("@/stores/agentStore");
+    vi.doUnmock("@/stores/attentionStore");
     vi.doUnmock("@/lib/tauri-bridge");
     vi.doUnmock("@/lib/event-listener");
     vi.doUnmock("@/components/island/IslandSurface");
@@ -490,6 +540,7 @@ async function renderCompactModeControllerForTopIslandFlow(input?: {
 function cleanupCompactModeControllerTopIslandMocks() {
   vi.doUnmock("@/stores/islandStore");
   vi.doUnmock("@/stores/agentStore");
+  vi.doUnmock("@/stores/attentionStore");
   vi.doUnmock("@/lib/tauri-bridge");
   vi.doUnmock("@/lib/event-listener");
   vi.doUnmock("@/components/island/IslandSurface");
@@ -588,6 +639,7 @@ async function renderTopIslandPopoverWithIslandState(input: {
         openDiscussionWizard,
       }),
   }));
+  mockAttentionStore(input.pendingPermissions);
   vi.doMock("@/lib/tauri-bridge", () => ({
     respondToPermission: respondToPermissionMock,
   }));
@@ -616,6 +668,7 @@ async function renderTopIslandPopoverWithIslandState(input: {
   } catch (error) {
     vi.doUnmock("@/stores/islandStore");
     vi.doUnmock("@/stores/agentStore");
+    vi.doUnmock("@/stores/attentionStore");
     vi.doUnmock("@/lib/tauri-bridge");
     vi.unstubAllGlobals();
     vi.resetModules();
@@ -626,6 +679,7 @@ async function renderTopIslandPopoverWithIslandState(input: {
 function cleanupTopIslandMocks() {
   vi.doUnmock("@/stores/islandStore");
   vi.doUnmock("@/stores/agentStore");
+  vi.doUnmock("@/stores/attentionStore");
   vi.doUnmock("@/lib/tauri-bridge");
   vi.unstubAllGlobals();
   vi.resetModules();
@@ -2202,21 +2256,19 @@ describe("compact-mode", () => {
     }
   });
 
-  it("wires sidebar allow actions through the permission bridge and clears the store on success", async () => {
+  it("wires sidebar allow actions through the permission bridge using the interaction id", async () => {
     const respondToPermissionMock = vi.fn().mockResolvedValue(undefined);
     const {
       clearNotification,
-      removePermissionRequest,
       renderer,
     } = await renderSidebarAssistantPanel({
-      notifications: [
+      notifications: [],
+      permissions: [
         {
           id: "perm-1",
-          level: "permission_required",
-          read: false,
-          content: "Approve shell command",
+          instance_id: "agent-7",
+          description: "Approve shell command",
           created_at: Date.now() - 10_000,
-          source_instance_id: "agent-7",
         },
       ],
       respondToPermissionMock,
@@ -2235,13 +2287,14 @@ describe("compact-mode", () => {
         await Promise.resolve();
       });
 
+      // 唯一注入路径：(instance_id, interaction_id, decision)。后端 resolve + emit 移除项，
+      // 前端不再手动 removePermissionRequest。
       expect(respondToPermissionMock).toHaveBeenCalledTimes(1);
       expect(respondToPermissionMock).toHaveBeenCalledWith(
         "agent-7",
         "perm-1",
         "approve",
       );
-      expect(removePermissionRequest).toHaveBeenCalledWith("perm-1");
       expect(clearNotification).not.toHaveBeenCalled();
     } finally {
       await act(async () => {
@@ -2251,21 +2304,19 @@ describe("compact-mode", () => {
     }
   });
 
-  it("wires sidebar deny actions through the permission bridge and clears the store on success", async () => {
+  it("wires sidebar deny actions through the permission bridge using the interaction id", async () => {
     const respondToPermissionMock = vi.fn().mockResolvedValue(undefined);
     const {
       clearNotification,
-      removePermissionRequest,
       renderer,
     } = await renderSidebarAssistantPanel({
-      notifications: [
+      notifications: [],
+      permissions: [
         {
           id: "perm-2",
-          level: "permission_required",
-          read: false,
-          content: "Deny file deletion",
+          instance_id: "agent-9",
+          description: "Deny file deletion",
           created_at: Date.now() - 12_000,
-          source_instance_id: "agent-9",
         },
       ],
       respondToPermissionMock,
@@ -2290,7 +2341,6 @@ describe("compact-mode", () => {
         "perm-2",
         "deny",
       );
-      expect(removePermissionRequest).toHaveBeenCalledWith("perm-2");
       expect(clearNotification).not.toHaveBeenCalled();
     } finally {
       await act(async () => {
@@ -2310,17 +2360,15 @@ describe("compact-mode", () => {
     );
     const {
       clearNotification,
-      removePermissionRequest,
       renderer,
     } = await renderSidebarAssistantPanel({
-      notifications: [
+      notifications: [],
+      permissions: [
         {
           id: "perm-3",
-          level: "permission_required",
-          read: false,
-          content: "Approve terminal access",
+          instance_id: "agent-11",
+          description: "Approve terminal access",
           created_at: Date.now() - 15_000,
-          source_instance_id: "agent-11",
         },
       ],
       respondToPermissionMock,
@@ -2348,6 +2396,7 @@ describe("compact-mode", () => {
         "approve",
       );
 
+      // 处置 in-flight 时按钮禁用，重复点击不再触发第二次注入。
       const [pendingAllowButton, pendingDenyButton] = getActionButtons();
       expect(pendingAllowButton?.props.disabled).toBe(true);
       expect(pendingDenyButton?.props.disabled).toBe(true);
@@ -2358,16 +2407,19 @@ describe("compact-mode", () => {
       });
 
       expect(respondToPermissionMock).toHaveBeenCalledTimes(1);
-      expect(removePermissionRequest).not.toHaveBeenCalled();
       expect(clearNotification).not.toHaveBeenCalled();
 
+      // 完成后清掉 pending 态，按钮重新可用（队列项由后端 emit 快照决定去留）。
       await act(async () => {
         resolvePermission();
         await Promise.resolve();
         await Promise.resolve();
       });
 
-      expect(removePermissionRequest).toHaveBeenCalledWith("perm-3");
+      const [resolvedAllowButton, resolvedDenyButton] = getActionButtons();
+      expect(resolvedAllowButton?.props.disabled).toBe(false);
+      expect(resolvedDenyButton?.props.disabled).toBe(false);
+      expect(respondToPermissionMock).toHaveBeenCalledTimes(1);
       expect(clearNotification).not.toHaveBeenCalled();
     } finally {
       await act(async () => {
@@ -2553,7 +2605,6 @@ describe("compact-mode", () => {
     );
     const {
       clearNotification,
-      removePermissionRequest,
       renderer,
     } = await renderTopIslandPopoverWithIslandState({
       pendingPermissions: [
@@ -2564,15 +2615,8 @@ describe("compact-mode", () => {
           description: "Need approval",
         },
       ],
-      notifications: [
-        {
-          id: "perm-1",
-          level: "permission_required",
-          read: false,
-          source_adapter_name: "Conflux",
-        },
-      ],
-      unreadCount: 1,
+      notifications: [],
+      unreadCount: 0,
       respondToPermissionMock,
     });
 
@@ -2589,8 +2633,8 @@ describe("compact-mode", () => {
         await Promise.resolve();
       });
 
+      // pending 期间二次点击被 pendingDecisionRef 抑制：只注入一次。
       expect(respondToPermissionMock).toHaveBeenCalledTimes(1);
-      expect(removePermissionRequest).not.toHaveBeenCalled();
       expect(clearNotification).not.toHaveBeenCalled();
 
       await act(async () => {
@@ -2599,7 +2643,8 @@ describe("compact-mode", () => {
         await Promise.resolve();
       });
 
-      expect(removePermissionRequest).toHaveBeenCalledWith("perm-1");
+      // 完成后不再补发；队列项去留由后端 emit 快照决定，不在前端手动移除。
+      expect(respondToPermissionMock).toHaveBeenCalledTimes(1);
       expect(clearNotification).not.toHaveBeenCalled();
     } finally {
       await act(async () => {

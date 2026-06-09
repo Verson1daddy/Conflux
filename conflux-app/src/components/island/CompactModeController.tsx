@@ -18,6 +18,7 @@ import {
   type TopIslandPopoverView,
 } from "@/lib/compact-mode";
 import { useIslandStore } from "@/stores/islandStore";
+import { useActivePermissions } from "@/stores/attentionStore";
 import type { IslandMode } from "@/types";
 import { IslandSurface } from "./IslandSurface";
 import { Sidebar } from "./Sidebar";
@@ -121,7 +122,8 @@ function reduceSidebarState(state: SidebarState, action: SidebarAction): Sidebar
 
 export const CompactModeController: FC = () => {
   const mode = useIslandStore((state) => state.mode) as IslandMode;
-  const pendingPermissionCount = useIslandStore((state) => state.pendingPermissions.length);
+  // 同源（控制面 P5）：shell 展开闸的"待处理"计数来自 AttentionQueue 投影。
+  const pendingPermissionCount = useActivePermissions().length;
   const topIslandUnreadCount = useIslandStore((state) => state.unreadCount);
   const [detail, setDetail] = useState<CompactDetailState>({ kind: "none" });
   const [topIslandPresentation, setTopIslandPresentation] =

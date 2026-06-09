@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useIslandStore } from "@/stores/islandStore";
+import { useAttentionStore } from "@/stores/attentionStore";
 import { useAgentStore } from "@/stores/agentStore";
 import {
   getIslandMode,
@@ -47,9 +48,30 @@ export function useIslandMode(options: UseIslandModeOptions = {}) {
   const mode = useIslandStore((s) => s.mode);
   const setMode = useIslandStore((s) => s.setMode);
   const addNotification = useIslandStore((s) => s.addNotification);
-  const addPermissionRequest = useIslandStore((s) => s.addPermissionRequest);
   const [isHydrated, setIsHydrated] = useState(false);
   const preferBackendMode = options.preferBackendMode === true;
+
+  // 控制面 P5：注意力态唯一真相源是后端 AttentionQueue。挂载时启动一次投影
+  // （list_attention_items 重放 + attention_updated 订阅）；卸载时取消订阅。
+  // 主窗与紧凑岛窗各自独立 webview，各跑一次互不影响（后端 emit 广播全窗）。
+  useEffect(() => {
+    let stop: (() => void) | null = null;
+    let disposed = false;
+    void useAttentionStore
+      .getState()
+      .start()
+      .then((unlisten) => {
+        if (disposed) {
+          unlisten();
+          return;
+        }
+        stop = unlisten;
+      });
+    return () => {
+      disposed = true;
+      stop?.();
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -117,17 +139,15 @@ export function useIslandMode(options: UseIslandModeOptions = {}) {
     };
   }, [preferBackendMode, setMode]);
 
+  // 权限请求的队列态由 attentionStore 投影（后端 AttentionQueue）拥有，这里
+  // 不再写入任何 store；仅触发一条瞬态 OS 通知（后台时把用户拉回处理）。
+  // tag 用 request.id，OS 按 tag 去重，主窗/岛窗双订阅不会叠出两条。
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
 
     onPermissionRequested((payload) => {
       const sourceAdapterName = resolveAgentName(payload.instance_id);
-      addPermissionRequest({
-        ...payload.request,
-        created_at: payload.timestamp,
-        source_adapter_name: sourceAdapterName,
-      });
       void showSystemNotification({
         title: sourceAdapterName || "Conflux",
         body: `Permission needed: ${payload.request.action} - ${payload.request.description}`,
@@ -145,7 +165,7 @@ export function useIslandMode(options: UseIslandModeOptions = {}) {
       disposed = true;
       unlisten?.();
     };
-  }, [addNotification, addPermissionRequest]);
+  }, []);
 
   useEffect(() => {
     let disposed = false;

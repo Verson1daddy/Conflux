@@ -16,6 +16,7 @@ import {
 import { getLiveAgentInstances } from "@/lib/workspace-status";
 import { respondToPermission, setTopIslandPopoverHeight } from "@/lib/tauri-bridge";
 import { useIslandStore } from "@/stores/islandStore";
+import { useActivePermissions } from "@/stores/attentionStore";
 import { useAgentStore } from "@/stores/agentStore";
 import type { AgentInstanceInfo, NotificationItem, PermissionDecision } from "@/types";
 import { ConfluxBrandMark } from "./ConfluxBrandMark";
@@ -72,10 +73,10 @@ export const TopIslandPopover: FC<TopIslandPopoverProps> = ({
   onClose,
   onRestoreWorkspace,
 }) => {
-  const pendingPermissions = useIslandStore((s) => s.pendingPermissions);
+  // 同源（控制面 P5）：权限态从后端 AttentionQueue 投影读取。
+  const permissions = useActivePermissions();
   const notifications = useIslandStore((s) => s.notifications);
   const unreadCount = useIslandStore((s) => s.unreadCount);
-  const removePermissionRequest = useIslandStore((s) => s.removePermissionRequest);
   const instances = useAgentStore((s) => s.instances);
   const openDiscussionWizard = useAgentStore((s) => s.openDiscussionWizard);
   const setDiscussionDirection = useAgentStore((s) => s.setDiscussionDirection);
@@ -100,7 +101,7 @@ export const TopIslandPopover: FC<TopIslandPopoverProps> = ({
     [liveAgents]
   );
 
-  const permissionRequest = pendingPermissions[0];
+  const permissionRequest = permissions[0];
   const unreadNotifications = useMemo(
     () => notifications.filter((notification) => !notification.read),
     [notifications]
@@ -116,15 +117,15 @@ export const TopIslandPopover: FC<TopIslandPopoverProps> = ({
     () =>
       resolveTopIslandState({
         activeCount,
-        permissionCount: pendingPermissions.length,
+        permissionCount: permissions.length,
         unreadCount,
       }),
-    [activeCount, pendingPermissions.length, unreadCount]
+    [activeCount, permissions.length, unreadCount]
   );
 
   const summary = useMemo(() => {
     if (visualState === "permission" && permissionRequest) {
-      return permissionRequest.description || permissionRequest.action;
+      return permissionRequest.payload_summary;
     }
 
     if (visualState === "active") {
@@ -140,8 +141,8 @@ export const TopIslandPopover: FC<TopIslandPopoverProps> = ({
 
   const statusLine = useMemo(
     () =>
-      `${activeCount} active / ${pendingPermissions.length} permission / ${unreadCount} unread`,
-    [activeCount, pendingPermissions.length, unreadCount]
+      `${activeCount} active / ${permissions.length} permission / ${unreadCount} unread`,
+    [activeCount, permissions.length, unreadCount]
   );
 
   const bubblePosition = useMemo(() => {
@@ -211,7 +212,7 @@ export const TopIslandPopover: FC<TopIslandPopoverProps> = ({
   }, [
     bubblePosition.top,
     view,
-    pendingPermissions.length,
+    permissions.length,
     unreadNotifications.length,
     replyDraft,
     summary,
@@ -219,7 +220,11 @@ export const TopIslandPopover: FC<TopIslandPopoverProps> = ({
   ]);
 
   async function handlePermissionDecision(decision: PermissionDecision) {
-    if (!permissionRequest || pendingDecisionRef.current) {
+    if (
+      !permissionRequest ||
+      !permissionRequest.interaction_id ||
+      pendingDecisionRef.current
+    ) {
       return;
     }
 
@@ -227,8 +232,13 @@ export const TopIslandPopover: FC<TopIslandPopoverProps> = ({
     setPendingDecision(decision);
 
     try {
-      await respondToPermission(permissionRequest.instance_id, permissionRequest.id, decision);
-      removePermissionRequest(permissionRequest.id);
+      // 唯一注入路径（MF-1）：注入 + 后端 resolve 对应 AttentionItem + emit 新快照。
+      // 不在前端移除，attentionStore 收到 attention_updated 后整体替换、自然丢弃已处置项。
+      await respondToPermission(
+        permissionRequest.instance_id,
+        permissionRequest.interaction_id,
+        decision
+      );
     } catch {
       // Keep the request available so the user can retry from the bubble.
     } finally {

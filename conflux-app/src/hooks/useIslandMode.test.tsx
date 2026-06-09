@@ -265,8 +265,7 @@ describe("useIslandMode hydration", () => {
     });
   });
 
-  it("passes the resolved adapter name into permission requests", async () => {
-    const addPermissionRequest = vi.fn();
+  it("fires a system notification for permission requests with the resolved adapter name", async () => {
     const showSystemNotification = vi.fn().mockResolvedValue(undefined);
     let permissionHandler: ((payload: PermissionRequestedPayload) => void) | null =
       null;
@@ -297,14 +296,12 @@ describe("useIslandMode hydration", () => {
           mode: IslandMode;
           setMode: ReturnType<typeof vi.fn>;
           addNotification: ReturnType<typeof vi.fn>;
-          addPermissionRequest: typeof addPermissionRequest;
         }) => unknown
       ) =>
         selector({
           mode: "top_island",
           setMode: vi.fn(),
           addNotification: vi.fn(),
-          addPermissionRequest,
         }),
     }));
     vi.doMock("@/stores/agentStore", () => {
@@ -368,13 +365,8 @@ describe("useIslandMode hydration", () => {
       });
     });
 
-    expect(addPermissionRequest).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: "perm-1",
-        created_at: 1234,
-        source_adapter_name: "Codex",
-      })
-    );
+    // 控制面 P5：权限请求不再写入任何 store（队列态由 attentionStore 投影后端 AttentionQueue）；
+    // useIslandMode 仅触发一条瞬态 OS 通知，标题用解析出的 adapter 名。
     expect(showSystemNotification).toHaveBeenCalledWith(
       expect.objectContaining({
         title: "Codex",

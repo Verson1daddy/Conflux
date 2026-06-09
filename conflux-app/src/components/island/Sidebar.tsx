@@ -1,11 +1,13 @@
 import { type CSSProperties, type FC, useCallback, useMemo, useRef, useState } from "react";
 import { startCurrentWindowDrag } from "@/lib/window-drag";
 import { useIslandStore } from "@/stores/islandStore";
+import { useActivePermissions } from "@/stores/attentionStore";
 import { useAgentStore, agentDisplayLabel } from "@/stores/agentStore";
 import { focusAgentCard, respondToPermission } from "@/lib/tauri-bridge";
 import { COMPACT_WINDOW_METRICS, px } from "@/lib/compact-window-metrics";
 import { getLiveAgentInstances } from "@/lib/workspace-status";
 import type { AgentStatus, NotificationItem, PermissionDecision } from "@/types";
+import type { AttentionItem } from "@/types/interaction";
 import { ConfluxBrandMark } from "./ConfluxBrandMark";
 
 interface SidebarProps {
@@ -210,7 +212,8 @@ export const Sidebar: FC<SidebarProps> = ({
   onDragStart,
 }) => {
   const notifications = useIslandStore((s) => s.notifications);
-  const removePermissionRequest = useIslandStore((s) => s.removePermissionRequest);
+  // 同源（控制面 P5）：待处理权限项从后端 AttentionQueue 投影读取，与 TopIsland 共用 selector。
+  const permissions = useActivePermissions();
   const instances = useAgentStore((s) => s.instances);
   const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
   const pendingRef = useRef<Set<string>>(new Set());
@@ -223,27 +226,19 @@ export const Sidebar: FC<SidebarProps> = ({
     [instances]
   );
 
+  // 活动通知（error / task-completed）：权限请求不再镜像进通知队列。
   const unreadNotifications = useMemo(
     () => notifications.filter((notification) => !notification.read),
     [notifications]
   );
 
-  const permissionNotifications = useMemo(
-    () =>
-      unreadNotifications.filter(
-        (notification) => notification.level === "permission_required"
-      ),
-    [unreadNotifications]
+  // "Needs attention" = 待处理权限（同源投影，优先）+ 活动通知，整体限 4 条。
+  const visiblePermissions = useMemo(() => permissions.slice(0, 2), [permissions]);
+  const activityNotifications = useMemo(
+    () => unreadNotifications.slice(0, Math.max(0, 4 - visiblePermissions.length)),
+    [unreadNotifications, visiblePermissions.length]
   );
-
-  const activityNotifications = useMemo(() => {
-    const permissions = permissionNotifications.slice(0, 2);
-    const nonPermissions = unreadNotifications
-      .filter((notification) => notification.level !== "permission_required")
-      .slice(0, Math.max(0, 4 - permissions.length));
-
-    return [...permissions, ...nonPermissions];
-  }, [permissionNotifications, unreadNotifications]);
+  const attentionCount = permissions.length + unreadNotifications.length;
 
   const visibleAgents = useMemo(() => agents.slice(0, 3), [agents]);
 
@@ -256,39 +251,30 @@ export const Sidebar: FC<SidebarProps> = ({
   }, []);
 
   const handlePermissionDecision = useCallback(
-    async (instanceId: string, permissionId: string, decision: PermissionDecision) => {
-      if (pendingRef.current.has(permissionId)) return;
+    async (item: AttentionItem, decision: PermissionDecision) => {
+      if (!item.interaction_id) return;
+      const key = item.attention_item_id;
+      if (pendingRef.current.has(key)) return;
 
-      pendingRef.current.add(permissionId);
-      setPendingIds((prev) => new Set(prev).add(permissionId));
-      let completed = false;
+      pendingRef.current.add(key);
+      setPendingIds((prev) => new Set(prev).add(key));
 
       try {
-        await respondToPermission(instanceId, permissionId, decision);
-        completed = true;
+        // 唯一注入路径（MF-1）：注入 + 后端 resolve 对应 AttentionItem + emit 新快照。
+        // 不在前端手动移除——attentionStore 收到 attention_updated 后整体替换、自然丢弃。
+        await respondToPermission(item.instance_id, item.interaction_id, decision);
       } catch {
         // Keep the permission request visible so the user can retry.
       } finally {
-        pendingRef.current.delete(permissionId);
-      }
-
-      if (!completed) {
+        pendingRef.current.delete(key);
         setPendingIds((prev) => {
           const next = new Set(prev);
-          next.delete(permissionId);
+          next.delete(key);
           return next;
         });
-        return;
       }
-
-      removePermissionRequest(permissionId);
-      setPendingIds((prev) => {
-        const next = new Set(prev);
-        next.delete(permissionId);
-        return next;
-      });
     },
-    [removePermissionRequest]
+    []
   );
 
   return (
@@ -410,78 +396,97 @@ export const Sidebar: FC<SidebarProps> = ({
           <div className="sidebar-panel__section-header">
             <span className="sidebar-panel__section-label">Needs attention</span>
             <span className="sidebar-panel__section-count">
-              {unreadNotifications.length}
+              {attentionCount}
             </span>
           </div>
 
           <div className="sidebar-panel__list">
-            {activityNotifications.length === 0 ? (
+            {visiblePermissions.length === 0 && activityNotifications.length === 0 ? (
               <SidebarEmptyNotificationState />
             ) : (
-              activityNotifications.map((notification) => {
-                const presentation = notificationPresentation(notification);
-                const isPending = pendingIds.has(notification.id);
+              <>
+                {visiblePermissions.map((item) => {
+                  const isPending = pendingIds.has(item.attention_item_id);
+                  const canRespond = Boolean(item.interaction_id);
 
-                return (
-                  <div key={notification.id} className="sidebar-panel__notification">
-                    <div
-                      className="sidebar-panel__notification-icon"
-                      data-level={presentation.tone}
-                      aria-hidden="true"
-                    >
-                      {presentation.icon}
-                    </div>
-
-                    <div className="sidebar-panel__notification-copy">
-                      <div className="sidebar-panel__notification-row">
-                        <span className="sidebar-panel__notification-title">
-                          {presentation.title}
-                        </span>
-                        <span className="sidebar-panel__notification-time">
-                          {formatNotificationTime(notification.created_at)}
-                        </span>
+                  return (
+                    <div key={item.attention_item_id} className="sidebar-panel__notification">
+                      <div
+                        className="sidebar-panel__notification-icon"
+                        data-level="warning"
+                        aria-hidden="true"
+                      >
+                        <ShieldIcon />
                       </div>
 
-                      <p className="sidebar-panel__notification-body">
-                        {notification.content}
-                      </p>
+                      <div className="sidebar-panel__notification-copy">
+                        <div className="sidebar-panel__notification-row">
+                          <span className="sidebar-panel__notification-title">
+                            Permission Request
+                          </span>
+                          <span className="sidebar-panel__notification-time">
+                            {formatNotificationTime(item.created_at)}
+                          </span>
+                        </div>
 
-                      {notification.level === "permission_required" && (
+                        <p className="sidebar-panel__notification-body">
+                          {item.payload_summary}
+                        </p>
+
                         <div className="sidebar-panel__permission-actions">
                           <button
                             type="button"
                             className="sidebar-panel__mini-action sidebar-panel__mini-action--approve"
-                            onClick={() =>
-                              void handlePermissionDecision(
-                                notification.source_instance_id,
-                                notification.id,
-                                "approve"
-                              )
-                            }
-                            disabled={isPending}
+                            onClick={() => void handlePermissionDecision(item, "approve")}
+                            disabled={isPending || !canRespond}
                           >
                             Allow
                           </button>
                           <button
                             type="button"
                             className="sidebar-panel__mini-action"
-                            onClick={() =>
-                              void handlePermissionDecision(
-                                notification.source_instance_id,
-                                notification.id,
-                                "deny"
-                              )
-                            }
-                            disabled={isPending}
+                            onClick={() => void handlePermissionDecision(item, "deny")}
+                            disabled={isPending || !canRespond}
                           >
                             Deny
                           </button>
                         </div>
-                      )}
+                      </div>
                     </div>
-                  </div>
-                );
-              })
+                  );
+                })}
+
+                {activityNotifications.map((notification) => {
+                  const presentation = notificationPresentation(notification);
+
+                  return (
+                    <div key={notification.id} className="sidebar-panel__notification">
+                      <div
+                        className="sidebar-panel__notification-icon"
+                        data-level={presentation.tone}
+                        aria-hidden="true"
+                      >
+                        {presentation.icon}
+                      </div>
+
+                      <div className="sidebar-panel__notification-copy">
+                        <div className="sidebar-panel__notification-row">
+                          <span className="sidebar-panel__notification-title">
+                            {presentation.title}
+                          </span>
+                          <span className="sidebar-panel__notification-time">
+                            {formatNotificationTime(notification.created_at)}
+                          </span>
+                        </div>
+
+                        <p className="sidebar-panel__notification-body">
+                          {notification.content}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
             )}
           </div>
           </section>

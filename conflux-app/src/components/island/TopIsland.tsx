@@ -10,6 +10,7 @@ import type { TopIslandPopoverView } from "@/lib/compact-mode";
 import { COMPACT_WINDOW_METRICS, px } from "@/lib/compact-window-metrics";
 import { getLiveAgentInstances } from "@/lib/workspace-status";
 import { useIslandStore } from "@/stores/islandStore";
+import { useActivePermissions } from "@/stores/attentionStore";
 import { useAgentStore } from "@/stores/agentStore";
 import { ConfluxBrandMark } from "./ConfluxBrandMark";
 
@@ -86,7 +87,8 @@ export const TopIsland: FC<TopIslandProps> = ({
   onCollapseShell,
   onSnapToMonitor,
 }) => {
-  const pendingPermissions = useIslandStore((s) => s.pendingPermissions);
+  // 同源（控制面 P5）：权限态从后端 AttentionQueue 投影读取，与 Sidebar 共用同一 selector。
+  const permissions = useActivePermissions();
   const notifications = useIslandStore((s) => s.notifications);
   const unreadCount = useIslandStore((s) => s.unreadCount);
   const instances = useAgentStore((s) => s.instances);
@@ -107,7 +109,7 @@ export const TopIsland: FC<TopIslandProps> = ({
   );
   const instanceCount = liveAgents.length;
 
-  const permissionRequest = pendingPermissions[0];
+  const permissionRequest = permissions[0];
   const unreadNotification = useMemo(
     () => notifications.find((notification) => !notification.read),
     [notifications]
@@ -117,10 +119,10 @@ export const TopIsland: FC<TopIslandProps> = ({
     () =>
       resolveTopIslandState({
         activeCount,
-        permissionCount: pendingPermissions.length,
+        permissionCount: permissions.length,
         unreadCount,
       }),
-    [activeCount, pendingPermissions.length, unreadCount]
+    [activeCount, permissions.length, unreadCount]
   );
 
   const shellKind = visualState === "active" && unreadCount > 0 ? "unread" : "normal";
@@ -136,7 +138,7 @@ export const TopIsland: FC<TopIslandProps> = ({
     : COMPACT_WINDOW_METRICS.topIsland.collapsedHeight;
   const primaryCopy = useMemo(() => {
     if (visualState === "permission" && permissionRequest) {
-      return permissionRequest.description || permissionRequest.action;
+      return permissionRequest.payload_summary;
     }
 
     if (shellKind === "unread") {
