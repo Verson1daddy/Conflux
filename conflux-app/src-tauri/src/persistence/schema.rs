@@ -99,7 +99,9 @@ CREATE TABLE IF NOT EXISTS attention_items (
     created_at INTEGER NOT NULL,
     resolved_at INTEGER,
     resolution TEXT,                    -- NULL = active；非 NULL = 已处置
-    audit_event_id TEXT
+    audit_event_id TEXT,
+    permission_context TEXT,            -- JSON 数组（PermissionRequest.raw_context），仅 kind=Permission
+    timeout_seconds INTEGER             -- PermissionRequest.timeout_seconds，仅 kind=Permission
 );
 CREATE INDEX IF NOT EXISTS idx_attention_items_active ON attention_items(resolution, priority, created_at);
 CREATE INDEX IF NOT EXISTS idx_attention_items_instance_kind ON attention_items(instance_id, kind, resolution);
@@ -189,6 +191,8 @@ pub fn init_database(path: &str) -> Result<Connection, ConfluxError> {
 
     // 控制面语义层 P1：存量库幂等迁移（给旧 session_events 补新列）
     migrate_session_events(&conn)?;
+    // 控制面语义层 P5：给旧 attention_items 补权限 payload 列（permission_context/timeout_seconds）
+    migrate_attention_items(&conn)?;
 
     log::debug!("SQLite 数据库初始化完成: {}", path);
     Ok(conn)
@@ -230,6 +234,49 @@ pub fn migrate_session_events(conn: &Connection) -> Result<(), ConfluxError> {
     })?;
 
     Ok(())
+}
+
+/// 给存量 `attention_items` 表幂等补齐 P5 权限 payload 列（F1 §6 投影完整性）。
+///
+/// 新建库已在 CREATE TABLE 时带上 `permission_context`/`timeout_seconds`；
+/// 此函数针对**旧 schema**（不含这两列）的存量库做 `ALTER TABLE ADD COLUMN`。
+/// 通过 `PRAGMA table_info` 检测列是否存在，缺哪列补哪列；重复调用不报错（幂等）。
+pub fn migrate_attention_items(conn: &Connection) -> Result<(), ConfluxError> {
+    let existing = attention_items_columns(conn)?;
+    let new_columns = [("permission_context", "TEXT"), ("timeout_seconds", "INTEGER")];
+    for (col, ty) in new_columns {
+        if !existing.iter().any(|c| c == col) {
+            conn.execute_batch(&format!(
+                "ALTER TABLE attention_items ADD COLUMN {} {};",
+                col, ty
+            ))
+            .map_err(|e| ConfluxError::DatabaseError {
+                message: format!("attention_items 迁移失败（ADD COLUMN {}）: {}", col, e),
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// 读取 `attention_items` 表的当前列名集合（PRAGMA table_info）
+fn attention_items_columns(conn: &Connection) -> Result<Vec<String>, ConfluxError> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(attention_items)")
+        .map_err(|e| ConfluxError::DatabaseError {
+            message: format!("PRAGMA table_info(attention_items) 准备失败: {}", e),
+        })?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| ConfluxError::DatabaseError {
+            message: format!("PRAGMA table_info(attention_items) 查询失败: {}", e),
+        })?;
+    let mut cols = Vec::new();
+    for r in rows {
+        cols.push(r.map_err(|e| ConfluxError::DatabaseError {
+            message: format!("attention_items 列名解析失败: {}", e),
+        })?);
+    }
+    Ok(cols)
 }
 
 /// 读取 `session_events` 表的当前列名集合（PRAGMA table_info）

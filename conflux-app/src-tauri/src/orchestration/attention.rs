@@ -63,6 +63,10 @@ pub struct AttentionItem {
     pub resolution: Option<InteractionResolution>,
     /// 处置时绑定的审计事件 ID（MF-8 原子绑定）
     pub audit_event_id: Option<String>,
+    /// 权限请求原始上下文（仅 kind=Permission；来自 PermissionRequest.raw_context）
+    pub permission_context: Option<Vec<String>>,
+    /// 权限超时秒数（仅 kind=Permission；来自 PermissionRequest.timeout_seconds）
+    pub timeout_seconds: Option<i64>,
 }
 
 impl AttentionItem {
@@ -87,6 +91,8 @@ struct IngestDescriptor {
     payload_summary: String,
     available_actions: Vec<InteractionAction>,
     created_at: i64,
+    permission_context: Option<Vec<String>>,
+    timeout_seconds: Option<i64>,
 }
 
 /// 后端唯一注意力队列引擎（§4）
@@ -168,6 +174,8 @@ impl AttentionQueue {
             resolved_at: None,
             resolution: None,
             audit_event_id: None,
+            permission_context: desc.permission_context,
+            timeout_seconds: desc.timeout_seconds,
         };
 
         db_attention::insert_attention_item(conn, &item)?;
@@ -454,6 +462,8 @@ fn map_event_to_descriptor(event: &ConfluxEvent) -> Option<IngestDescriptor> {
                 InteractionAction::Ignore,
             ],
             created_at: *timestamp,
+            permission_context: Some(request.raw_context.clone()),
+            timeout_seconds: Some(request.timeout_seconds as i64),
         }),
 
         ConfluxEvent::ErrorOccurred {
@@ -481,6 +491,8 @@ fn map_event_to_descriptor(event: &ConfluxEvent) -> Option<IngestDescriptor> {
                     InteractionAction::Ignore,
                 ],
                 created_at: *timestamp,
+                permission_context: None,
+                timeout_seconds: None,
             })
         }
 
@@ -501,6 +513,8 @@ fn map_event_to_descriptor(event: &ConfluxEvent) -> Option<IngestDescriptor> {
                 InteractionAction::Ignore,
             ],
             created_at: *timestamp,
+            permission_context: None,
+            timeout_seconds: None,
         }),
 
         // 非必上浮事件——不入注意力队列
@@ -580,6 +594,46 @@ mod tests {
         assert!(active[0]
             .available_actions
             .contains(&InteractionAction::Approve));
+    }
+
+    /// P5 payload 投影：ingest(Permission) 把 raw_context/timeout 投影进 AttentionItem，
+    /// 且 db round-trip 后仍保留（前端 PermissionDialog 同源渲染依赖此）。
+    #[test]
+    fn test_ingest_permission_projects_payload_and_roundtrips() {
+        let conn = init_database(":memory:").unwrap();
+        let mut q = AttentionQueue::new();
+
+        let event = ConfluxEvent::PermissionRequested {
+            instance_id: InstanceId("inst-a".to_string()),
+            request: PermissionRequest {
+                id: "req-ctx".to_string(),
+                instance_id: InstanceId("inst-a".to_string()),
+                action: "write_file".to_string(),
+                description: "写 config.toml".to_string(),
+                raw_context: vec!["$ rm -rf /".to_string(), "确认?".to_string()],
+                status: PermissionStatus::Pending,
+                created_at: 2_000,
+                timeout_seconds: 90,
+            },
+            timestamp: 2_000,
+        };
+
+        let item = q.ingest(&conn, &event).unwrap().unwrap();
+        assert_eq!(
+            item.permission_context,
+            Some(vec!["$ rm -rf /".to_string(), "确认?".to_string()])
+        );
+        assert_eq!(item.timeout_seconds, Some(90));
+
+        // db round-trip：从 db 重读，payload 仍在
+        let reloaded =
+            crate::persistence::attention::list_active_attention_items(&conn).unwrap();
+        assert_eq!(reloaded.len(), 1);
+        assert_eq!(
+            reloaded[0].permission_context,
+            Some(vec!["$ rm -rf /".to_string(), "确认?".to_string()])
+        );
+        assert_eq!(reloaded[0].timeout_seconds, Some(90));
     }
 
     /// 去重：同 instance + 同 source/interaction → 只入一项

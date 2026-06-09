@@ -19,12 +19,18 @@ use crate::orchestration::attention::AttentionItem;
 /// 插入一条注意力队列项
 pub fn insert_attention_item(conn: &Connection, item: &AttentionItem) -> Result<(), ConfluxError> {
     let actions_json = serde_json::to_string(&item.available_actions)?;
+    let context_json = item
+        .permission_context
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
     conn.execute(
         "INSERT INTO attention_items (\
             attention_item_id, instance_id, kind, priority, source_event_id, \
             interaction_id, payload_summary, available_actions, jump_back_target_id, \
-            created_at, resolved_at, resolution, audit_event_id) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            created_at, resolved_at, resolution, audit_event_id, \
+            permission_context, timeout_seconds) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         params![
             item.attention_item_id,
             item.instance_id.0,
@@ -39,6 +45,8 @@ pub fn insert_attention_item(conn: &Connection, item: &AttentionItem) -> Result<
             item.resolved_at,
             item.resolution.as_ref().map(resolution_to_str),
             item.audit_event_id,
+            context_json,
+            item.timeout_seconds,
         ],
     )
     .map_err(|e| ConfluxError::DatabaseError {
@@ -50,13 +58,19 @@ pub fn insert_attention_item(conn: &Connection, item: &AttentionItem) -> Result<
 /// 全量更新一条注意力队列项（mirror 内存态；resolve/defer/ignore/restore 后调用）
 pub fn update_attention_item(conn: &Connection, item: &AttentionItem) -> Result<(), ConfluxError> {
     let actions_json = serde_json::to_string(&item.available_actions)?;
+    let context_json = item
+        .permission_context
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
     let affected = conn
         .execute(
             "UPDATE attention_items SET \
                 instance_id = ?2, kind = ?3, priority = ?4, source_event_id = ?5, \
                 interaction_id = ?6, payload_summary = ?7, available_actions = ?8, \
                 jump_back_target_id = ?9, created_at = ?10, resolved_at = ?11, \
-                resolution = ?12, audit_event_id = ?13 \
+                resolution = ?12, audit_event_id = ?13, \
+                permission_context = ?14, timeout_seconds = ?15 \
              WHERE attention_item_id = ?1",
             params![
                 item.attention_item_id,
@@ -72,6 +86,8 @@ pub fn update_attention_item(conn: &Connection, item: &AttentionItem) -> Result<
                 item.resolved_at,
                 item.resolution.as_ref().map(resolution_to_str),
                 item.audit_event_id,
+                context_json,
+                item.timeout_seconds,
             ],
         )
         .map_err(|e| ConfluxError::DatabaseError {
@@ -94,7 +110,8 @@ pub fn list_active_attention_items(conn: &Connection) -> Result<Vec<AttentionIte
         conn,
         "SELECT attention_item_id, instance_id, kind, priority, source_event_id, \
          interaction_id, payload_summary, available_actions, jump_back_target_id, \
-         created_at, resolved_at, resolution, audit_event_id \
+         created_at, resolved_at, resolution, audit_event_id, \
+         permission_context, timeout_seconds \
          FROM attention_items WHERE resolution IS NULL \
          ORDER BY priority ASC, created_at ASC",
     )
@@ -106,7 +123,8 @@ pub fn list_ignored_attention_items(conn: &Connection) -> Result<Vec<AttentionIt
         conn,
         "SELECT attention_item_id, instance_id, kind, priority, source_event_id, \
          interaction_id, payload_summary, available_actions, jump_back_target_id, \
-         created_at, resolved_at, resolution, audit_event_id \
+         created_at, resolved_at, resolution, audit_event_id, \
+         permission_context, timeout_seconds \
          FROM attention_items WHERE resolution = 'ignored' \
          ORDER BY created_at ASC",
     )
@@ -151,6 +169,11 @@ fn map_row(row: &rusqlite::Row) -> rusqlite::Result<AttentionItem> {
         resolved_at: row.get(10)?,
         resolution: resolution.as_deref().and_then(resolution_from_str),
         audit_event_id: row.get(12)?,
+        permission_context: {
+            let ctx_json: Option<String> = row.get(13)?;
+            ctx_json.and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        },
+        timeout_seconds: row.get(14)?,
     })
 }
 

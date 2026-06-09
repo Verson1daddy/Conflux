@@ -28,6 +28,8 @@ function item(partial: Partial<AttentionItem>): AttentionItem {
     resolved_at: partial.resolved_at ?? null,
     resolution: partial.resolution ?? null,
     audit_event_id: partial.audit_event_id ?? null,
+    permission_context: partial.permission_context ?? null,
+    timeout_seconds: partial.timeout_seconds ?? null,
   };
 }
 

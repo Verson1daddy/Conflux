@@ -60,4 +60,8 @@ export interface AttentionItem {
   resolved_at: number | null;
   resolution: InteractionResolution | null;
   audit_event_id: string | null;
+  /** 权限请求原始上下文（仅 kind=permission；来自 PermissionRequest.raw_context） */
+  permission_context: string[] | null;
+  /** 权限超时秒数（仅 kind=permission） */
+  timeout_seconds: number | null;
 }

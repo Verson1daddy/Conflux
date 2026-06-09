@@ -99,6 +99,8 @@ mod tests {
             resolved_at: None,
             resolution: None,
             audit_event_id: None,
+            permission_context: None,
+            timeout_seconds: None,
         }
     }
 
