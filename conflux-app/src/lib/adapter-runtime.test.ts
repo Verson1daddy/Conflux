@@ -60,6 +60,31 @@ describe("adapter-runtime", () => {
     expect(getCreateDisabledReason(missingAuth, false)).toBe("OPENAI_API_KEY is not set");
   });
 
+  it("blocks create on the runnable gate even when installed and authenticated", () => {
+    // 三态级联第三段：installed + authenticated 都过，但 runnable=false（如版本过旧）
+    // 仍不可 Create——Create 唯一闸 = runnable。
+    const notRunnable = status({
+      ready: false,
+      installed: true,
+      authenticated: true,
+      runnable: false,
+      runtime_message: "Adapter version is too old to run",
+    });
+
+    expect(canCreateAdapter(notRunnable, false)).toBe(false);
+    expect(getCreateDisabledReason(notRunnable, false)).toBe(
+      "Adapter version is too old to run"
+    );
+
+    const badges = buildAdapterRuntimeBadges(notRunnable, false);
+    expect(badges.find((badge) => badge.id === "installed")).toMatchObject({ ok: true });
+    expect(badges.find((badge) => badge.id === "authenticated")).toMatchObject({ ok: true });
+    expect(badges.find((badge) => badge.id === "runnable")).toMatchObject({
+      ok: false,
+      tone: "warn",
+    });
+  });
+
   it("labels unavailable blocking states without pretending they are ready", () => {
     const missingAuth = status({
       ready: false,
