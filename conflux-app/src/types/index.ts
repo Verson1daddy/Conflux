@@ -91,3 +91,12 @@ export type {
   NotificationAction,
   NotificationItem,
 } from "./island";
+
+// 控制面交互 / 注意力（P5 同源投影）
+export type {
+  InteractionKind,
+  InteractionAction,
+  InteractionResolution,
+  ResolveKind,
+  AttentionItem,
+} from "./interaction";

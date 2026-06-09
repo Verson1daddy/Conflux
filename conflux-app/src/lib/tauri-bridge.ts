@@ -34,6 +34,8 @@ import type {
   IslandMode,
   InjectionSource,
   PermissionDecision,
+  AttentionItem,
+  ResolveKind,
 } from "../types";
 
 // ===== Agent 实例管理 =====
@@ -637,4 +639,49 @@ export async function respondToPermission(
     permissionId,
     decision,
   });
+}
+
+// ===== 注意力队列（控制面 P5 · 对应 commands/attention.rs） =====
+// 同源真相源：list 返回全部活跃项，前端自行按 kind 过滤；resolve/defer/ignore/restore
+// 处置后后端 emit attention_updated，前端经 onAttentionUpdated 收全量快照。
+
+/** 列出当前活跃的注意力项（后端按优先级 + 时间排序）。 */
+export async function listAttentionItems(): Promise<AttentionItem[]> {
+  return invoke<AttentionItem[]>("list_attention_items");
+}
+
+/** 处置一条注意力项（approve / deny / reply）。actor/action 由后端硬编码（MF-6）。 */
+export async function resolveAttentionItem(
+  attentionItemId: string,
+  kind: ResolveKind
+): Promise<AttentionItem> {
+  return invoke<AttentionItem>("resolve_attention_item", {
+    attentionItemId,
+    kind,
+  });
+}
+
+/** 延后一条注意力项（必须带 remindAt，缺失后端返回 Err）。 */
+export async function deferAttentionItem(
+  attentionItemId: string,
+  remindAt: number
+): Promise<AttentionItem> {
+  return invoke<AttentionItem>("defer_attention_item", {
+    attentionItemId,
+    remindAt,
+  });
+}
+
+/** 忽略一条注意力项（持久保留，可 restore）。 */
+export async function ignoreAttentionItem(
+  attentionItemId: string
+): Promise<AttentionItem> {
+  return invoke<AttentionItem>("ignore_attention_item", { attentionItemId });
+}
+
+/** 恢复一条被忽略的注意力项（回到活跃）。 */
+export async function restoreAttentionItem(
+  attentionItemId: string
+): Promise<AttentionItem> {
+  return invoke<AttentionItem>("restore_attention_item", { attentionItemId });
 }

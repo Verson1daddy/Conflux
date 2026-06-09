@@ -18,6 +18,7 @@ import type {
   StdinInjectedPayload,
   ProcessExitedPayload,
   IslandMode,
+  AttentionItem,
 } from "../types";
 
 // ===== Tauri 事件名常量 =====
@@ -57,6 +58,24 @@ export async function onConfluxEvent(
   callback: (event: ConfluxEvent) => void
 ): Promise<UnlistenFn> {
   return listen<ConfluxEvent>(CONFLUX_EVENT_CHANNEL, (tauriEvent) => {
+    callback(tauriEvent.payload);
+  });
+}
+
+// ===== 注意力队列投影（控制面 P5） =====
+/** 后端 AttentionQueue 活跃项快照通道（对应 event_emit.rs channels::ATTENTION_UPDATED）。 */
+const ATTENTION_UPDATED_EVENT = "conflux://attention-updated";
+
+/**
+ * 监听注意力队列更新事件。后端在 ingest / resolve / defer / ignore / restore 后
+ * emit 全量活跃项快照（AttentionItem[]）；前端收到后直接替换 store（同源）。
+ * @param callback 接收完整活跃项数组
+ * @returns UnlistenFn 取消订阅函数
+ */
+export async function onAttentionUpdated(
+  callback: (items: AttentionItem[]) => void
+): Promise<UnlistenFn> {
+  return listen<AttentionItem[]>(ATTENTION_UPDATED_EVENT, (tauriEvent) => {
     callback(tauriEvent.payload);
   });
 }
