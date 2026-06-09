@@ -319,6 +319,8 @@ pub fn run() {
             commands::attention::restore_attention_item,
             // 控制面 P3: 待处理交互（PendingInteraction 投影）
             commands::interaction::list_pending_interactions,
+            // 控制面 P4: 精确回场对象（JumpBackTarget）
+            commands::jumpback::get_jump_back_target,
             // BE-4: 持久化查询
             commands::persistence::list_sessions,
             commands::persistence::query_session_events,

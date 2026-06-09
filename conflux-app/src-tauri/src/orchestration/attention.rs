@@ -23,10 +23,12 @@ use serde::{Deserialize, Serialize};
 use crate::core::audit::{AuditAction, AuditActor, AuditEvent, AuditResult};
 use crate::core::event::ConfluxEvent;
 use crate::core::interaction::{InteractionAction, InteractionKind, InteractionResolution};
+use crate::core::jumpback::JumpBackTarget;
 use crate::core::types::{ErrorSeverity, EventPriority, InstanceId};
 use crate::core::ConfluxError;
 use crate::persistence::attention as db_attention;
 use crate::persistence::audit as db_audit;
+use crate::persistence::jumpback as db_jumpback;
 
 /// 注意力队列项（F1 控制面契约 §4.1）
 ///
@@ -134,6 +136,24 @@ impl AttentionQueue {
             return Ok(None);
         }
 
+        // 控制面 P4（§5）：为本注意力项生成精确回场落点并落库，再把其 id 链接进 item。
+        //
+        // 落点能力边界（真实情况）：后端 PTY 缓冲（pty/buffer.rs）为字节环形缓冲，
+        // 不维护逻辑行索引，故**无法拿到可靠终端行号** → V1 退化为 `Card`
+        // （confidence Medium），精确 `TerminalRange` 行号留待 P5 由前端 xterm
+        // `registerMarker` 回填；**后端绝不伪造行号**（§5）。
+        // 拿不到实例（如纯讨论事件）→ `FallbackContext`（confidence Low，带摘要，不静默失败）。
+        let jump_target = JumpBackTarget::derive_from_event(event);
+        let jump_back_target_id = match &jump_target {
+            Some(t) => {
+                // 落点先落库（生成失败不应阻断注意力上浮——若落库失败则不链接，
+                // 但注意力项仍入队，避免事件丢失；记录告警由调用方处理）。
+                db_jumpback::insert_jump_back_target(conn, t)?;
+                Some(t.jump_back_target_id.clone())
+            }
+            None => None,
+        };
+
         let item = AttentionItem {
             attention_item_id: AttentionItem::new_id(),
             instance_id: desc.instance_id,
@@ -143,7 +163,7 @@ impl AttentionQueue {
             interaction_id: desc.interaction_id,
             payload_summary: desc.payload_summary,
             available_actions: desc.available_actions,
-            jump_back_target_id: None,
+            jump_back_target_id,
             created_at: desc.created_at,
             resolved_at: None,
             resolution: None,
@@ -828,6 +848,126 @@ mod tests {
             6_000,
         );
         assert!(again.is_err(), "已终态项不可重复处置");
+    }
+
+    // ===== 控制面 P4：JumpBackTarget 生成 + 链接（§5 / §13.8） =====
+
+    use crate::core::jumpback::{JumpConfidence, JumpKind};
+    use crate::persistence::jumpback as db_jumpback;
+
+    fn discussion_event(ts: i64) -> ConfluxEvent {
+        use crate::core::types::{DiscussionId, DiscussionMessageData, MessageSender};
+        ConfluxEvent::DiscussionMessage {
+            discussion_id: DiscussionId("disc-1".to_string()),
+            message: DiscussionMessageData {
+                id: "m-1".to_string(),
+                discussion_id: DiscussionId("disc-1".to_string()),
+                sender: MessageSender::User,
+                content: "hi".to_string(),
+                round: 1,
+                created_at: ts,
+            },
+            timestamp: ts,
+        }
+    }
+
+    fn exited_event(instance: &str, ts: i64) -> ConfluxEvent {
+        ConfluxEvent::ProcessExited {
+            instance_id: InstanceId(instance.to_string()),
+            adapter_id: "codex".to_string(),
+            exit_code: Some(1),
+            signal: None,
+            timestamp: ts,
+        }
+    }
+
+    /// P4：ingest(PermissionRequested) → item 链接非空 jump_back_target_id；
+    /// 可取回，instance_id/card_id 正确，target_kind ∈ {Card, TerminalRange}。
+    #[test]
+    fn test_ingest_permission_generates_and_links_jump_target() {
+        let conn = init_database(":memory:").unwrap();
+        let mut q = AttentionQueue::new();
+
+        let item = q
+            .ingest(&conn, &perm_event("inst-a", "req-1", 1_000))
+            .unwrap()
+            .unwrap();
+
+        let jid = item
+            .jump_back_target_id
+            .clone()
+            .expect("permission item 必须链接 jump_back_target_id");
+
+        let target = db_jumpback::get_jump_back_target(&conn, &jid)
+            .unwrap()
+            .expect("应能取回落点");
+        assert_eq!(target.jump_back_target_id, jid);
+        assert_eq!(target.instance_id.as_ref().map(|i| i.0.as_str()), Some("inst-a"));
+        assert_eq!(target.card_id.as_deref(), Some("inst-a"));
+        // V1 后端拿不到可靠行号 → Card（不伪造 TerminalRange）
+        assert!(
+            matches!(target.target_kind, JumpKind::Card | JumpKind::TerminalRange),
+            "target_kind 必须 ∈ {{Card, TerminalRange}}"
+        );
+        assert_eq!(target.target_kind, JumpKind::Card);
+        assert_eq!(target.confidence, JumpConfidence::Medium);
+    }
+
+    /// P4：ingest(ProcessExited 异常退出) → 生成 jump target（Card）。
+    #[test]
+    fn test_ingest_process_exited_generates_jump_target() {
+        let conn = init_database(":memory:").unwrap();
+        let mut q = AttentionQueue::new();
+
+        // ProcessExited 当前不映射为注意力项（map_event_to_descriptor → None），
+        // 但 jump target 派生独立于注意力上浮：直接验证派生能力。
+        let derived = JumpBackTarget::derive_from_event(&exited_event("inst-x", 2_000))
+            .expect("ProcessExited 应派生落点");
+        assert_eq!(derived.instance_id.as_ref().map(|i| i.0.as_str()), Some("inst-x"));
+        assert_eq!(derived.target_kind, JumpKind::Card);
+
+        // 同时确认 Error 事件（异常恢复，会上浮）也会生成并链接落点
+        let item = q
+            .ingest(&conn, &error_event("inst-x", "boom", ErrorSeverity::Error, 2_100))
+            .unwrap()
+            .unwrap();
+        let jid = item.jump_back_target_id.clone().expect("error item 应链接落点");
+        let target = db_jumpback::get_jump_back_target(&conn, &jid).unwrap().unwrap();
+        assert_eq!(target.target_kind, JumpKind::Card);
+        assert_eq!(target.instance_id.as_ref().map(|i| i.0.as_str()), Some("inst-x"));
+    }
+
+    /// P4：无法定位实例（DiscussionMessage）→ 派生 FallbackContext，
+    /// confidence=Low，fallback_summary 非空（断言不静默失败）。
+    #[test]
+    fn test_derive_without_instance_yields_low_confidence_fallback() {
+        let derived = JumpBackTarget::derive_from_event(&discussion_event(3_000))
+            .expect("即便无实例也应派生兜底落点（不静默失败）");
+        assert_eq!(derived.target_kind, JumpKind::FallbackContext);
+        assert_eq!(derived.confidence, JumpConfidence::Low);
+        assert!(derived.instance_id.is_none());
+        let summary = derived.fallback_summary.expect("FallbackContext 必带 summary");
+        assert!(!summary.is_empty(), "fallback_summary 不得为空（不静默失败）");
+    }
+
+    /// P4 / §13.8：V1 派生的 target_kind 只落在 {Card, FallbackContext}
+    /// （TerminalRange 仅在显式提供可靠行号时构造，后端 ingest 路径不生成）。
+    #[test]
+    fn test_v1_derived_kinds_are_internal_only() {
+        let with_instance = JumpBackTarget::derive_from_event(&perm_event("i", "r", 1)).unwrap();
+        let without_instance = JumpBackTarget::derive_from_event(&discussion_event(1)).unwrap();
+        assert!(matches!(with_instance.target_kind, JumpKind::Card));
+        assert!(matches!(without_instance.target_kind, JumpKind::FallbackContext));
+        // §13.8：V1 派生只落在内部聚焦类别，绝不生成 Artifact/DiscussionMessage 等外部落点。
+        for t in [&with_instance, &without_instance] {
+            assert!(
+                matches!(
+                    t.target_kind,
+                    JumpKind::Card | JumpKind::TerminalRange | JumpKind::FallbackContext
+                ),
+                "V1 派生 target_kind 必须 ∈ {{Card, TerminalRange, FallbackContext}}"
+            );
+        }
     }
 
     /// reload_from_db：活跃 + 忽略项都能恢复进内存

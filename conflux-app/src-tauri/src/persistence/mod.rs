@@ -24,3 +24,6 @@ pub mod audit;
 
 /// 控制面语义层 P2: 注意力队列项持久化
 pub mod attention;
+
+/// 控制面语义层 P4: 精确回场对象（JumpBackTarget）持久化
+pub mod jumpback;

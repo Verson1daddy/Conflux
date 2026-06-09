@@ -104,6 +104,22 @@ CREATE TABLE IF NOT EXISTS attention_items (
 CREATE INDEX IF NOT EXISTS idx_attention_items_active ON attention_items(resolution, priority, created_at);
 CREATE INDEX IF NOT EXISTS idx_attention_items_instance_kind ON attention_items(instance_id, kind, resolution);
 
+-- 控制面语义层 P4（F1 契约 §5.1）：精确回场对象（JumpBackTarget）。
+-- 由 AttentionQueue::ingest 在生成 AttentionItem 时同步生成并链接（attention_items.jump_back_target_id）。
+-- 落点生成后不可变（仅 INSERT + SELECT），与 attention 一致可重启恢复。
+-- §13.8（MF-9）：仅内部聚焦——表结构不含任何 external_uri / file_ref 列；cwd 仅展示。
+CREATE TABLE IF NOT EXISTS jump_back_targets (
+    jump_back_target_id TEXT PRIMARY KEY,
+    target_kind TEXT NOT NULL,          -- card|terminal|terminal_range|artifact|discussion_message|fallback_context
+    instance_id TEXT,
+    card_id TEXT,
+    terminal_range TEXT,                -- JSON {start_line,end_line}（仅 terminal_range 有值）
+    cwd TEXT,                           -- 仅展示 fallback，绝不作 shell.open 入参（§13.8）
+    fallback_summary TEXT,              -- FallbackContext 必非空（不静默失败）
+    confidence TEXT NOT NULL            -- high|medium|low
+);
+CREATE INDEX IF NOT EXISTS idx_jump_back_targets_instance ON jump_back_targets(instance_id);
+
 CREATE TABLE IF NOT EXISTS discussions (
     discussion_id TEXT PRIMARY KEY,
     topic TEXT NOT NULL,
@@ -411,6 +427,7 @@ mod tests {
             "workspace_layouts",
             "audit_events",
             "attention_items",
+            "jump_back_targets",
         ];
 
         for table_name in &expected_tables {

@@ -23,6 +23,9 @@ pub mod interaction;
 /// 控制面 P1.5: stdin 注入唯一入口（MF-1 / CRIT-01，契约 §13.1）
 pub mod injection;
 
+/// 控制面语义层 P4: 精确回场对象（JumpBackTarget 及枚举）
+pub mod jumpback;
+
 // ===== Re-exports（方便外部模块直接使用） =====
 
 // 标识符类型
@@ -106,6 +109,12 @@ pub use interaction::PendingInteraction;
 // 注入唯一入口（控制面 P1.5 / MF-1）
 pub use injection::inject_with_policy;
 pub use injection::should_enforce_stdin_injection_policy;
+
+// 控制面语义层 P4：精确回场对象
+pub use jumpback::JumpBackTarget;
+pub use jumpback::JumpConfidence;
+pub use jumpback::JumpKind;
+pub use jumpback::TerminalRange;
 
 // 事件
 pub use event::ConfluxEvent;
