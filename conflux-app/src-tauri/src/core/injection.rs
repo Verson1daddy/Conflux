@@ -152,6 +152,27 @@ pub fn check_content_policy(policy: &StdinInjectionPolicy, input: &str) -> Resul
     Ok(())
 }
 
+/// 纯函数：对单个 instance 的 1 分钟滑动窗口做限速判定（MF-3：**per-instance**）。
+///
+/// 拆出为纯函数以便不依赖 Tauri AppHandle / AppState 做单元测试。
+/// 放行时记录本次 `now` 并返回 `Ok(())`；超限时**不记录**、返回 `Err(当前窗口内计数)`。
+/// 各 instance 互不影响——单 pane 刷注入不会饿死其它 pane。
+fn check_and_record_rate_limit(
+    counters: &mut std::collections::HashMap<String, Vec<u64>>,
+    instance_id: &str,
+    now: u64,
+    max_rate: u32,
+) -> Result<(), usize> {
+    let window_start = now.saturating_sub(60);
+    let counter = counters.entry(instance_id.to_string()).or_default();
+    counter.retain(|&ts| ts > window_start);
+    if counter.len() as u32 >= max_rate {
+        return Err(counter.len());
+    }
+    counter.push(now);
+    Ok(())
+}
+
 /// **唯一注入入口**（MF-1 / CRIT-01，契约 §13.1）。
 ///
 /// 收敛 policy 检查 + `pty_manager.inject_stdin` 实际注入 + `StdinInjected` emit。
@@ -209,21 +230,18 @@ pub fn inject_with_policy(
         }
     }
 
-    // 3. 速率限制检查（1 分钟滑动窗口）
+    // 3. 速率限制检查（1 分钟滑动窗口，MF-3：**per-instance**；判定见 check_and_record_rate_limit）
     if enforce_policy {
-        let mut counter = state.injection_rate_counter.write();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-
-        let window_start = now.saturating_sub(60);
-        counter.retain(|&ts| ts > window_start);
-
+        // 先读 policy（独立锁），再拿计数器，避免持计数器锁期间再取另一把锁。
         let max_rate = state.stdin_policy.read().rate_limit_per_minute;
-        if counter.len() as u32 >= max_rate {
-            let count = counter.len();
-            drop(counter);
+
+        let mut counters = state.injection_rate_counter.write();
+        if let Err(count) = check_and_record_rate_limit(&mut counters, instance_id, now, max_rate) {
+            drop(counters);
             let audit =
                 build_injection_audit(instance_id, &source, AuditResult::Rejected, now_ms());
             if let Err(ae) = write_injection_audit(state, &audit) {
@@ -231,13 +249,11 @@ pub fn inject_with_policy(
             }
             return Err(ConfluxError::OrchestrationError {
                 message: format!(
-                    "注入速率超限: 过去 1 分钟内已注入 {} 次（限制 {}）",
-                    count, max_rate
+                    "注入速率超限: 实例 {} 过去 1 分钟内已注入 {} 次（限制 {}）",
+                    instance_id, count, max_rate
                 ),
             });
         }
-
-        counter.push(now);
     }
 
     // 4. 审计-注入核心（fail-closed，MF-2 / §13.2 + chokepoint §13.1）。
@@ -454,5 +470,35 @@ mod tests {
         // 两条都按 source 硬编码归属（PermissionResponse → User）
         assert!(audits.iter().all(|a| a.actor == AuditActor::User
             && a.injection_source == Some(InjectionSource::PermissionResponse)));
+    }
+
+    // ===== MF-3：per-instance 限速 =====
+
+    /// 限速 per-instance——instance A 打满不影响 instance B。
+    #[test]
+    fn rate_limit_is_per_instance() {
+        let mut counters = std::collections::HashMap::new();
+        // A 在同一秒内注入到上限 3
+        assert!(check_and_record_rate_limit(&mut counters, "inst-a", 1000, 3).is_ok());
+        assert!(check_and_record_rate_limit(&mut counters, "inst-a", 1000, 3).is_ok());
+        assert!(check_and_record_rate_limit(&mut counters, "inst-a", 1000, 3).is_ok());
+        // A 第 4 次超限（窗口内已 3 次）
+        assert_eq!(
+            check_and_record_rate_limit(&mut counters, "inst-a", 1000, 3),
+            Err(3)
+        );
+        // B 不受 A 影响，仍可注入（旧实现的全局计数器会在此误伤 B）
+        assert!(check_and_record_rate_limit(&mut counters, "inst-b", 1000, 3).is_ok());
+    }
+
+    /// 滑出 60s 窗口的旧时间戳被回收，计数恢复。
+    #[test]
+    fn rate_limit_window_slides() {
+        let mut counters = std::collections::HashMap::new();
+        assert!(check_and_record_rate_limit(&mut counters, "inst-a", 1000, 1).is_ok());
+        // 同窗口第 2 次超限（max=1）
+        assert!(check_and_record_rate_limit(&mut counters, "inst-a", 1000, 1).is_err());
+        // 61s 后旧时间戳滑出窗口，恢复放行
+        assert!(check_and_record_rate_limit(&mut counters, "inst-a", 1062, 1).is_ok());
     }
 }

@@ -258,6 +258,13 @@ pub async fn destroy_agent_instance(
         pinned.remove(&instance_id.0);
     }
 
+    // 4.5. 清理 per-instance 注入速率计数器条目（C8 / Red Team 第三轮 MEDIUM）：
+    // injection_rate_counter 是 per-instance HashMap，实例销毁后若不移除其 key，
+    // 长期运行会无界增长（轻微内存泄漏）。与上面的 map/pinned 清理同语义。
+    {
+        state.injection_rate_counter.write().remove(&instance_id.0);
+    }
+
     // 5. 标记 agent_instances 结束时间
     {
         let conn = state.db.lock();

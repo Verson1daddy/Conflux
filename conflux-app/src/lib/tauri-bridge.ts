@@ -32,7 +32,6 @@ import type {
   WorkspaceLayout,
   AutoPackConfig,
   IslandMode,
-  InjectionSource,
   PermissionDecision,
   AttentionItem,
   ResolveKind,
@@ -195,19 +194,32 @@ export async function setAgentMode(
 // 对应 Rust commands/agent.rs（PTY 部分）
 
 /**
- * 向 Agent 实例的 stdin 注入内容
- * 附录 B1: 必须附带 InjectionSource 来源标识
- * 对应 Rust: inject_stdin(instance_id, input, source)
+ * 向 Agent 实例的 stdin 注入内容——用户直接输入通道。
+ * MF-2: 注入源由后端固定为 UserDirect，前端不再传 source（防自标特权源）。
+ * 对应 Rust: inject_stdin(instance_id, input)
  */
 export async function injectStdin(
   instanceId: InstanceId,
-  input: string,
-  source: InjectionSource
+  input: string
 ): Promise<void> {
   return invoke<void>("inject_stdin", {
     instanceId,
     input,
-    source,
+  });
+}
+
+/**
+ * 讨论消息注入——讨论用户消息通道。
+ * MF-2: 注入源由后端固定为 DiscussionUserMessage，前端不再传 source。
+ * 对应 Rust: inject_discussion_message(instance_id, input)
+ */
+export async function injectDiscussionMessage(
+  instanceId: InstanceId,
+  input: string
+): Promise<void> {
+  return invoke<void>("inject_discussion_message", {
+    instanceId,
+    input,
   });
 }
 

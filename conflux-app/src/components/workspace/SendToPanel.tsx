@@ -116,7 +116,7 @@ const SendToPanel: FC<SendToPanelProps> = ({ visible, onClose }) => {
     setFlash("none");
     setErrorMsg(null);
     try {
-      await injectStdin(selectedId, message + PTY_ENTER, "user_direct");
+      await injectStdin(selectedId, message + PTY_ENTER);
       setFlash("success");
       setMessage("");
       setTimeout(() => {

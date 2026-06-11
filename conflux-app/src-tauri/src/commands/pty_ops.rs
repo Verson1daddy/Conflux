@@ -11,30 +11,58 @@ use crate::core::interaction::InteractionResolution;
 use crate::core::{ConfluxError, InjectionSource, InstanceId, PermissionDecision};
 use crate::AppState;
 
-/// 向 Agent 实例的 stdin 注入内容（IPC command）。
+/// 向 Agent 实例的 stdin 注入内容（IPC command）——**用户直接输入通道**。
 ///
-/// MF-1（契约 §13.1）：本命令是 `inject_with_policy` 唯一入口的**薄包装**，
-/// 行为不变。policy 检查（长度 / forbidden_patterns / 速率）、实际注入、
-/// `StdinInjected` emit 全部收敛在 `inject_with_policy` 内。
-///
-/// 自动/批量注入（OrchestrationAuto / DiscussionUserMessage）走 StdinInjectionPolicy；
-/// 用户在展开终端里直接打字（UserDirect）不走该策略——否则逐键输入会被自动注入的
-/// 限速误伤。
+/// MF-1（§13.1）：经唯一入口 `inject_with_policy`，不裸调 `pty_manager.inject_stdin`。
+/// **MF-2（§13.2 / §4.4）：注入源由后端固定为 `UserDirect`，不接受前端入参**——
+/// 前端永不能自标 `OrchestrationAuto` / `System` 等特权源（否则可伪造审计 actor）。
+/// 讨论消息注入走专门命令 `inject_discussion_message`（后端固定 DiscussionUserMessage）；
+/// coordinator 自动注入走 `inject_with_policy(OrchestrationAuto)`（后端，不经本命令）。
 ///
 /// # 参数
 /// - `instance_id`: 目标实例标识
-/// - `input`: 要注入的文本内容
-/// - `source`: 注入来源分类（用于审计和策略判断）
+/// - `input`: 要注入的文本（展开终端直接打字 / reply / send-to）
 #[tauri::command]
 pub async fn inject_stdin(
     app: AppHandle,
     state: State<'_, AppState>,
     instance_id: InstanceId,
     input: String,
-    source: Option<InjectionSource>,
 ) -> Result<(), ConfluxError> {
-    let source_resolved = source.unwrap_or(InjectionSource::UserDirect);
-    inject_with_policy(&app, &state, &instance_id.0, &input, source_resolved)
+    // 源由命令身份硬编码——此命令即"用户直接输入"通道。
+    inject_with_policy(
+        &app,
+        &state,
+        &instance_id.0,
+        &input,
+        InjectionSource::UserDirect,
+    )
+}
+
+/// 讨论消息注入（MF-2 / §13.9）——**讨论用户消息通道**。
+///
+/// 注入源由后端固定为 `DiscussionUserMessage`，前端不能自标。经唯一入口
+/// `inject_with_policy`，自动写 actor=User / action=DiscussionInjection 审计（MF-6），
+/// 并受 StdinInjectionPolicy 闸（内容/速率 per-instance）。替代原先前端
+/// `injectStdin(id, content, "discussion_user_message")` 的自标 source 路径。
+///
+/// # 参数
+/// - `instance_id`: 目标参与 agent 实例
+/// - `input`: 讨论中需注入该 agent stdin 的用户消息内容
+#[tauri::command]
+pub async fn inject_discussion_message(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    instance_id: InstanceId,
+    input: String,
+) -> Result<(), ConfluxError> {
+    inject_with_policy(
+        &app,
+        &state,
+        &instance_id.0,
+        &input,
+        InjectionSource::DiscussionUserMessage,
+    )
 }
 
 /// 调整 Agent 实例的 PTY 终端尺寸

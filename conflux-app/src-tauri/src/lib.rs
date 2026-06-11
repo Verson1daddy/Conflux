@@ -60,8 +60,9 @@ pub struct AppState {
     pub instance_adapter_map: RwLock<HashMap<String, String>>,
     /// stdin 注入安全策略（附录 B1）
     pub stdin_policy: RwLock<StdinInjectionPolicy>,
-    /// 注入速率计数器：记录每次注入的时间戳（秒级），用于速率限制
-    pub injection_rate_counter: RwLock<Vec<u64>>,
+    /// 注入速率计数器（MF-3：**per-instance**，避免单 pane 刷注入饿死全体 pane）：
+    /// instance_id -> 该实例近 1 分钟注入时间戳（秒级）滑动窗口。
+    pub injection_rate_counter: RwLock<HashMap<String, Vec<u64>>>,
     /// SQLite 数据库连接（BE-4 持久化层）
     pub db: parking_lot::Mutex<rusqlite::Connection>,
     /// 讨论引擎（BE-4 编排层）
@@ -100,7 +101,7 @@ impl AppState {
             primary_adapter: RwLock::new(None),
             instance_adapter_map: RwLock::new(HashMap::new()),
             stdin_policy: RwLock::new(StdinInjectionPolicy::default()),
-            injection_rate_counter: RwLock::new(Vec::new()),
+            injection_rate_counter: RwLock::new(HashMap::new()),
             db: parking_lot::Mutex::new(db_conn),
             discussion_engine: RwLock::new(DiscussionEngine::new()),
             coordinator: Coordinator,
@@ -297,6 +298,7 @@ pub fn run() {
             commands::window::quit_application,
             // BE-2: PTY 操作
             commands::pty_ops::inject_stdin,
+            commands::pty_ops::inject_discussion_message,
             commands::pty_ops::resize_pty,
             commands::pty_ops::respond_to_permission,
             // BE-3: 适配器管理

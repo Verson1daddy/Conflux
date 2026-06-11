@@ -346,7 +346,7 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
         copyText: copyTextToClipboard,
         sendData: (data) => {
           if (subscribeToPty) {
-            return injectStdin(instanceId, data, "user_direct");
+            return injectStdin(instanceId, data);
           }
           terminal.write(data);
         },

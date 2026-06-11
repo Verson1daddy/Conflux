@@ -280,7 +280,7 @@ const NotificationTray: FC<NotificationTrayProps> = ({ visible, onClose }) => {
     async (notif: NotificationItem, replyText: string) => {
       // Try backend; ignore failure so demo still works
       try {
-        await injectStdin(notif.source_instance_id, replyText + PTY_ENTER, "user_direct");
+        await injectStdin(notif.source_instance_id, replyText + PTY_ENTER);
       } catch { /* no PTY yet — demo mode */ }
       await animateRemoval(notif.id, "success");
     },

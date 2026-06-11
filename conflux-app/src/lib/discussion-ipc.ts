@@ -10,7 +10,7 @@ import {
   startDiscussion,
   sendDiscussionMessage,
   endDiscussion,
-  injectStdin,
+  injectDiscussionMessage,
 } from "@/lib/tauri-bridge";
 import { PTY_ENTER } from "@/lib/constants";
 import type {
@@ -63,7 +63,7 @@ export async function sendMessageWithInjection(
   const injectionResults = await Promise.all(
     targetInstanceIds.map(async (id): Promise<InjectionResult> => {
       try {
-        await injectStdin(id, content + PTY_ENTER, "discussion_user_message");
+        await injectDiscussionMessage(id, content + PTY_ENTER);
         return { instanceId: id, ok: true };
       } catch (error) {
         console.warn(`[discussion-ipc] inject to ${id} failed:`, error);
