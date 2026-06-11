@@ -11,10 +11,12 @@
 //! 后端（portable-pty 0.9 + JobObjectSupervisor + 读线程 + capture）在系统集成子步（2b）落地。
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use crate::event::{MuxNotify, PaneEventSink};
 use crate::inject::{InjectionContext, InjectionHook};
 use crate::job::{ProcessSupervisor, SupervisorFactory};
+use crate::scrollback::{LineIndexedBuffer, DEFAULT_BUFFER_CAPACITY};
 use crate::types::{InjectionSource, PaneId, PaneLifecycle, PaneSize, PaneState, ScrollbackInfo};
 use crate::ConmuxError;
 
@@ -88,10 +90,16 @@ pub(crate) struct Pane {
     working_dir: String,
     size: PaneSize,
     created_at: i64,
+    /// 行索引 scrollback（读线程 feed；capture / jump-back 后端地基）。
+    scrollback: Arc<Mutex<LineIndexedBuffer>>,
 }
 
 impl Pane {
     fn to_state(&self, pane_id: &PaneId) -> PaneState {
+        let (first, last) = {
+            let sb = self.scrollback.lock().expect("scrollback 锁未中毒");
+            sb.line_range_available()
+        };
         PaneState {
             pane_id: pane_id.clone(),
             adapter_id: self.adapter_id.clone(),
@@ -101,11 +109,10 @@ impl Pane {
             exit_code: self.exit_code,
             working_dir: self.working_dir.clone(),
             size: self.size,
-            // scrollback 在系统集成子步接 LineIndexedBuffer 后填实；此处占位。
             scrollback: ScrollbackInfo {
-                total_bytes: 0,
-                first_abs_line: 0,
-                last_abs_line: 0,
+                total_bytes: 0, // 2b-3b capture 接线时填 LineIndexedBuffer 字节计
+                first_abs_line: first,
+                last_abs_line: last,
             },
             created_at: self.created_at,
         }
@@ -117,32 +124,50 @@ impl Pane {
 /// **`pub(crate)`——backend/supervisor 是 conmux 内部（Windows ConPTY / JobObject），
 /// conflux 不提供它们**。2a 仅 mock 测试经此构造；2b 将加公开 `PaneHost::new_windows(
 /// hooks, event_sink, runtime)` 内部装配 Windows 后端 + JobObjectSupervisor。
-// 2a：仅 test 构造（2b Windows 构造器会用），lib build 暂为 dead。
-#[allow(dead_code)]
+// backend/supervisor 是 conmux 内部（Windows ConPTY / JobObject），conflux 不提供。
 pub(crate) struct PaneHostConfig {
     pub(crate) backend: Box<dyn PaneBackend>,
     pub(crate) supervisor_factory: Box<dyn SupervisorFactory>,
-    pub(crate) hooks: Vec<std::sync::Arc<dyn InjectionHook>>,
+    pub(crate) hooks: Vec<Arc<dyn InjectionHook>>,
+    /// 事件出口（None = 不起读线程，2a mock 测试用；Windows 路径必给）。
+    pub(crate) event_sink: Option<Arc<dyn PaneEventSink>>,
 }
 
 /// 对外门面。私有持有 pane 表；唯一写入口 `inject_stdin`（MF-1）。
 pub struct PaneHost {
     backend: Box<dyn PaneBackend>,
     supervisor_factory: Box<dyn SupervisorFactory>,
-    hooks: Vec<std::sync::Arc<dyn InjectionHook>>,
+    hooks: Vec<Arc<dyn InjectionHook>>,
+    event_sink: Option<Arc<dyn PaneEventSink>>,
     panes: Mutex<HashMap<PaneId, Pane>>,
 }
 
 impl PaneHost {
-    /// `pub(crate)`——2a 经 mock parts 构造（测试）；2b 加公开 Windows 构造器。
-    #[allow(dead_code)] // 2a：仅 test 调用；2b Windows 构造器会用。
+    /// `pub(crate)`——2a 经 mock parts 构造（测试）；Windows 用 `new_windows`。
     pub(crate) fn new(config: PaneHostConfig) -> Self {
         Self {
             backend: config.backend,
             supervisor_factory: config.supervisor_factory,
             hooks: config.hooks,
+            event_sink: config.event_sink,
             panes: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// 公开 Windows 构造器（cutover 2b-3）：装配 WindowsPaneBackend（ConPTY + DSR 应答）
+    /// + JobObjectSupervisorFactory（整树监管）+ conflux 提供的注入钩子链 + 事件出口。
+    /// conflux 经此构造 PaneHost（不接触 conmux 内部的 backend/supervisor 类型）。
+    #[cfg(windows)]
+    pub fn new_windows(
+        hooks: Vec<Arc<dyn InjectionHook>>,
+        event_sink: Arc<dyn PaneEventSink>,
+    ) -> Self {
+        Self::new(PaneHostConfig {
+            backend: Box::new(crate::pane_win::WindowsPaneBackend),
+            supervisor_factory: Box::new(crate::job::JobObjectSupervisorFactory),
+            hooks,
+            event_sink: Some(event_sink),
+        })
     }
 
     /// spawn 一个 pane：backend.open → session.spawn → 监管器 assign（fail-closed，MF-4）
@@ -169,6 +194,44 @@ impl PaneHost {
             });
         }
 
+        let scrollback = Arc::new(Mutex::new(LineIndexedBuffer::new(DEFAULT_BUFFER_CAPACITY)));
+
+        // 读线程（仅当有事件出口 = Windows 路径；mock 路径 event_sink=None 跳过，2a 测试不受扰）：
+        // pump_reader_with_dsr 读 PTY → 应答 DSR → feed scrollback → 推 PaneOutput；
+        // EOF 推 PaneExited。reader/writer 是独立句柄，在 session 移入 pane 表前取出。
+        #[cfg(windows)]
+        if let Some(sink) = self.event_sink.clone() {
+            if let Some(writer) = session.protocol_writer() {
+                match session.take_reader() {
+                    Ok(reader) => {
+                        let pane_id = req.pane_id.clone();
+                        let sb = Arc::clone(&scrollback);
+                        std::thread::spawn(move || {
+                            let mut seq: u64 = 0;
+                            crate::pane_win::pump_reader_with_dsr(reader, writer, |chunk| {
+                                sb.lock().expect("scrollback 锁").append(chunk);
+                                seq += 1;
+                                sink.on_notify(MuxNotify::PaneOutput {
+                                    pane_id: pane_id.clone(),
+                                    seq,
+                                    data: chunk.to_vec(),
+                                });
+                            });
+                            // pump 返回 = reader EOF（进程退出 + master drop）。
+                            sink.on_notify(MuxNotify::PaneExited {
+                                pane_id,
+                                exit_code: None, // 退出码精确映射 2b-3b/后续（try_exit_code）
+                            });
+                        });
+                    }
+                    Err(_e) => {
+                        // take_reader 失败：不起读线程（无输出事件），pane 仍可 inject/kill。
+                        // conmux 无日志依赖；失败可观察性由 conflux sink 侧补（后续）。
+                    }
+                }
+            }
+        }
+
         let working_dir = req.command.cwd.clone().unwrap_or_default();
         let pane = Pane {
             session,
@@ -181,6 +244,7 @@ impl PaneHost {
             working_dir,
             size: req.size,
             created_at: req.created_at,
+            scrollback,
         };
         self.panes
             .lock()
@@ -452,6 +516,7 @@ mod tests {
                 rec: Arc::clone(&sup_rec),
             }),
             hooks: vec![Arc::new(hook)],
+            event_sink: None, // mock 路径不起读线程
         });
         Fixture {
             host,
@@ -674,5 +739,129 @@ mod tests {
     fn panehost_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<PaneHost>();
+    }
+
+    // ===== Windows 端到端集成（cutover 2b-3）：new_windows 真实组装 =====
+    #[cfg(windows)]
+    mod windows_e2e {
+        use super::super::*;
+        use crate::event::{MuxNotify, PaneEventSink};
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        struct CollectSink {
+            events: Arc<Mutex<Vec<MuxNotify>>>,
+        }
+        impl PaneEventSink for CollectSink {
+            fn on_notify(&self, notify: MuxNotify) {
+                self.events.lock().unwrap().push(notify);
+            }
+        }
+
+        fn win_req(id: &str, echo: &str) -> SpawnRequest {
+            SpawnRequest {
+                pane_id: PaneId(id.into()),
+                command: CommandSpec {
+                    program: "cmd.exe".into(),
+                    args: vec!["/c".into(), format!("echo {echo}")],
+                    cwd: None,
+                    env: vec![],
+                },
+                size: PaneSize { rows: 24, cols: 80 },
+                adapter_id: "shell".into(),
+                display_name: None,
+                created_at: 0,
+            }
+        }
+
+        /// 完整 Windows 组装：new_windows → spawn（JobObject assign + ConPTY + DSR 读线程）
+        /// → 收到 PaneOutput（含 echo marker，证明 DSR 应答 + 读线程 + 事件链通）→ kill。
+        #[test]
+        fn new_windows_spawn_emits_output_then_kill() {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let host = PaneHost::new_windows(
+                vec![],
+                Arc::new(CollectSink {
+                    events: Arc::clone(&events),
+                }),
+            );
+            host.spawn(win_req("w1", "conmux-2b3-e2e")).expect("spawn 应成功");
+
+            // 给 echo 跑完 + DSR 应答 + PaneOutput 流动的时间。
+            std::thread::sleep(Duration::from_millis(1800));
+
+            let collected: Vec<u8> = events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|e| match e {
+                    MuxNotify::PaneOutput { data, .. } => Some(data.clone()),
+                    _ => None,
+                })
+                .flatten()
+                .collect();
+            let text = String::from_utf8_lossy(&collected);
+            assert!(
+                text.contains("conmux-2b3-e2e"),
+                "应收到含 echo marker 的 PaneOutput（DSR 已应答否则挂死），实际:\n{text}"
+            );
+
+            // kill：移除 pane → drop session（master）→ 读线程 EOF → PaneExited；
+            // supervisor.kill_tree 整树终结。
+            host.kill(&PaneId("w1".into())).expect("kill 应成功");
+            assert!(host.list_panes().is_empty());
+        }
+
+        /// 注入经唯一写链到达真实 ConPTY（cmd 回显注入内容）。
+        #[test]
+        fn new_windows_inject_reaches_pty() {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let host = PaneHost::new_windows(
+                vec![],
+                Arc::new(CollectSink {
+                    events: Arc::clone(&events),
+                }),
+            );
+            // 交互式 cmd（无 /c），可接收注入。
+            host.spawn(SpawnRequest {
+                pane_id: PaneId("w2".into()),
+                command: CommandSpec {
+                    program: "cmd.exe".into(),
+                    args: vec![],
+                    cwd: None,
+                    env: vec![],
+                },
+                size: PaneSize { rows: 24, cols: 80 },
+                adapter_id: "shell".into(),
+                display_name: None,
+                created_at: 0,
+            })
+            .unwrap();
+            std::thread::sleep(Duration::from_millis(800));
+            host.inject_stdin(
+                &PaneId("w2".into()),
+                b"echo conmux-inject-2b3\r\n",
+                InjectionSource::UserDirect,
+            )
+            .expect("inject 应成功");
+            std::thread::sleep(Duration::from_millis(1500));
+
+            let collected: Vec<u8> = events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|e| match e {
+                    MuxNotify::PaneOutput { data, .. } => Some(data.clone()),
+                    _ => None,
+                })
+                .flatten()
+                .collect();
+            let text = String::from_utf8_lossy(&collected);
+            assert!(
+                text.contains("conmux-inject-2b3"),
+                "注入内容应经唯一写链到达 ConPTY 并回显，实际:\n{text}"
+            );
+            host.kill(&PaneId("w2".into())).unwrap();
+        }
     }
 }

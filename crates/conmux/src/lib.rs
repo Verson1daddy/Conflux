@@ -38,6 +38,9 @@ pub mod capture;
 /// 注入下沉：InjectionHook / InjectionContext（库级唯一注入路径，契约 §4 / MF-1/5/6）。
 pub mod inject;
 
+/// Pane 事件出口：MuxNotify / PaneEventSink（契约 §9，conmux 不依赖 Tauri）。
+pub mod event;
+
 /// 进程监管：ProcessSupervisor / SupervisorFactory（每 pane 一 Job，契约 §3 / MF-4）。
 pub mod job;
 
@@ -52,6 +55,7 @@ pub mod pane_win;
 // ===== 公开 API 重导出（顶层可达）=====
 pub use capture::{CaptureRange, CaptureRequest, CaptureResult};
 pub use error::ConmuxError;
+pub use event::{MuxNotify, PaneEventSink};
 pub use inject::{InjectionContext, InjectionHook};
 pub use job::{ProcessSupervisor, SupervisorFactory};
 #[cfg(windows)]
