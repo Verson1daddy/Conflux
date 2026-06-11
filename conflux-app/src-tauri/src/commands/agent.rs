@@ -97,7 +97,13 @@ fn maybe_inject_claude_hook(
         return None;
     }
     let relay_path = state.hook_relay_path.as_ref()?;
-    let paths = crate::hook_runtime::instance_paths(&state.hook_dir, instance_id);
+    // out 文件带 spawn 时刻 nonce（每代唯一）——respawn 重启 hook 时旧 watcher
+    // 自删的是旧代文件，与新代零竞态（V1-core hook 生命周期修复）。
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let paths = crate::hook_runtime::instance_paths(&state.hook_dir, instance_id, nonce);
 
     let (relay_str, out_str, settings_str) = match (
         relay_path.to_str(),
@@ -122,6 +128,30 @@ fn maybe_inject_claude_hook(
     spawn_args.push(settings_str.to_string());
     log::debug!("已为 instance={instance_id} 注入 Claude Code hook 感知");
     Some(paths)
+}
+
+/// 启动 hook watcher 线程并登记停止信号（create / respawn-restart 共用）。
+fn start_hook_watcher(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    instance_id: &str,
+    out_file: std::path::PathBuf,
+) {
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    state
+        .hook_watchers
+        .write()
+        .insert(instance_id.to_string(), std::sync::Arc::clone(&stop));
+    crate::hook_runtime::spawn_hook_watcher(app.clone(), instance_id.to_string(), out_file, stop);
+}
+
+/// 停掉实例的 hook watcher（若有）并删 settings（destroy / respawn 共用）。
+/// out 文件由 watcher 退出时自删（唯一读者 + per-spawn 唯一文件名，零竞态）。
+fn stop_hook_watcher_and_cleanup_settings(state: &AppState, instance_id: &str) {
+    if let Some(stop) = state.hook_watchers.write().remove(instance_id) {
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    crate::hook_runtime::cleanup_settings_by_id(&state.hook_dir, instance_id);
 }
 
 /// Create an Agent instance and start its PTY process.
@@ -217,17 +247,7 @@ pub async fn create_agent_instance(
 
     // 6b. spawn 成功后启动 hook watcher（轮询 ndjson → 上浮 PermissionRequested）。
     if let Some(paths) = hook_paths {
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        state
-            .hook_watchers
-            .write()
-            .insert(instance_id.0.clone(), std::sync::Arc::clone(&stop));
-        crate::hook_runtime::spawn_hook_watcher(
-            app.clone(),
-            instance_id.0.clone(),
-            paths.out_file,
-            stop,
-        );
+        start_hook_watcher(&app, &state, &instance_id.0, paths.out_file);
     }
 
     // 7. 记录 instance_id -> adapter_id 映射
@@ -331,13 +351,7 @@ pub async fn destroy_agent_instance(
     // 4.6. A.2 hook：停掉 watcher 线程 + 删 settings 文件。
     // out_file（ndjson）由 watcher 在 stop 退出时自删——watcher 是唯一读者，避免与其
     // 轮询读取在 Windows 上抢文件句柄的竞态（destroy 只碰 watcher 不读的 settings）。
-    {
-        if let Some(stop) = state.hook_watchers.write().remove(&instance_id.0) {
-            stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
-        let paths = crate::hook_runtime::instance_paths(&state.hook_dir, &instance_id.0);
-        crate::hook_runtime::cleanup_settings(&paths);
-    }
+    stop_hook_watcher_and_cleanup_settings(&state, &instance_id.0);
 
     // 5. 标记 agent_instances 结束时间
     {
@@ -553,6 +567,7 @@ const SHELL_ADAPTER_PSEUDO_ID: &str = "__shell__";
 #[tauri::command]
 pub async fn respawn_agent_instance(
     state: State<'_, AppState>,
+    app: tauri::AppHandle,
     instance_id: InstanceId,
     mode: RespawnMode,
 ) -> Result<AgentInstanceInfo, ConfluxError> {
@@ -634,6 +649,19 @@ pub async fn respawn_agent_instance(
 
     // 4.（cutover ③）事件派发由全局 MuxEventBridge 承担，无须 per-spawn dispatcher。
 
+    // 4b. V1-core hook 生命周期修复：respawn 前停旧 watcher（修复原实现的两个缺口——
+    // ①重启后 claude 无 --settings，hook 感知静默丢失；②旧 watcher 假活跃会让
+    // hook-first 仲裁错误抑制刮屏兜底）。restart 且 adapter 支持时重注入 + 重启 watcher。
+    stop_hook_watcher_and_cleanup_settings(&state, &instance_id.0);
+    let mut args = args;
+    let hook_paths = maybe_inject_claude_hook(
+        &state,
+        &new_adapter_id,
+        preserved_hidden,
+        &instance_id.0,
+        &mut args,
+    );
+
     // 5. 通过 PaneRuntime::respawn spawn 新 child（复用 instance_id）
     state.pane_runtime.respawn(
         &instance_id.0,
@@ -647,6 +675,11 @@ pub async fn respawn_agent_instance(
         preserved_hidden,
         preserved_display_name.clone(),
     )?;
+
+    // 5b. respawn 成功后重启 hook watcher（新代 out 文件，与旧代零竞态）。
+    if let Some(paths) = hook_paths {
+        start_hook_watcher(&app, &state, &instance_id.0, paths.out_file);
+    }
 
     // 6. 更新 instance_adapter_map —— shell 模式会写入 "__shell__"
     {
@@ -694,6 +727,7 @@ pub async fn respawn_agent_instance(
 #[tauri::command]
 pub async fn set_agent_mode(
     state: State<'_, AppState>,
+    app: tauri::AppHandle,
     instance_id: InstanceId,
     mode: AgentMode,
 ) -> Result<AgentInstanceInfo, ConfluxError> {
@@ -741,6 +775,16 @@ pub async fn set_agent_mode(
 
     // 5.（cutover ③）事件派发由全局 MuxEventBridge 承担，无须 per-spawn dispatcher。
 
+    // 5b. V1-core hook 生命周期：停旧 watcher → 重注入 hook（同 respawn 修复）。
+    stop_hook_watcher_and_cleanup_settings(&state, &instance_id.0);
+    let hook_paths = maybe_inject_claude_hook(
+        &state,
+        &adapter_id,
+        is_hidden,
+        &instance_id.0,
+        &mut spawn_args,
+    );
+
     // 6. Respawn with same instance_id but new args
     state.pane_runtime.respawn(
         &instance_id.0,
@@ -754,6 +798,11 @@ pub async fn set_agent_mode(
         is_hidden,
         preserved_name.clone(),
     )?;
+
+    // 6b. respawn 成功后重启 hook watcher。
+    if let Some(paths) = hook_paths {
+        start_hook_watcher(&app, &state, &instance_id.0, paths.out_file);
+    }
 
     // 7. Build and return updated instance info
     let now_ms = std::time::SystemTime::now()

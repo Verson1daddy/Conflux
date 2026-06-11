@@ -63,6 +63,7 @@ pub use types::NotificationItem;
 pub use types::NotificationLevel;
 pub use types::PermissionDecision;
 pub use types::PermissionRequest;
+pub use types::PermissionSignalSource;
 pub use types::PermissionStatus;
 
 // 灵动岛

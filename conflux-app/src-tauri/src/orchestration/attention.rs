@@ -488,7 +488,14 @@ fn map_event_to_descriptor(event: &ConfluxEvent) -> Option<IngestDescriptor> {
             created_at: *timestamp,
             permission_context: Some(request.raw_context.clone()),
             timeout_seconds: Some(request.timeout_seconds as i64),
-            signal_source: None, // 批次 4：从 request.signal_source 投影
+            // §4.7：信号源投影给 UI（"scrape" = 刮屏兜底，UI 应标注不可靠）
+            signal_source: Some(
+                match request.signal_source {
+                    crate::core::PermissionSignalSource::Hook => "hook",
+                    crate::core::PermissionSignalSource::Scrape => "scrape",
+                }
+                .to_string(),
+            ),
         }),
 
         ConfluxEvent::ErrorOccurred {
@@ -580,6 +587,7 @@ mod tests {
                 status: PermissionStatus::Pending,
                 created_at: ts,
                 timeout_seconds: 120,
+                signal_source: crate::core::PermissionSignalSource::Scrape,
             },
             timestamp: ts,
         }
@@ -641,6 +649,7 @@ mod tests {
                 status: PermissionStatus::Pending,
                 created_at: 2_000,
                 timeout_seconds: 90,
+                signal_source: crate::core::PermissionSignalSource::Scrape,
             },
             timestamp: 2_000,
         };
@@ -1113,6 +1122,30 @@ mod tests {
                 "V1 派生 target_kind 必须 ∈ {{Card, TerminalRange, FallbackContext}}"
             );
         }
+    }
+
+    /// V1-core §4.7：信号源投影——Scrape/Hook 源分别投影为 "scrape"/"hook"
+    /// （UI 据此标注刮屏源不可靠）。
+    #[test]
+    fn test_ingest_projects_signal_source() {
+        use crate::core::types::PermissionSignalSource;
+        let conn = init_database(":memory:").unwrap();
+        let mut q = AttentionQueue::new();
+
+        // perm_event 夹具 = Scrape 源
+        let scrape_item = q
+            .ingest(&conn, &perm_event("inst-s", "req-s", 1_000))
+            .unwrap()
+            .unwrap();
+        assert_eq!(scrape_item.signal_source.as_deref(), Some("scrape"));
+
+        // Hook 源事件
+        let mut hook_event = perm_event("inst-h", "req-h", 2_000);
+        if let ConfluxEvent::PermissionRequested { request, .. } = &mut hook_event {
+            request.signal_source = PermissionSignalSource::Hook;
+        }
+        let hook_item = q.ingest(&conn, &hook_event).unwrap().unwrap();
+        assert_eq!(hook_item.signal_source.as_deref(), Some("hook"));
     }
 
     /// V1-core 批次 2：remind_at / signal_source 字段 DB 完整往返。

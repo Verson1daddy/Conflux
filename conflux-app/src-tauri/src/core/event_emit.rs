@@ -232,6 +232,21 @@ fn ingest_into_attention_queue(app: &AppHandle, state: &crate::AppState, event: 
         return;
     }
 
+    // V1-core hook-first 仲裁（mux 契约 §4.7）：该实例有活跃 hook watcher 时，
+    // 刮屏源（Scrape）权限事件**不上浮**——hook 源权威，防同一权限双发；
+    // 事件本身仍 emit 前端 + 录 session_events（只拦注意力入队）。
+    // 无 hook 的实例（codex/aider/旧 claude）刮屏照常入队 = 降级兜底。
+    if should_suppress_for_hook_first(event, |id| state.hook_watchers.read().contains_key(id)) {
+        if let ConfluxEvent::PermissionRequested { request, .. } = event {
+            log::debug!(
+                "hook-first 仲裁：实例 {} 有活跃 hook 源，抑制刮屏权限事件上浮 (req={})",
+                request.instance_id.0,
+                request.id
+            );
+        }
+        return;
+    }
+
     // V1-core（mux §4.3）：取 scrollback 行高水位作行级落点 hint（取锁前查，
     // pane_runtime 不在锁协议序内但保守起见不持其他锁时调用）。
     let line_hint = event
@@ -252,6 +267,21 @@ fn ingest_into_attention_queue(app: &AppHandle, state: &crate::AppState, event: 
 
     if new_item.is_some() {
         emit_attention_updated(app);
+    }
+}
+
+/// 纯判定：hook-first 仲裁（mux 契约 §4.7）——刮屏源权限事件在该实例有活跃 hook
+/// watcher 时抑制注意力上浮（hook 权威防双发）。Hook 源与非权限事件一律不抑制。
+fn should_suppress_for_hook_first(
+    event: &ConfluxEvent,
+    instance_has_active_hook: impl Fn(&str) -> bool,
+) -> bool {
+    match event {
+        ConfluxEvent::PermissionRequested { request, .. } => {
+            request.signal_source == crate::core::PermissionSignalSource::Scrape
+                && instance_has_active_hook(&request.instance_id.0)
+        }
+        _ => false,
     }
 }
 
@@ -421,4 +451,50 @@ fn trigger_coordinator(app: &AppHandle, state: &crate::AppState, event: &Conflux
     };
 
     emit_conflux_event(app, &coord_event);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::types::{PermissionRequest, PermissionSignalSource, PermissionStatus};
+    use crate::core::InstanceId;
+
+    fn perm_event(instance: &str, source: PermissionSignalSource) -> ConfluxEvent {
+        ConfluxEvent::PermissionRequested {
+            instance_id: InstanceId(instance.to_string()),
+            request: PermissionRequest {
+                id: "req-1".to_string(),
+                instance_id: InstanceId(instance.to_string()),
+                action: "Write".to_string(),
+                description: "写文件".to_string(),
+                raw_context: vec![],
+                status: PermissionStatus::Pending,
+                created_at: 1_000,
+                timeout_seconds: 120,
+                signal_source: source,
+            },
+            timestamp: 1_000,
+        }
+    }
+
+    /// §4.7 hook-first 仲裁矩阵：仅「Scrape 源 + 该实例 hook 活跃」被抑制。
+    #[test]
+    fn hook_first_suppresses_only_scrape_with_active_hook() {
+        let scrape = perm_event("inst-a", PermissionSignalSource::Scrape);
+        let hook = perm_event("inst-a", PermissionSignalSource::Hook);
+
+        // Scrape + hook 活跃 → 抑制（hook 权威，防双发）
+        assert!(should_suppress_for_hook_first(&scrape, |_| true));
+        // Scrape + 无 hook → 不抑制（降级兜底，codex/aider 等）
+        assert!(!should_suppress_for_hook_first(&scrape, |_| false));
+        // Hook 源永不抑制
+        assert!(!should_suppress_for_hook_first(&hook, |_| true));
+        // 非权限事件不抑制
+        let other = ConfluxEvent::TaskCompleted {
+            instance_id: InstanceId("inst-a".to_string()),
+            summary: "done".to_string(),
+            timestamp: 1,
+        };
+        assert!(!should_suppress_for_hook_first(&other, |_| true));
+    }
 }

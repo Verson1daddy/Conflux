@@ -137,6 +137,8 @@ impl PreToolUseHookEvent {
             status: PermissionStatus::Pending,
             created_at,
             timeout_seconds: DEFAULT_PERMISSION_TIMEOUT_SECS,
+            // §4.7：hook 源 = 结构化可靠信号（仲裁时压制同实例刮屏源）。
+            signal_source: crate::core::PermissionSignalSource::Hook,
         }
     }
 }

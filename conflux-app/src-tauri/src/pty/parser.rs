@@ -582,6 +582,7 @@ mod tests {
                         status: PermissionStatus::Pending,
                         created_at: now,
                         timeout_seconds: 120,
+                        signal_source: crate::core::PermissionSignalSource::Scrape,
                     },
                     timestamp: now,
                 });

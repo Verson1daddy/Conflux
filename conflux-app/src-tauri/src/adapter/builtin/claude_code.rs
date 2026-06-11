@@ -211,6 +211,8 @@ impl AgentAdapter for ClaudeCodeAdapter {
                     status: PermissionStatus::Pending,
                     created_at: now,
                     timeout_seconds: 120,
+                    // §4.7：刮屏正则源（兜底；claude TUI 重绘实测探不到，hook 为权威源）
+                    signal_source: crate::core::PermissionSignalSource::Scrape,
                 },
                 timestamp: now,
             });

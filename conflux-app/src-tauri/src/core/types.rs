@@ -267,6 +267,21 @@ pub struct NotificationItem {
     pub read: bool,
 }
 
+/// 权限信号来源（V1-core mux 契约 §4.7）。
+///
+/// 可靠性排序（冻结）：**Hook（agent 结构化回调）> Scrape（刮屏正则）**——刮屏对
+/// TUI 光标重绘式权限框不可靠（A.2 实机实锤），仅作无 hook agent 的降级兜底，
+/// 且须显式标注其不可靠性（AttentionItem.signal_source 投影给 UI）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionSignalSource {
+    /// agent 自带 hook 回调（结构化，可靠；如 Claude Code PermissionRequest hook）
+    Hook,
+    /// PTY 输出刮屏正则（兜底，对 TUI 重绘不可靠；serde default 兼容旧事件）
+    #[default]
+    Scrape,
+}
+
 /// 权限请求（附录 B3 扩展版——包含 raw_context、status、timeout_seconds）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionRequest {
@@ -286,6 +301,9 @@ pub struct PermissionRequest {
     pub created_at: i64,
     /// 超时秒数，默认 120 秒（附录 B3）
     pub timeout_seconds: u32,
+    /// 信号来源（V1-core §4.7：hook 权威 / scrape 兜底；serde default = Scrape 兼容旧事件）
+    #[serde(default)]
+    pub signal_source: PermissionSignalSource,
 }
 
 /// 权限决定（附录 B3——用户对权限请求的响应）

@@ -42,8 +42,18 @@ pub struct HookPaths {
 
 /// 确保 hook 目录存在并落盘 relay 脚本（幂等，app 启动时调用一次）。
 /// 返回 relay 脚本绝对路径。失败返回 Err（调用方降级为"无 hook 感知"，不阻塞启动）。
+///
+/// 顺带清扫遗留 `*.ndjson`（上次 app 崩溃时 watcher 没机会自删；此刻无任何 watcher
+/// 存活，删除无竞态）。
 pub fn provision_relay(hook_dir: &Path) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(hook_dir)?;
+    if let Ok(entries) = std::fs::read_dir(hook_dir) {
+        for entry in entries.flatten() {
+            if entry.path().extension().and_then(|e| e.to_str()) == Some("ndjson") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
     let relay_path = hook_dir.join(RELAY_FILENAME);
     // 总是覆写——保证 relay 内容随 app 版本更新（内容固定，幂等）。
     let mut f = std::fs::File::create(&relay_path)?;
@@ -52,11 +62,21 @@ pub fn provision_relay(hook_dir: &Path) -> std::io::Result<PathBuf> {
 }
 
 /// 为某实例生成 hook 文件路径（不创建文件）。
-pub fn instance_paths(hook_dir: &Path, instance_id: &str) -> HookPaths {
+///
+/// `nonce`（spawn 时刻 ms）使 out_file **每次 spawn 唯一**——respawn 重启 hook 时，
+/// 旧 watcher 退出自删的是**它自己那代**的文件，与新一代 watcher 零竞态
+/// （旧实现同名 `{id}.ndjson` 会被迟到 ≤400ms 的旧 watcher 误删新文件）。
+/// settings 文件名不带 nonce（每实例一份，覆写即可；destroy 按 id 即可清理）。
+pub fn instance_paths(hook_dir: &Path, instance_id: &str, nonce: i64) -> HookPaths {
     HookPaths {
         settings_file: hook_dir.join(format!("{instance_id}.settings.json")),
-        out_file: hook_dir.join(format!("{instance_id}.ndjson")),
+        out_file: hook_dir.join(format!("{instance_id}.{nonce}.ndjson")),
     }
+}
+
+/// 仅取实例的 settings 文件路径（destroy/respawn 清理用，不涉 out 文件）。
+pub fn settings_path(hook_dir: &Path, instance_id: &str) -> PathBuf {
+    hook_dir.join(format!("{instance_id}.settings.json"))
 }
 
 /// 写 per-instance settings 文件（内容 = `core::hook::build_claude_hook_settings_arg`）。
@@ -82,9 +102,9 @@ pub fn cleanup_instance(paths: &HookPaths) {
     let _ = std::fs::remove_file(&paths.out_file);
 }
 
-/// 仅删 settings 文件（destroy 用——out_file 交给 watcher 自删，消除竞态）。
-pub fn cleanup_settings(paths: &HookPaths) {
-    let _ = std::fs::remove_file(&paths.settings_file);
+/// 仅删 settings 文件（destroy/respawn 用——out_file 交给各代 watcher 自删，消除竞态）。
+pub fn cleanup_settings_by_id(hook_dir: &Path, instance_id: &str) {
+    let _ = std::fs::remove_file(settings_path(hook_dir, instance_id));
 }
 
 fn now_millis() -> i64 {
@@ -186,18 +206,36 @@ mod tests {
     }
 
     #[test]
-    fn instance_paths_are_per_id() {
+    fn instance_paths_are_per_id_and_out_is_per_spawn_unique() {
         let dir = Path::new("/tmp/hooks");
-        let p = instance_paths(dir, "inst-9");
-        assert!(p.settings_file.ends_with("inst-9.settings.json"));
-        assert!(p.out_file.ends_with("inst-9.ndjson"));
+        let p1 = instance_paths(dir, "inst-9", 1_000);
+        let p2 = instance_paths(dir, "inst-9", 2_000);
+        assert!(p1.settings_file.ends_with("inst-9.settings.json"));
+        assert!(p1.out_file.ends_with("inst-9.1000.ndjson"));
+        // respawn 竞态修复核心：同实例两代 spawn 的 out 文件互不相同，
+        // settings 同名（覆写语义）。
+        assert_ne!(p1.out_file, p2.out_file);
+        assert_eq!(p1.settings_file, p2.settings_file);
+        assert_eq!(settings_path(dir, "inst-9"), p1.settings_file);
+    }
+
+    #[test]
+    fn provision_relay_sweeps_stale_ndjson() {
+        let dir = std::env::temp_dir().join(format!("conmux_sweep_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("old.123.ndjson"), b"stale\n").unwrap();
+        std::fs::write(dir.join("keep.settings.json"), b"{}").unwrap();
+        provision_relay(&dir).unwrap();
+        assert!(!dir.join("old.123.ndjson").exists(), "遗留 ndjson 应被清扫");
+        assert!(dir.join("keep.settings.json").exists(), "settings 不动");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn write_settings_clears_stale_out_and_writes_settings() {
         let dir = std::env::temp_dir().join(format!("conmux_settings_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let paths = instance_paths(&dir, "inst-x");
+        let paths = instance_paths(&dir, "inst-x", 42);
         // 预置残留 out 文件
         std::fs::write(&paths.out_file, b"stale\n").unwrap();
         write_instance_settings(&paths, Path::new("relay.js"), r#"{"hooks":{}}"#).unwrap();

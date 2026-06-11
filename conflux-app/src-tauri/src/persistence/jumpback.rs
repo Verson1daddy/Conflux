@@ -12,7 +12,9 @@
 
 use rusqlite::{params, Connection};
 
-use crate::core::jumpback::{CoordSpace, JumpBackTarget, JumpConfidence, JumpKind, TerminalRange};
+use crate::core::jumpback::{JumpBackTarget, JumpConfidence, JumpKind, TerminalRange};
+#[cfg(test)]
+use crate::core::jumpback::CoordSpace;
 use crate::core::types::InstanceId;
 use crate::core::ConfluxError;
 

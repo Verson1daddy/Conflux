@@ -265,6 +265,8 @@ impl AgentAdapter for GenericTomlAdapter {
                         status: PermissionStatus::Pending,
                         created_at: now,
                         timeout_seconds: 120,
+                        // §4.7：刮屏正则源（兜底，对 TUI 重绘不可靠）
+                        signal_source: crate::core::PermissionSignalSource::Scrape,
                     },
                     timestamp: now,
                 });
