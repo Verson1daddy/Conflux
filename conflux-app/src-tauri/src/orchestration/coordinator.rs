@@ -389,6 +389,7 @@ mod tests {
         let events = vec![ConfluxEvent::PtyOutput {
             instance_id: InstanceId("a".to_string()),
             data: encoded,
+            seq: None,
             timestamp: 1000,
         }];
         assert!(

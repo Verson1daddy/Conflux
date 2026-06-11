@@ -301,10 +301,12 @@ impl PtyOutputParser {
             ConfluxEvent::PtyOutput {
                 instance_id,
                 data,
+                seq,
                 timestamp,
             } => ConfluxEvent::PtyOutput {
                 instance_id: patch_id(instance_id, real_id, unknown),
                 data,
+                seq,
                 timestamp,
             },
 

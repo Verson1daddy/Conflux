@@ -113,6 +113,8 @@ export interface PtyOutputPayload {
   instance_id: InstanceId;
   /** base64 编码的原始输出数据（MED-05 修复） */
   data: string;
+  /** per-pane 单调序号（V1-core mux +seq：连续性对账 / V2 重放；旧事件可空） */
+  seq?: number | null;
   /** 时间戳（Unix 时间戳 ms） */
   timestamp: number;
 }

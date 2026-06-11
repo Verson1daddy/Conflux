@@ -110,6 +110,10 @@ pub enum ConfluxEvent {
         instance_id: InstanceId,
         /// base64 编码的原始输出数据（MED-05 修复）
         data: String,
+        /// per-pane 单调序号（V1-core，mux 契约 §5：来自 conmux 读线程，供前端
+        /// 连续性对账 / V2 重放；serde default 兼容旧事件，测试夹具可 None）
+        #[serde(default)]
+        seq: Option<u64>,
         /// 时间戳（Unix 时间戳 ms）
         timestamp: i64,
     },

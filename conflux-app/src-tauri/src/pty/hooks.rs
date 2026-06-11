@@ -99,19 +99,52 @@ impl InjectionHook for PolicyHook {
     }
 }
 
-/// fail-closed 审计钩子（原 audited_inject，MF-2/MF-6）。
+/// UserDirect 合批 flush 时间窗（D3 (b-2) 会签条件：≤500ms 且遇 `\r` 立即 flush）。
+const USER_DIRECT_FLUSH_WINDOW_MS: i64 = 500;
+
+/// 单 pane 的 UserDirect 待批缓冲（D3 (b-2)）。
+struct UserDirectBatch {
+    /// 完整字节序列（payload 保全文，base64 落库）
+    bytes: Vec<u8>,
+    /// 批内击键（inject 调用）数
+    key_count: u64,
+    /// 首键时刻（ms）——时间窗起点 + payload.first_key_ts
+    first_key_ts: i64,
+    /// 本批序号（per-pane 单调，崩溃后可检测审计缺口）
+    seq: u64,
+}
+
+/// 审计钩子（MF-2/MF-6 + D3 (b-2) UserDirect 合批，红队会签条件版）。
 ///
-/// - `before_inject`：写 `result=Ok` 审计；INSERT 失败 ⇒ Err ⇒ conmux 保证字节绝不抵达 PTY。
-/// - `after_inject`：按结果判别——`Err(InjectionRejected)`（policy 拒，自己的 before 未跑或
-///   审计自身失败）⇒ 补写 Rejected；其它 `Err`（PTY 写失败，Ok 审计已落）⇒ 追加 Failed；
-///   `Ok` ⇒ no-op。审计补写均 best-effort（失败仅记日志，不掩盖原始错误）。
+/// **非 UserDirect**（PermissionResponse/OrchestrationAuto/DiscussionUserMessage）：
+/// 维持**逐次审计-先于-注入**——`before_inject` 写 `result=Ok` 审计，INSERT 失败 ⇒
+/// Err ⇒ conmux 保证字节绝不抵达 PTY（fail-closed，会签条件 2）。
+///
+/// **UserDirect（D3 (b-2)，用户 2026-06-10 裁决档位）**：逐键注入按 per-pane 缓冲
+/// 合批为一条审计（payload 保完整字节序列 base64 + 键数 + 时间区间 + 单调 seq）。
+/// **双触发 flush**：内容含 `\r`/`\n` 立即 flush；否则 ticker 在 ≤500ms 窗口内 flush。
+/// graceful shutdown 必 flush（`flush_all`，lib.rs RunEvent::Exit 调用）。
+/// 有界 fail-open 边界（显式声明，红队会签）：UserDirect 字节先于其批审计落库
+/// ≤500ms——actor 按定义即用户本人，伪造/抵赖风险最低；崩溃丢失窗口由 seq 缺口可检测。
+///
+/// `after_inject`：`Err(InjectionRejected)` ⇒ 补写 Rejected；其它 `Err`（PTY 写失败）⇒
+/// UserDirect flush 当批标 Failed（批内含失败键，payload 可追溯），其它 source 追加
+/// Failed。补写均 best-effort（失败仅记日志，不掩盖原始错误）。
 pub struct AuditHook {
     db: Arc<parking_lot::Mutex<rusqlite::Connection>>,
+    /// per-pane UserDirect 待批缓冲（D3）
+    batches: parking_lot::Mutex<HashMap<String, UserDirectBatch>>,
+    /// per-pane 下一批序号（单调；session 内不复用）
+    seqs: parking_lot::Mutex<HashMap<String, u64>>,
 }
 
 impl AuditHook {
     pub fn new(db: Arc<parking_lot::Mutex<rusqlite::Connection>>) -> Self {
-        Self { db }
+        Self {
+            db,
+            batches: parking_lot::Mutex::new(HashMap::new()),
+            seqs: parking_lot::Mutex::new(HashMap::new()),
+        }
     }
 
     fn write_audit(&self, instance_id: &str, source: &conmux::InjectionSource, result: AuditResult) {
@@ -121,10 +154,94 @@ impl AuditHook {
             log::warn!("注入审计补写失败（best-effort）: {e}");
         }
     }
+
+    /// UserDirect：append 进 per-pane 批缓冲；返回是否应立即 flush（含 `\r`/`\n`）。
+    fn append_user_direct(&self, pane_id: &str, content: &[u8], now_ms: i64) -> bool {
+        let mut batches = self.batches.lock();
+        let batch = batches.entry(pane_id.to_string()).or_insert_with(|| {
+            let mut seqs = self.seqs.lock();
+            let seq = seqs.entry(pane_id.to_string()).or_insert(0);
+            *seq += 1;
+            UserDirectBatch {
+                bytes: Vec::new(),
+                key_count: 0,
+                first_key_ts: now_ms,
+                seq: *seq,
+            }
+        });
+        batch.bytes.extend_from_slice(content);
+        batch.key_count += 1;
+        content.iter().any(|&b| b == b'\r' || b == b'\n')
+    }
+
+    /// flush 单 pane 待批（无批则 no-op）。批审计行：action=Reply / actor=User /
+    /// injection_source=UserDirect / payload=JSON{data_base64,key_count,first_key_ts,
+    /// flush_ts,seq}。写入 best-effort（失败记日志；批已取出即丢——seq 缺口可检测）。
+    fn flush_pane(&self, pane_id: &str, flush_ts: i64, result: AuditResult) {
+        let batch = match self.batches.lock().remove(pane_id) {
+            Some(b) => b,
+            None => return,
+        };
+        use base64::Engine;
+        let data_base64 = base64::engine::general_purpose::STANDARD.encode(&batch.bytes);
+        let payload = serde_json::json!({
+            "data_base64": data_base64,
+            "key_count": batch.key_count,
+            "first_key_ts": batch.first_key_ts,
+            "flush_ts": flush_ts,
+            "seq": batch.seq,
+        });
+        let mut audit = build_injection_audit(
+            pane_id,
+            &conmux::InjectionSource::UserDirect,
+            result,
+            flush_ts,
+        );
+        audit.payload = Some(payload.to_string());
+        let conn = self.db.lock();
+        if let Err(e) = insert_audit_event(&conn, &audit) {
+            log::warn!(
+                "UserDirect 批审计写入失败（seq={} 将成缺口，可检测）: {e}",
+                batch.seq
+            );
+        }
+    }
+
+    /// ticker 驱动：flush 所有超时间窗（≤500ms）的待批（D3 双触发之时间触发）。
+    pub fn flush_due(&self, now_ms: i64) {
+        let due: Vec<String> = self
+            .batches
+            .lock()
+            .iter()
+            .filter(|(_, b)| now_ms - b.first_key_ts >= USER_DIRECT_FLUSH_WINDOW_MS)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for pane_id in due {
+            self.flush_pane(&pane_id, now_ms, AuditResult::Ok);
+        }
+    }
+
+    /// graceful shutdown：flush 全部待批（D3 会签条件——退出不留未审计窗口）。
+    pub fn flush_all(&self) {
+        let all: Vec<String> = self.batches.lock().keys().cloned().collect();
+        let now = now_millis();
+        for pane_id in all {
+            self.flush_pane(&pane_id, now, AuditResult::Ok);
+        }
+    }
 }
 
 impl InjectionHook for AuditHook {
     fn before_inject(&self, ctx: &InjectionContext) -> Result<(), ConmuxError> {
+        // D3 (b-2)：仅 UserDirect 合批（有界 fail-open，会签条件 1/2）。
+        if ctx.source == conmux::InjectionSource::UserDirect {
+            let now = now_millis();
+            if self.append_user_direct(&ctx.pane_id.0, ctx.content, now) {
+                self.flush_pane(&ctx.pane_id.0, now, AuditResult::Ok); // 遇 \r/\n 立即 flush
+            }
+            return Ok(());
+        }
+        // 其它 source：逐次审计-先于-注入（fail-closed 不变量不变）。
         let audit = build_injection_audit(&ctx.pane_id.0, &ctx.source, AuditResult::Ok, now_millis());
         let conn = self.db.lock();
         insert_audit_event(&conn, &audit).map_err(|e| ConmuxError::InjectionRejected {
@@ -137,6 +254,10 @@ impl InjectionHook for AuditHook {
             Ok(()) => {}
             Err(ConmuxError::InjectionRejected { .. }) => {
                 self.write_audit(&ctx.pane_id.0, &ctx.source, AuditResult::Rejected);
+            }
+            Err(_) if ctx.source == conmux::InjectionSource::UserDirect => {
+                // PTY 写失败：当批立即 flush 并标 Failed（批内含失败键，payload 可追溯）。
+                self.flush_pane(&ctx.pane_id.0, now_millis(), AuditResult::Failed);
             }
             Err(_) => {
                 self.write_audit(&ctx.pane_id.0, &ctx.source, AuditResult::Failed);
@@ -242,8 +363,9 @@ mod tests {
         db.lock().execute("DROP TABLE audit_events", []).unwrap();
         let hook = AuditHook::new(Arc::clone(&db));
         let id = PaneId("i1".into());
-        let ctx = InjectionContext::new(&id, InjectionSource::UserDirect, b"x");
-        // before_inject Err ⇒ conmux 层保证 write_all 不被调用（pane.rs 已有 fail-closed 测试）。
+        // 非 UserDirect（逐次审计-先于-注入）：INSERT 失败 ⇒ before_inject Err ⇒
+        // conmux 层保证 write_all 不被调用（pane.rs 已有 fail-closed 测试）。
+        let ctx = InjectionContext::new(&id, InjectionSource::PermissionResponse, b"Y\r");
         assert!(matches!(
             hook.before_inject(&ctx),
             Err(ConmuxError::InjectionRejected { .. })
@@ -293,11 +415,159 @@ mod tests {
         let db = mem_db();
         let hook = AuditHook::new(Arc::clone(&db));
         let id = PaneId("i1".into());
-        let ctx = InjectionContext::new(&id, InjectionSource::UserDirect, b"x");
+        // 非 UserDirect：成功路径恰好一条 Ok 审计（before 写，after no-op）。
+        let ctx = InjectionContext::new(&id, InjectionSource::DiscussionUserMessage, b"x");
         hook.before_inject(&ctx).unwrap();
         hook.after_inject(&ctx, &Ok(()));
         let audits = list_audit_events(&db.lock(), None, None).unwrap();
         assert_eq!(audits.len(), 1, "成功路径恰好一条 Ok 审计（before 写）");
         assert_eq!(audits[0].result, AuditResult::Ok);
+    }
+
+    // ===== D3 (b-2)：UserDirect 审计合批（V1-4 写放大基线 + 会签条件） =====
+
+    fn batch_payload(audit: &crate::core::audit::AuditEvent) -> serde_json::Value {
+        serde_json::from_str(audit.payload.as_deref().expect("批审计必带 payload")).unwrap()
+    }
+
+    /// V1-4 基线：模拟 1000 次击键（每 10 键一个 `\r`）→ 审计行数 = 100 ≤ 键数/10，
+    /// 且 payload 字节拼接 == 输入全文（保全文可追溯）+ seq 单调无缺口。
+    #[test]
+    fn d3_thousand_keys_batch_to_at_most_tenth_rows_with_full_payload() {
+        use base64::Engine;
+        let db = mem_db();
+        let hook = AuditHook::new(Arc::clone(&db));
+        let id = PaneId("i1".into());
+
+        let mut expected_bytes: Vec<u8> = Vec::new();
+        for i in 0..1000u32 {
+            let key: &[u8] = if i % 10 == 9 { b"\r" } else { b"k" };
+            expected_bytes.extend_from_slice(key);
+            let ctx = InjectionContext::new(&id, InjectionSource::UserDirect, key);
+            hook.before_inject(&ctx).unwrap();
+            hook.after_inject(&ctx, &Ok(()));
+        }
+
+        let audits = list_audit_events(&db.lock(), None, None).unwrap();
+        assert_eq!(audits.len(), 100, "1000 键（每 10 键一 \\r）→ 100 条批审计");
+        assert!(audits.len() <= 1000 / 10, "V1-4：审计行数 ≤ 键数/10");
+
+        // payload 重组 == 输入全文（按 seq 升序拼接）
+        let mut batches: Vec<(u64, Vec<u8>, u64)> = audits
+            .iter()
+            .map(|a| {
+                let p = batch_payload(a);
+                (
+                    p["seq"].as_u64().unwrap(),
+                    base64::engine::general_purpose::STANDARD
+                        .decode(p["data_base64"].as_str().unwrap())
+                        .unwrap(),
+                    p["key_count"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        batches.sort_by_key(|(seq, _, _)| *seq);
+        let reassembled: Vec<u8> = batches.iter().flat_map(|(_, b, _)| b.clone()).collect();
+        assert_eq!(reassembled, expected_bytes, "批 payload 拼接必须等于输入字节序");
+        assert_eq!(
+            batches.iter().map(|(_, _, k)| k).sum::<u64>(),
+            1000,
+            "key_count 总和 == 击键数"
+        );
+        // seq 单调无缺口（崩溃缺口可检测的前提）
+        let seqs: Vec<u64> = batches.iter().map(|(s, _, _)| *s).collect();
+        assert_eq!(seqs, (1..=100).collect::<Vec<u64>>());
+        // 全部归属 UserDirect / Reply（MF-6 硬编码不变）
+        assert!(audits.iter().all(|a| a.injection_source
+            == Some(InjectionSource::UserDirect)
+            && a.action == crate::core::audit::AuditAction::Reply));
+    }
+
+    /// 时间窗触发：无 `\r` 的击键不立即落库；flush_due 超 500ms 窗口后落一条批审计。
+    #[test]
+    fn d3_window_flush_via_flush_due() {
+        let db = mem_db();
+        let hook = AuditHook::new(Arc::clone(&db));
+        let id = PaneId("i1".into());
+        for key in [b"a", b"b", b"c"] {
+            let ctx = InjectionContext::new(&id, InjectionSource::UserDirect, key);
+            hook.before_inject(&ctx).unwrap();
+        }
+        assert!(
+            list_audit_events(&db.lock(), None, None).unwrap().is_empty(),
+            "无 \\r 且窗口未到：不落库（有界 fail-open）"
+        );
+
+        // 窗口未到：flush_due 不动
+        hook.flush_due(now_millis() + 100);
+        assert!(list_audit_events(&db.lock(), None, None).unwrap().is_empty());
+
+        // 窗口已过（≥500ms）：落一条批审计含 3 键全文
+        hook.flush_due(now_millis() + 600);
+        let audits = list_audit_events(&db.lock(), None, None).unwrap();
+        assert_eq!(audits.len(), 1);
+        let p = batch_payload(&audits[0]);
+        assert_eq!(p["key_count"], 3);
+    }
+
+    /// graceful shutdown：flush_all 清空全部 pane 的待批（会签条件——退出不留窗口）。
+    #[test]
+    fn d3_flush_all_drains_all_panes() {
+        let db = mem_db();
+        let hook = AuditHook::new(Arc::clone(&db));
+        for pane in ["p1", "p2"] {
+            let id = PaneId(pane.into());
+            let ctx = InjectionContext::new(&id, InjectionSource::UserDirect, b"x");
+            hook.before_inject(&ctx).unwrap();
+        }
+        hook.flush_all();
+        let audits = list_audit_events(&db.lock(), None, None).unwrap();
+        assert_eq!(audits.len(), 2, "两个 pane 各 flush 一条");
+        hook.flush_all(); // 幂等：再次 flush 无新行
+        assert_eq!(list_audit_events(&db.lock(), None, None).unwrap().len(), 2);
+    }
+
+    /// PTY 写失败：当批立即 flush 并标 Failed（批内含失败键，payload 可追溯）。
+    #[test]
+    fn d3_write_failure_flushes_batch_as_failed() {
+        let db = mem_db();
+        let hook = AuditHook::new(Arc::clone(&db));
+        let id = PaneId("i1".into());
+        let ctx = InjectionContext::new(&id, InjectionSource::UserDirect, b"x");
+        hook.before_inject(&ctx).unwrap();
+        let failed: Result<(), ConmuxError> = Err(ConmuxError::PtyError {
+            message: "stdin 写入失败".into(),
+        });
+        hook.after_inject(&ctx, &failed);
+        let audits = list_audit_events(&db.lock(), None, None).unwrap();
+        assert_eq!(audits.len(), 1);
+        assert_eq!(audits[0].result, AuditResult::Failed);
+        assert!(audits[0].payload.is_some(), "Failed 批仍保全文 payload");
+    }
+
+    /// 非 UserDirect 不合批：逐次审计-先于-注入不变（会签条件 2 回归）。
+    #[test]
+    fn d3_non_user_direct_sources_remain_per_injection() {
+        let db = mem_db();
+        let hook = AuditHook::new(Arc::clone(&db));
+        let id = PaneId("i1".into());
+        for src in [
+            InjectionSource::PermissionResponse,
+            InjectionSource::OrchestrationAuto,
+            InjectionSource::DiscussionUserMessage,
+        ] {
+            let ctx = InjectionContext::new(&id, src, b"x");
+            hook.before_inject(&ctx).unwrap();
+        }
+        let audits = list_audit_events(&db.lock(), None, None).unwrap();
+        assert_eq!(audits.len(), 3, "三次注入三条审计（不合批）");
+        assert!(audits.iter().all(|a| a.payload.is_none()));
+    }
+
+    fn now_millis() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
     }
 }

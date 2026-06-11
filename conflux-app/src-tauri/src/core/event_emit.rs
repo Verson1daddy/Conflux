@@ -154,12 +154,14 @@ pub fn emit_conflux_event(app: &AppHandle, event: &ConfluxEvent) {
         ConfluxEvent::PtyOutput {
             instance_id,
             data,
+            seq,
             timestamp,
         } => (
             channels::PTY_OUTPUT,
             serde_json::json!({
                 "instance_id": instance_id,
                 "data": data,
+                "seq": seq,
                 "timestamp": timestamp,
             }),
         ),

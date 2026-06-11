@@ -31,10 +31,12 @@ fn now_millis() -> i64 {
 }
 
 /// PaneOutput 处理：刷活动时间 + 构造待 emit 事件列表（PtyOutput 在前，结构化事件随后）。
+/// `seq` = conmux per-pane 单调序号（V1-core +seq：前端连续性对账 / V2 重放）。
 pub(crate) fn output_events(
     meta: &InstanceMetaRegistry,
     instance_id: &str,
     data: &[u8],
+    seq: u64,
     now_ms: i64,
 ) -> Vec<ConfluxEvent> {
     meta.touch(instance_id, now_ms);
@@ -42,6 +44,7 @@ pub(crate) fn output_events(
     let mut events = vec![ConfluxEvent::PtyOutput {
         instance_id: InstanceId(instance_id.to_string()),
         data: BASE64.encode(data),
+        seq: Some(seq),
         timestamp: now_ms,
     }];
 
@@ -94,8 +97,8 @@ impl PaneEventSink for MuxEventBridge {
     fn on_notify(&self, notify: MuxNotify) {
         let now_ms = now_millis();
         let events = match notify {
-            MuxNotify::PaneOutput { pane_id, data, .. } => {
-                output_events(&self.meta, &pane_id.0, &data, now_ms)
+            MuxNotify::PaneOutput { pane_id, data, seq } => {
+                output_events(&self.meta, &pane_id.0, &data, seq, now_ms)
             }
             MuxNotify::PaneExited { pane_id, exit_code } => {
                 exit_events(&self.meta, &pane_id.0, exit_code, now_ms)
@@ -136,22 +139,38 @@ mod tests {
     #[test]
     fn output_events_emit_base64_pty_output_and_touch_meta() {
         let reg = registry_with("i1");
-        let events = output_events(&reg, "i1", b"hello \x1b[31mred\x1b[0m", 5_000);
+        let events = output_events(&reg, "i1", b"hello \x1b[31mred\x1b[0m", 7, 5_000);
         assert_eq!(events.len(), 1, "无 parser 实例只发 PtyOutput");
         match &events[0] {
             ConfluxEvent::PtyOutput {
                 instance_id,
                 data,
+                seq,
                 timestamp,
             } => {
                 assert_eq!(instance_id.0, "i1");
                 assert_eq!(*timestamp, 5_000);
+                assert_eq!(*seq, Some(7), "conmux per-pane seq 透传（V1-core +seq）");
                 let decoded = BASE64.decode(data.as_bytes()).unwrap();
                 assert_eq!(decoded, b"hello \x1b[31mred\x1b[0m", "原始字节（含 ANSI）无损");
             }
             other => panic!("应为 PtyOutput，实际 {other:?}"),
         }
         assert_eq!(reg.get("i1").unwrap().last_activity_at, 5_000);
+    }
+
+    /// V1-core seq 连续性：连续 PaneOutput 经桥后 seq 原样保序透传（无损，C6 前提）。
+    #[test]
+    fn output_events_preserve_seq_continuity() {
+        let reg = registry_with("i1");
+        let mut seqs = Vec::new();
+        for s in 1..=5u64 {
+            let events = output_events(&reg, "i1", b"x", s, 1_000 + s as i64);
+            if let ConfluxEvent::PtyOutput { seq, .. } = &events[0] {
+                seqs.push(seq.unwrap());
+            }
+        }
+        assert_eq!(seqs, vec![1, 2, 3, 4, 5], "桥不丢帧不乱序（C6 无损约束）");
     }
 
     #[test]
@@ -184,7 +203,7 @@ mod tests {
     fn events_for_unknown_instance_still_emit_without_panic() {
         // 退出竞态：meta 已被 destroy 移除而读线程仍在 flush——事件仍发（前端按 id 丢弃），不 panic。
         let reg = InstanceMetaRegistry::new();
-        assert_eq!(output_events(&reg, "ghost", b"x", 1).len(), 1);
+        assert_eq!(output_events(&reg, "ghost", b"x", 1, 1).len(), 1);
         assert_eq!(exit_events(&reg, "ghost", None, 1).len(), 1);
     }
 }

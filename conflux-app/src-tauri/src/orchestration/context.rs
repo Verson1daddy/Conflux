@@ -289,6 +289,7 @@ mod tests {
             ConfluxEvent::PtyOutput {
                 instance_id: InstanceId("inst-001".to_string()),
                 data: "SGVsbG8=".to_string(),
+                seq: None,
                 timestamp: 3200,
             },
         ];

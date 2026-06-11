@@ -86,8 +86,11 @@ pub struct AppState {
     pub hook_relay_path: Option<std::path::PathBuf>,
     /// per-instance hook watcher 停止信号：instance_id -> stop flag（destroy 时置位）。
     pub hook_watchers: RwLock<HashMap<String, Arc<AtomicBool>>>,
-    /// 后台线程统一停止信号（V1-core sweeper 等；app 退出路径置位）。
+    /// 后台线程统一停止信号（V1-core ticker；app 退出路径置位）。
     pub background_stop: Arc<AtomicBool>,
+    /// 审计钩子的类型化句柄（与 PaneRuntime 钩子链同一实例；D3 批审计的
+    /// flush_due/flush_all 经此访问——graceful shutdown 必 flush 会签条件）。
+    pub audit_hook: Arc<crate::pty::hooks::AuditHook>,
 }
 
 impl AppState {
@@ -133,12 +136,14 @@ impl AppState {
         ));
         // 钩子顺序冻结 [PolicyHook, AuditHook]：policy 先拒 ⇒ 不写 Ok 审计，
         // AuditHook.after 补写 Rejected（语义与原 inject_with_policy 一致）。
+        // audit_hook 另存类型化 Arc（D3 flush_due/flush_all 经 ticker / 退出路径访问）。
+        let audit_hook = Arc::new(crate::pty::hooks::AuditHook::new(Arc::clone(&db)));
         let hooks: Vec<Arc<dyn conmux::InjectionHook>> = vec![
             Arc::new(crate::pty::hooks::PolicyHook::new(
                 Arc::clone(&stdin_policy),
                 Arc::clone(&injection_rate_counter),
             )),
-            Arc::new(crate::pty::hooks::AuditHook::new(Arc::clone(&db))),
+            Arc::clone(&audit_hook) as Arc<dyn conmux::InjectionHook>,
         ];
         let pane_runtime = Arc::new(PaneRuntime::new_windows(hooks, bridge, meta));
 
@@ -164,6 +169,7 @@ impl AppState {
             hook_relay_path,
             hook_watchers: RwLock::new(HashMap::new()),
             background_stop: Arc::new(AtomicBool::new(false)),
+            audit_hook,
         }
     }
 
@@ -320,10 +326,11 @@ pub fn run() {
 
             app.manage(app_state);
 
-            // V1-core：注意力 sweeper（超时 Expired + defer 提醒复活，1s tick）
+            // V1-core：控制面后台 ticker（250ms：D3 批审计 flush；1s：超时 Expired +
+            // defer 提醒复活）
             {
                 let state = app.state::<AppState>();
-                crate::orchestration::sweeper::spawn_attention_sweeper(
+                crate::orchestration::sweeper::spawn_background_ticker(
                     app.handle().clone(),
                     Arc::clone(&state.background_stop),
                 );
@@ -401,6 +408,18 @@ pub fn run() {
             commands::persistence::load_workspace_layout,
             commands::persistence::auto_pack_layout,
         ])
-        .run(tauri::generate_context!())
-        .expect("启动 Conflux 失败");
+        .build(tauri::generate_context!())
+        .expect("启动 Conflux 失败")
+        .run(|app_handle, event| {
+            // D3 会签条件：graceful shutdown 必 flush UserDirect 待批审计（退出不留
+            // 未审计窗口）；同时停后台 ticker。
+            if let tauri::RunEvent::Exit = event {
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    state
+                        .background_stop
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                    state.audit_hook.flush_all();
+                }
+            }
+        });
 }
