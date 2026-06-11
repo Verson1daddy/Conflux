@@ -128,7 +128,10 @@ pub fn should_enforce_stdin_injection_policy(source: &InjectionSource) -> bool {
 ///
 /// 拆出为纯函数以便不依赖 Tauri AppHandle 做单元测试。命中即返回 `Err`，
 /// 调用方据此 fail-closed（不写 stdin）。
-pub fn check_content_policy(policy: &StdinInjectionPolicy, input: &str) -> Result<(), ConfluxError> {
+pub fn check_content_policy(
+    policy: &StdinInjectionPolicy,
+    input: &str,
+) -> Result<(), ConfluxError> {
     // 长度检查
     if input.len() > policy.max_injection_length {
         return Err(ConfluxError::OrchestrationError {

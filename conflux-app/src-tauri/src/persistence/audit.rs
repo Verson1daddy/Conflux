@@ -31,10 +31,7 @@ pub fn insert_audit_event(conn: &Connection, event: &AuditEvent) -> Result<(), C
             event.instance_id.as_ref().map(|i| i.0.clone()),
             event.source_event_id,
             event.interaction_id,
-            event
-                .injection_source
-                .as_ref()
-                .map(injection_source_to_str),
+            event.injection_source.as_ref().map(injection_source_to_str),
             result_to_str(&event.result),
             event.created_at,
             event.rationale_ref,
@@ -72,9 +69,11 @@ pub fn list_audit_events(
         sql.push_str(&format!(" LIMIT {}", n));
     }
 
-    let mut stmt = conn.prepare(&sql).map_err(|e| ConfluxError::DatabaseError {
-        message: format!("list_audit_events 查询准备失败: {}", e),
-    })?;
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| ConfluxError::DatabaseError {
+            message: format!("list_audit_events 查询准备失败: {}", e),
+        })?;
 
     let map_row = |row: &rusqlite::Row| -> rusqlite::Result<AuditEvent> {
         let instance_id: Option<String> = row.get(3)?;
@@ -237,10 +236,16 @@ mod tests {
         assert_eq!(got.audit_event_id, "audit-001");
         assert_eq!(got.actor, AuditActor::User);
         assert_eq!(got.action, AuditAction::Approve);
-        assert_eq!(got.instance_id.as_ref().map(|i| i.0.as_str()), Some("inst-a"));
+        assert_eq!(
+            got.instance_id.as_ref().map(|i| i.0.as_str()),
+            Some("inst-a")
+        );
         assert_eq!(got.source_event_id.as_deref(), Some("evt-1"));
         assert_eq!(got.interaction_id.as_deref(), Some("intr-1"));
-        assert_eq!(got.injection_source, Some(InjectionSource::PermissionResponse));
+        assert_eq!(
+            got.injection_source,
+            Some(InjectionSource::PermissionResponse)
+        );
         assert_eq!(got.result, AuditResult::Ok);
         assert_eq!(got.created_at, 1_000);
         assert_eq!(got.rationale_ref.as_deref(), Some("rationale://approve"));
@@ -263,7 +268,9 @@ mod tests {
         // 按 instance 过滤
         let only_a = list_audit_events(&conn, Some("inst-a"), None).unwrap();
         assert_eq!(only_a.len(), 2);
-        assert!(only_a.iter().all(|e| e.instance_id.as_ref().unwrap().0 == "inst-a"));
+        assert!(only_a
+            .iter()
+            .all(|e| e.instance_id.as_ref().unwrap().0 == "inst-a"));
 
         // limit
         let limited = list_audit_events(&conn, None, Some(1)).unwrap();

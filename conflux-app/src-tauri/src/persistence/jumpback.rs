@@ -62,11 +62,11 @@ pub fn get_jump_back_target(
             message: format!("get_jump_back_target 查询准备失败: {}", e),
         })?;
 
-    let mut rows = stmt
-        .query_map(params![id], map_row)
-        .map_err(|e| ConfluxError::DatabaseError {
-            message: format!("get_jump_back_target 查询执行失败: {}", e),
-        })?;
+    let mut rows =
+        stmt.query_map(params![id], map_row)
+            .map_err(|e| ConfluxError::DatabaseError {
+                message: format!("get_jump_back_target 查询执行失败: {}", e),
+            })?;
 
     match rows.next() {
         Some(r) => Ok(Some(r.map_err(|e| ConfluxError::DatabaseError {
@@ -144,7 +144,8 @@ mod tests {
     #[test]
     fn test_insert_and_get_card_target_roundtrip() {
         let conn = init_database(":memory:").unwrap();
-        let target = JumpBackTarget::card(InstanceId("inst-a".to_string()), Some("/work".to_string()));
+        let target =
+            JumpBackTarget::card(InstanceId("inst-a".to_string()), Some("/work".to_string()));
         insert_jump_back_target(&conn, &target).unwrap();
 
         let got = get_jump_back_target(&conn, &target.jump_back_target_id)
@@ -162,7 +163,10 @@ mod tests {
         let conn = init_database(":memory:").unwrap();
         let target = JumpBackTarget::terminal_range(
             InstanceId("inst-b".to_string()),
-            TerminalRange { start_line: 12, end_line: 18 },
+            TerminalRange {
+                start_line: 12,
+                end_line: 18,
+            },
             None,
         );
         insert_jump_back_target(&conn, &target).unwrap();
@@ -173,7 +177,13 @@ mod tests {
         assert_eq!(got, target);
         assert_eq!(got.target_kind, JumpKind::TerminalRange);
         assert_eq!(got.confidence, JumpConfidence::High);
-        assert_eq!(got.terminal_range, Some(TerminalRange { start_line: 12, end_line: 18 }));
+        assert_eq!(
+            got.terminal_range,
+            Some(TerminalRange {
+                start_line: 12,
+                end_line: 18
+            })
+        );
     }
 
     #[test]

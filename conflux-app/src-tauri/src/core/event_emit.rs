@@ -226,11 +226,7 @@ pub fn emit_conflux_event(app: &AppHandle, event: &ConfluxEvent) {
 ///
 /// 锁顺序（防死锁）：先 `attention_queue`(write) 再 `db`(Mutex)，与 commands/attention.rs
 /// 一致。两把锁在本函数内**同时持有的临界区仅包住 ingest 一次落库**，emit 在释放锁后进行。
-fn ingest_into_attention_queue(
-    app: &AppHandle,
-    state: &crate::AppState,
-    event: &ConfluxEvent,
-) {
+fn ingest_into_attention_queue(app: &AppHandle, state: &crate::AppState, event: &ConfluxEvent) {
     // 跳过高频 PtyOutput——map 阶段也会返回 None，这里提前短路省去取锁
     if matches!(event, ConfluxEvent::PtyOutput { .. }) {
         return;

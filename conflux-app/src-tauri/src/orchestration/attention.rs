@@ -200,8 +200,12 @@ impl AttentionQueue {
 
     /// 列出活跃项（未处置），按优先级（Critical 最高）+ created_at 升序。
     pub fn list_active(&self) -> Vec<AttentionItem> {
-        let mut active: Vec<AttentionItem> =
-            self.items.iter().filter(|i| i.is_active()).cloned().collect();
+        let mut active: Vec<AttentionItem> = self
+            .items
+            .iter()
+            .filter(|i| i.is_active())
+            .cloned()
+            .collect();
         // EventPriority 派生 Ord：Critical=0 < High=1 < Normal=2 < Low=3，升序即优先级降序
         active.sort_by(|a, b| {
             a.priority
@@ -373,10 +377,7 @@ impl AttentionQueue {
         // 仅活跃项可被处置（避免对已处置项重复落定）
         if !self.items[idx].is_active() {
             return Err(ConfluxError::OrchestrationError {
-                message: format!(
-                    "处置失败：注意力项已处于终态，不能重复处置 (id={})",
-                    id
-                ),
+                message: format!("处置失败：注意力项已处于终态，不能重复处置 (id={})", id),
             });
         }
 
@@ -626,8 +627,7 @@ mod tests {
         assert_eq!(item.timeout_seconds, Some(90));
 
         // db round-trip：从 db 重读，payload 仍在
-        let reloaded =
-            crate::persistence::attention::list_active_attention_items(&conn).unwrap();
+        let reloaded = crate::persistence::attention::list_active_attention_items(&conn).unwrap();
         assert_eq!(reloaded.len(), 1);
         assert_eq!(
             reloaded[0].permission_context,
@@ -671,8 +671,11 @@ mod tests {
         )
         .unwrap();
         // High（Error）后入
-        q.ingest(&conn, &error_event("inst-e", "boom", ErrorSeverity::Error, 800))
-            .unwrap();
+        q.ingest(
+            &conn,
+            &error_event("inst-e", "boom", ErrorSeverity::Error, 800),
+        )
+        .unwrap();
         // Critical（Permission）最后入，时间最晚
         q.ingest(&conn, &perm_event("inst-p", "req-x", 2_000))
             .unwrap();
@@ -956,7 +959,10 @@ mod tests {
             .unwrap()
             .expect("应能取回落点");
         assert_eq!(target.jump_back_target_id, jid);
-        assert_eq!(target.instance_id.as_ref().map(|i| i.0.as_str()), Some("inst-a"));
+        assert_eq!(
+            target.instance_id.as_ref().map(|i| i.0.as_str()),
+            Some("inst-a")
+        );
         assert_eq!(target.card_id.as_deref(), Some("inst-a"));
         // V1 后端拿不到可靠行号 → Card（不伪造 TerminalRange）
         assert!(
@@ -977,18 +983,32 @@ mod tests {
         // 但 jump target 派生独立于注意力上浮：直接验证派生能力。
         let derived = JumpBackTarget::derive_from_event(&exited_event("inst-x", 2_000))
             .expect("ProcessExited 应派生落点");
-        assert_eq!(derived.instance_id.as_ref().map(|i| i.0.as_str()), Some("inst-x"));
+        assert_eq!(
+            derived.instance_id.as_ref().map(|i| i.0.as_str()),
+            Some("inst-x")
+        );
         assert_eq!(derived.target_kind, JumpKind::Card);
 
         // 同时确认 Error 事件（异常恢复，会上浮）也会生成并链接落点
         let item = q
-            .ingest(&conn, &error_event("inst-x", "boom", ErrorSeverity::Error, 2_100))
+            .ingest(
+                &conn,
+                &error_event("inst-x", "boom", ErrorSeverity::Error, 2_100),
+            )
             .unwrap()
             .unwrap();
-        let jid = item.jump_back_target_id.clone().expect("error item 应链接落点");
-        let target = db_jumpback::get_jump_back_target(&conn, &jid).unwrap().unwrap();
+        let jid = item
+            .jump_back_target_id
+            .clone()
+            .expect("error item 应链接落点");
+        let target = db_jumpback::get_jump_back_target(&conn, &jid)
+            .unwrap()
+            .unwrap();
         assert_eq!(target.target_kind, JumpKind::Card);
-        assert_eq!(target.instance_id.as_ref().map(|i| i.0.as_str()), Some("inst-x"));
+        assert_eq!(
+            target.instance_id.as_ref().map(|i| i.0.as_str()),
+            Some("inst-x")
+        );
     }
 
     /// P4：无法定位实例（DiscussionMessage）→ 派生 FallbackContext，
@@ -1000,8 +1020,13 @@ mod tests {
         assert_eq!(derived.target_kind, JumpKind::FallbackContext);
         assert_eq!(derived.confidence, JumpConfidence::Low);
         assert!(derived.instance_id.is_none());
-        let summary = derived.fallback_summary.expect("FallbackContext 必带 summary");
-        assert!(!summary.is_empty(), "fallback_summary 不得为空（不静默失败）");
+        let summary = derived
+            .fallback_summary
+            .expect("FallbackContext 必带 summary");
+        assert!(
+            !summary.is_empty(),
+            "fallback_summary 不得为空（不静默失败）"
+        );
     }
 
     /// P4 / §13.8：V1 派生的 target_kind 只落在 {Card, FallbackContext}
@@ -1011,7 +1036,10 @@ mod tests {
         let with_instance = JumpBackTarget::derive_from_event(&perm_event("i", "r", 1)).unwrap();
         let without_instance = JumpBackTarget::derive_from_event(&discussion_event(1)).unwrap();
         assert!(matches!(with_instance.target_kind, JumpKind::Card));
-        assert!(matches!(without_instance.target_kind, JumpKind::FallbackContext));
+        assert!(matches!(
+            without_instance.target_kind,
+            JumpKind::FallbackContext
+        ));
         // §13.8：V1 派生只落在内部聚焦类别，绝不生成 Artifact/DiscussionMessage 等外部落点。
         for t in [&with_instance, &without_instance] {
             assert!(

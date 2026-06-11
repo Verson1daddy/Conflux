@@ -744,9 +744,10 @@ fn island_window_config_for_detail(
             },
             placement: match detail {
                 IslandDetailPresentation::SidebarExpanded => WindowPlacement::RightEdgeFullHeight,
-                IslandDetailPresentation::SidebarFloating => {
-                    WindowPlacement::TopRightInset { x_margin: 24.0, y_margin: 72.0 }
-                }
+                IslandDetailPresentation::SidebarFloating => WindowPlacement::TopRightInset {
+                    x_margin: 24.0,
+                    y_margin: 72.0,
+                },
                 _ => WindowPlacement::RightEdgeCentered,
             },
             always_on_top: true,
@@ -1524,10 +1525,8 @@ mod tests {
             origin_y: 0.0,
         };
 
-        let selected = monitor_metrics_for_compact_geometry(
-            Some(island_monitor),
-            workspace_monitor,
-        );
+        let selected =
+            monitor_metrics_for_compact_geometry(Some(island_monitor), workspace_monitor);
 
         assert_eq!(selected.origin_x, -1920.0);
         assert_eq!(selected.origin_y, 0.0);

@@ -94,11 +94,11 @@ pub use types::InjectionSource;
 pub use types::StdinInjectionPolicy;
 
 // 控制面语义层 P1
-pub use types::SourceKind;
 pub use audit::AuditAction;
 pub use audit::AuditActor;
 pub use audit::AuditEvent;
 pub use audit::AuditResult;
+pub use types::SourceKind;
 
 // 控制面语义层 P2/P3：待处理交互共享枚举 + PendingInteraction
 pub use interaction::InteractionAction;

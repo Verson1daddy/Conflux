@@ -63,10 +63,7 @@ mod window_command_tests {
 
     #[test]
     fn test_island_mode_roundtrip() {
-        let modes = vec![
-            IslandMode::TopIsland,
-            IslandMode::Sidebar,
-        ];
+        let modes = vec![IslandMode::TopIsland, IslandMode::Sidebar];
 
         for mode in modes {
             let json = serde_json::to_string(&mode).expect("序列化失败");

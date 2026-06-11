@@ -90,14 +90,23 @@ mod tests {
         let conn = init_database(":memory:").unwrap();
         let target = JumpBackTarget::terminal_range(
             InstanceId("inst-t".to_string()),
-            TerminalRange { start_line: 3, end_line: 9 },
+            TerminalRange {
+                start_line: 3,
+                end_line: 9,
+            },
             None,
         );
         db_jumpback::insert_jump_back_target(&conn, &target).unwrap();
         let got = db_jumpback::get_jump_back_target(&conn, &target.jump_back_target_id)
             .unwrap()
             .unwrap();
-        assert_eq!(got.terminal_range, Some(TerminalRange { start_line: 3, end_line: 9 }));
+        assert_eq!(
+            got.terminal_range,
+            Some(TerminalRange {
+                start_line: 3,
+                end_line: 9
+            })
+        );
         assert_eq!(got.confidence, JumpConfidence::High);
     }
 }

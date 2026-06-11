@@ -243,7 +243,10 @@ pub fn migrate_session_events(conn: &Connection) -> Result<(), ConfluxError> {
 /// 通过 `PRAGMA table_info` 检测列是否存在，缺哪列补哪列；重复调用不报错（幂等）。
 pub fn migrate_attention_items(conn: &Connection) -> Result<(), ConfluxError> {
     let existing = attention_items_columns(conn)?;
-    let new_columns = [("permission_context", "TEXT"), ("timeout_seconds", "INTEGER")];
+    let new_columns = [
+        ("permission_context", "TEXT"),
+        ("timeout_seconds", "INTEGER"),
+    ];
     for (col, ty) in new_columns {
         if !existing.iter().any(|c| c == col) {
             conn.execute_batch(&format!(
