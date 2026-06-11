@@ -460,6 +460,25 @@ impl PaneRuntime {
         }
     }
 
+    /// scrollback 行高水位（V1-core 行级 jump-back：`last_abs_line`）。
+    /// pane 不存在或尚无输出（total_bytes==0）→ None（派生退化 Card，不伪造行号）。
+    pub fn scrollback_high_water(&self, instance_id: &str) -> Option<u64> {
+        self.host
+            .pane_state(&PaneId(instance_id.to_string()))
+            .ok()
+            .filter(|s| s.scrollback.total_bytes > 0)
+            .map(|s| s.scrollback.last_abs_line)
+    }
+
+    /// scrollback 现时可读行窗（V1-core 消费端降级链：`(first_abs_line, last_abs_line)`）。
+    /// pane 不存在 → None（落点降级 FallbackContext）。
+    pub fn scrollback_window(&self, instance_id: &str) -> Option<(u64, u64)> {
+        self.host
+            .pane_state(&PaneId(instance_id.to_string()))
+            .ok()
+            .map(|s| (s.scrollback.first_abs_line, s.scrollback.last_abs_line))
+    }
+
     /// PTY 历史（base64 原始字节含 ANSI）——替代 manager.get_buffer 路径，
     /// 走 conmux capture（行索引 scrollback，ansi=true 保留原始）。
     pub fn get_history_base64(&self, instance_id: &str) -> Result<String, ConfluxError> {

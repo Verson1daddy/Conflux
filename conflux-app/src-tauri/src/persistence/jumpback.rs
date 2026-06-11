@@ -12,7 +12,7 @@
 
 use rusqlite::{params, Connection};
 
-use crate::core::jumpback::{JumpBackTarget, JumpConfidence, JumpKind, TerminalRange};
+use crate::core::jumpback::{CoordSpace, JumpBackTarget, JumpConfidence, JumpKind, TerminalRange};
 use crate::core::types::InstanceId;
 use crate::core::ConfluxError;
 
@@ -166,6 +166,7 @@ mod tests {
             TerminalRange {
                 start_line: 12,
                 end_line: 18,
+                coord_space: CoordSpace::Xterm,
             },
             None,
         );
@@ -181,7 +182,8 @@ mod tests {
             got.terminal_range,
             Some(TerminalRange {
                 start_line: 12,
-                end_line: 18
+                end_line: 18,
+                coord_space: CoordSpace::Xterm,
             })
         );
     }

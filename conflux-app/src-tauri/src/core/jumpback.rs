@@ -53,19 +53,39 @@ pub enum JumpKind {
     FallbackContext,
 }
 
-/// 终端行区间（§5.1）。
+/// 行号坐标系（mux 契约 §4.3，V1-core）。
 ///
-/// 行号语义来自前端 xterm.js 的逻辑行（由结构化事件触发 `registerMarker` 记录），
-/// **后端不通过 PTY 正则推断、不伪造行号**（§5「禁止用 PTY 正则推断落点」）。
-/// 后端当前 PTY 缓冲为字节环形缓冲（`pty/buffer.rs`），不维护行索引，
-/// 因此 V1 后端默认退化为 `Card`；`TerminalRange` 仅在调用方显式提供可靠行号时生成。
+/// 两套行号语义并存，必须显式标注消歧：
+/// - `Xterm`：前端 xterm.js 逻辑行（`registerMarker` 记录）——可精确滚动，confidence 可 High。
+/// - `BackendAbs`：conmux scrollback 写入侧物理行（自 pane 创建起按 `\n` 计，单调递增、
+///   环覆盖不回退）——**不等于** xterm 视口行；confidence 强制 ≤ Medium，前端**不得**
+///   据此精确 scrollToLine（只做近似定位 + UI 显式标注非精确，防误滚导致用户据错误
+///   上下文批权限）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoordSpace {
+    /// 前端 xterm marker 行号（默认——serde default 保持旧数据向后兼容）
+    #[default]
+    Xterm,
+    /// 后端 scrollback 绝对行号（conmux abs_line）
+    BackendAbs,
+}
+
+/// 终端行区间（§5.1 + mux 契约 §4.2/4.3）。
+///
+/// 行号来源两轨（见 [`CoordSpace`]）：前端 xterm marker（精确）或后端 conmux 行索引
+/// scrollback 高水位（近似，V1-core 起后端可生成）。**后端不通过 PTY 正则推断行号**
+/// （§5「禁止用 PTY 正则推断落点」不变——abs_line 是写入侧字节计数，非正则猜测）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct TerminalRange {
     /// 起始行（含）
-    pub start_line: usize,
+    pub start_line: u64,
     /// 结束行（含）
-    pub end_line: usize,
+    pub end_line: u64,
+    /// 行号坐标系（serde default = Xterm，旧库 JSON 无此键时向后兼容）
+    #[serde(default)]
+    pub coord_space: CoordSpace,
 }
 
 /// 落点置信度（§5.1）。
@@ -132,10 +152,10 @@ impl JumpBackTarget {
         }
     }
 
-    /// 构造一个终端行区间落点（confidence High）。
+    /// 构造一个终端行区间落点——**前端 xterm marker 源**（Xterm + confidence High）。
     ///
-    /// 仅当调用方持有**可靠**行号时使用（V1 后端默认无行号 → 不走此路径；
-    /// 保留给 P5 前端 xterm marker 回填或测试构造）。
+    /// 仅当调用方持有前端 marker 行号时使用（P5 前端回填或测试构造）。
+    /// 后端 abs_line 源走 [`Self::terminal_range_backend`]。
     pub fn terminal_range(
         instance_id: InstanceId,
         range: TerminalRange,
@@ -151,6 +171,34 @@ impl JumpBackTarget {
             cwd,
             fallback_summary: None,
             confidence: JumpConfidence::High,
+        }
+    }
+
+    /// 构造一个终端行区间落点——**后端 scrollback abs_line 源**
+    /// （BackendAbs + **confidence 强制 Medium**，复闸 C5 / 契约 §4.3「≤ Medium」）。
+    ///
+    /// confidence 不接受调用方指定：BackendAbs 行号与 xterm 视口行存在坐标系差，
+    /// 不得以 High 误导前端精确滚动。
+    pub fn terminal_range_backend(
+        instance_id: InstanceId,
+        start_line: u64,
+        end_line: u64,
+        cwd: Option<String>,
+    ) -> Self {
+        let card_id = Some(instance_id.0.clone());
+        Self {
+            jump_back_target_id: Self::new_id(),
+            target_kind: JumpKind::TerminalRange,
+            instance_id: Some(instance_id),
+            card_id,
+            terminal_range: Some(TerminalRange {
+                start_line,
+                end_line,
+                coord_space: CoordSpace::BackendAbs,
+            }),
+            cwd,
+            fallback_summary: None,
+            confidence: JumpConfidence::Medium,
         }
     }
 
@@ -177,19 +225,20 @@ impl JumpBackTarget {
         self.target_kind == JumpKind::FallbackContext
     }
 
-    /// 从一个结构化事件派生回场落点（§5 落点驱动）。
+    /// 从一个结构化事件派生回场落点（§5 落点驱动 + mux 契约 §4.3 行级升级）。
     ///
-    /// 派生策略（V1 真实能力边界）：
-    ///   - 能拿到 `instance_id`（PermissionRequested / ErrorOccurred / TaskCompleted /
-    ///     ProcessExited 等）→ 生成 `Card`（confidence Medium）。
-    ///     **后端 PTY 缓冲不维护行号，故 V1 不生成 `TerminalRange`，也绝不伪造行号**；
-    ///     精确行号在 P5 由前端 xterm `registerMarker` 回填。
-    ///   - 拿不到 `instance_id`（如纯讨论消息）→ `FallbackContext` + 事件摘要，
+    /// 派生策略（V1-core）：
+    ///   - 有 `instance_id` 且调用方提供 scrollback 高水位 `line_hint`（conmux
+    ///     `pane_state().scrollback.last_abs_line`）→ `TerminalRange`（BackendAbs，
+    ///     区间 = `[hi - CONTEXT_LINES, hi]`，confidence Medium）。
+    ///   - 有 `instance_id` 无 hint（pane 已死/无输出）→ `Card`（confidence Medium）。
+    ///   - 无 `instance_id`（如纯讨论消息）→ `FallbackContext` + 事件摘要，
     ///     confidence Low，**不静默失败**。
     ///
-    /// 返回 `None` 仅当事件本身非"应生成落点"的类别（高频 PtyOutput 等）——
-    /// 但本函数对 attention 必上浮事件总会返回 `Some`（与 ingest 一致）。
-    pub fn derive_from_event(event: &ConfluxEvent) -> Option<Self> {
+    /// **禁止**：用 PTY 正则猜行号（§5 不变）——hint 只能来自 conmux 行索引高水位。
+    ///
+    /// 返回 `None` 仅当事件本身非"应生成落点"的类别（高频 PtyOutput 等）。
+    pub fn derive_from_event(event: &ConfluxEvent, line_hint: Option<u64>) -> Option<Self> {
         // 高频原始输出——不为其建落点
         if matches!(event, ConfluxEvent::PtyOutput { .. }) {
             return None;
@@ -197,11 +246,75 @@ impl JumpBackTarget {
 
         let summary = event_summary(event);
 
-        match event.instance_id() {
-            Some(instance_id) => Some(Self::card(instance_id.clone(), None)),
+        match (event.instance_id(), line_hint) {
+            (Some(instance_id), Some(hi)) => Some(Self::terminal_range_backend(
+                instance_id.clone(),
+                hi.saturating_sub(CONTEXT_LINES),
+                hi,
+                None,
+            )),
+            (Some(instance_id), None) => Some(Self::card(instance_id.clone(), None)),
             // 无实例（如 DiscussionMessage）→ 兜底上下文，不静默失败
-            None => Some(Self::fallback(summary, None, None)),
+            (None, _) => Some(Self::fallback(summary, None, None)),
         }
+    }
+}
+
+/// 行级落点的上下文行数（区间 = 高水位前 N 行到高水位；对齐 raw_context 前后 5 行惯例）。
+const CONTEXT_LINES: u64 = 5;
+
+/// 消费时降级链（mux 契约 §4.3 冻结，「不静默失败」）——对 BackendAbs 行级落点按
+/// pane **现时**可读窗口判定（纯函数，命令层取窗后调用）：
+///
+/// - `window=None`（pane 已死/移除）→ 降级 `FallbackContext`（summary 注明原落点失效，
+///   保留 instance/cwd 展示）。
+/// - 目标起始行已被环覆盖（`start_line < window.0`）→ 降级 `Card`（confidence Medium）。
+/// - 仍可达 → 原样返回。
+///
+/// Xterm 源与非 TerminalRange 落点不经此函数变换（前端 marker 有效性由前端判断）。
+/// 存储不可变（jump_back_targets 仅 INSERT+SELECT）——降级只发生在返回副本上。
+pub fn degrade_backend_range_target(
+    target: JumpBackTarget,
+    window: Option<(u64, u64)>,
+) -> JumpBackTarget {
+    let range = match &target.terminal_range {
+        Some(r)
+            if target.target_kind == JumpKind::TerminalRange
+                && r.coord_space == CoordSpace::BackendAbs =>
+        {
+            *r
+        }
+        _ => return target,
+    };
+
+    match window {
+        None => {
+            let summary = format!(
+                "原行级落点已失效（pane 已结束）：{}",
+                target
+                    .instance_id
+                    .as_ref()
+                    .map(|i| i.0.as_str())
+                    .unwrap_or("<unknown>")
+            );
+            JumpBackTarget {
+                jump_back_target_id: target.jump_back_target_id,
+                target_kind: JumpKind::FallbackContext,
+                instance_id: target.instance_id,
+                card_id: target.card_id,
+                terminal_range: None,
+                cwd: target.cwd,
+                fallback_summary: Some(summary),
+                confidence: JumpConfidence::Low,
+            }
+        }
+        Some((first, _last)) if range.start_line < first => JumpBackTarget {
+            target_kind: JumpKind::Card,
+            terminal_range: None,
+            confidence: JumpConfidence::Medium,
+            ..target
+        },
+        Some(_) => target,
     }
 }
 

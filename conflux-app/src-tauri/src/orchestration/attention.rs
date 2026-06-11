@@ -129,17 +129,32 @@ impl AttentionQueue {
         Ok(())
     }
 
-    /// ingest：把一个事件映射为注意力项并入队（去重）。
+    /// ingest：把一个事件映射为注意力项并入队（去重）。`line_hint = None` 的便捷入口
+    /// （测试 / 无 scrollback 语境）；生产路径见 [`Self::ingest_with_line_hint`]。
+    pub fn ingest(
+        &mut self,
+        conn: &Connection,
+        event: &ConfluxEvent,
+    ) -> Result<Option<AttentionItem>, ConfluxError> {
+        self.ingest_with_line_hint(conn, event, None)
+    }
+
+    /// ingest（带 scrollback 行高水位）：把一个事件映射为注意力项并入队（去重）。
     ///
     /// 返回新入队的 item（已落库），或 `None`（事件非必上浮 / 命中去重）。
     ///
     /// 去重键（§4 防抖）：同 instance_id + 同 source_event_id 已存在活跃项时跳过；
     /// source_event_id 为空时退化为 instance_id + kind + payload_summary 去重，
     /// 避免无限重复上浮同一语义。
-    pub fn ingest(
+    ///
+    /// `line_hint`：conmux scrollback 高水位（`pane_state().scrollback.last_abs_line`），
+    /// 由调用方（event_emit）取得——有值则派生 `TerminalRange(BackendAbs, ≤Medium)`
+    /// 行级落点（mux 契约 §4.3），无值退化 `Card`（**后端绝不伪造行号**，§5 不变）。
+    pub fn ingest_with_line_hint(
         &mut self,
         conn: &Connection,
         event: &ConfluxEvent,
+        line_hint: Option<u64>,
     ) -> Result<Option<AttentionItem>, ConfluxError> {
         let desc = match map_event_to_descriptor(event) {
             Some(d) => d,
@@ -150,14 +165,10 @@ impl AttentionQueue {
             return Ok(None);
         }
 
-        // 控制面 P4（§5）：为本注意力项生成精确回场落点并落库，再把其 id 链接进 item。
-        //
-        // 落点能力边界（真实情况）：后端 PTY 缓冲（pty/buffer.rs）为字节环形缓冲，
-        // 不维护逻辑行索引，故**无法拿到可靠终端行号** → V1 退化为 `Card`
-        // （confidence Medium），精确 `TerminalRange` 行号留待 P5 由前端 xterm
-        // `registerMarker` 回填；**后端绝不伪造行号**（§5）。
-        // 拿不到实例（如纯讨论事件）→ `FallbackContext`（confidence Low，带摘要，不静默失败）。
-        let jump_target = JumpBackTarget::derive_from_event(event);
+        // 控制面 P4（§5）+ V1-core（mux §4.3）：为本注意力项生成回场落点并落库，
+        // 再把其 id 链接进 item。有 line_hint → TerminalRange(BackendAbs, Medium)；
+        // 无 hint → Card；无实例（如纯讨论事件）→ FallbackContext（不静默失败）。
+        let jump_target = JumpBackTarget::derive_from_event(event, line_hint);
         let jump_back_target_id = match &jump_target {
             Some(t) => {
                 // 落点先落库（生成失败不应阻断注意力上浮——若落库失败则不链接，
@@ -996,7 +1007,7 @@ mod tests {
 
         // ProcessExited 当前不映射为注意力项（map_event_to_descriptor → None），
         // 但 jump target 派生独立于注意力上浮：直接验证派生能力。
-        let derived = JumpBackTarget::derive_from_event(&exited_event("inst-x", 2_000))
+        let derived = JumpBackTarget::derive_from_event(&exited_event("inst-x", 2_000), None)
             .expect("ProcessExited 应派生落点");
         assert_eq!(
             derived.instance_id.as_ref().map(|i| i.0.as_str()),
@@ -1026,11 +1037,46 @@ mod tests {
         );
     }
 
+    /// V1-core（mux §4.3）：带 line_hint 的 ingest → 链接 TerminalRange(BackendAbs)
+    /// 行级落点，区间 = [hi-5, hi]，confidence 强制 Medium（复闸 C5）。
+    #[test]
+    fn test_ingest_with_line_hint_links_backend_terminal_range() {
+        use crate::core::jumpback::CoordSpace;
+        let conn = init_database(":memory:").unwrap();
+        let mut q = AttentionQueue::new();
+
+        let item = q
+            .ingest_with_line_hint(&conn, &perm_event("inst-a", "req-1", 1_000), Some(42))
+            .unwrap()
+            .unwrap();
+        let jid = item.jump_back_target_id.expect("应链接落点");
+        let target = db_jumpback::get_jump_back_target(&conn, &jid)
+            .unwrap()
+            .unwrap();
+        assert_eq!(target.target_kind, JumpKind::TerminalRange);
+        assert_eq!(target.confidence, JumpConfidence::Medium, "BackendAbs ≤Medium");
+        let range = target.terminal_range.expect("TerminalRange 必带行区间");
+        assert_eq!(range.coord_space, CoordSpace::BackendAbs);
+        assert_eq!(range.start_line, 37, "hi - CONTEXT_LINES(5)");
+        assert_eq!(range.end_line, 42);
+
+        // 低水位 hint：start 饱和到 0，不下溢。
+        let mut q2 = AttentionQueue::new();
+        let item2 = q2
+            .ingest_with_line_hint(&conn, &perm_event("inst-b", "req-2", 2_000), Some(2))
+            .unwrap()
+            .unwrap();
+        let t2 = db_jumpback::get_jump_back_target(&conn, &item2.jump_back_target_id.unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(t2.terminal_range.unwrap().start_line, 0);
+    }
+
     /// P4：无法定位实例（DiscussionMessage）→ 派生 FallbackContext，
     /// confidence=Low，fallback_summary 非空（断言不静默失败）。
     #[test]
     fn test_derive_without_instance_yields_low_confidence_fallback() {
-        let derived = JumpBackTarget::derive_from_event(&discussion_event(3_000))
+        let derived = JumpBackTarget::derive_from_event(&discussion_event(3_000), None)
             .expect("即便无实例也应派生兜底落点（不静默失败）");
         assert_eq!(derived.target_kind, JumpKind::FallbackContext);
         assert_eq!(derived.confidence, JumpConfidence::Low);
@@ -1048,8 +1094,10 @@ mod tests {
     /// （TerminalRange 仅在显式提供可靠行号时构造，后端 ingest 路径不生成）。
     #[test]
     fn test_v1_derived_kinds_are_internal_only() {
-        let with_instance = JumpBackTarget::derive_from_event(&perm_event("i", "r", 1)).unwrap();
-        let without_instance = JumpBackTarget::derive_from_event(&discussion_event(1)).unwrap();
+        let with_instance =
+            JumpBackTarget::derive_from_event(&perm_event("i", "r", 1), None).unwrap();
+        let without_instance =
+            JumpBackTarget::derive_from_event(&discussion_event(1), None).unwrap();
         assert!(matches!(with_instance.target_kind, JumpKind::Card));
         assert!(matches!(
             without_instance.target_kind,

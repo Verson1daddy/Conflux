@@ -232,10 +232,16 @@ fn ingest_into_attention_queue(app: &AppHandle, state: &crate::AppState, event: 
         return;
     }
 
+    // V1-core（mux §4.3）：取 scrollback 行高水位作行级落点 hint（取锁前查，
+    // pane_runtime 不在锁协议序内但保守起见不持其他锁时调用）。
+    let line_hint = event
+        .instance_id()
+        .and_then(|id| state.pane_runtime.scrollback_high_water(&id.0));
+
     let new_item = {
         let mut queue = state.attention_queue.write();
         let conn = state.db.lock();
-        match queue.ingest(&conn, event) {
+        match queue.ingest_with_line_hint(&conn, event, line_hint) {
             Ok(item) => item,
             Err(e) => {
                 log::warn!("注意力队列 ingest 失败: {e}");
