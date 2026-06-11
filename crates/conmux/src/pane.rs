@@ -60,8 +60,20 @@ pub(crate) trait PaneSession: Send {
     #[allow(dead_code)]
     fn take_reader(&mut self) -> Result<Box<dyn std::io::Read + Send>, ConmuxError>;
     fn resize(&self, size: PaneSize) -> Result<(), ConmuxError>;
-    /// 唯一写方法（MF-1）。trait 对象被 Pane 私有持有，模块外不可达。
+    /// 唯一**注入**写方法（MF-1，agent 输入）。trait 对象被 Pane 私有持有，模块外不可达。
     fn write_all(&mut self, data: &[u8]) -> Result<(), ConmuxError>;
+
+    /// 读线程用的**协议回复** writer（DSR `ESC[6n` 应答等机制层回复，**非 agent 注入**）。
+    /// 由 PaneHost 读线程在 conmux 内部使用，不导出、调用方不可达，故不违反 MF-1
+    /// （MF-1 防的是调用方绕过注入审计，DSR 应答是终端协议回复而非 agent 输入）。
+    /// 无 PTY 的后端（mock）返回 None；spawn 之前返回 None。默认 None。
+    // 2b-3 PaneHost 读线程接线前 lib build 无调用者，暂为 dead。
+    #[allow(dead_code)]
+    fn protocol_writer(
+        &self,
+    ) -> Option<std::sync::Arc<std::sync::Mutex<Box<dyn std::io::Write + Send>>>> {
+        None
+    }
 }
 
 /// 单个 pane 的运行时状态（`pub(crate)`，私有字段——不导出本体，仅经 `PaneState` 暴露语义）。

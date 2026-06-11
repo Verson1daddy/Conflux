@@ -14,8 +14,8 @@ serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 # 后续增量：portable-pty 0.9（D2，2b-2 移入）、base64（capture）、tokio（按需）
 
-# cutover 2b-1：JobObject 整树监管（MF-4 / V0-1 / V0-5）。windows-sys（非整 windows
-# crate，体积纪律，契约 §3.1）。仅 Windows 编译——conmux 纯逻辑层保持跨平台可测。
+# cutover 2b（MF-4 JobObject + ConPTY 后端）。windows-sys（非整 windows crate，体积
+# 纪律 §3.1）+ portable-pty 0.9（D2 裁决）。仅 Windows 编译——conmux 纯逻辑层跨平台可测。
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
@@ -23,9 +23,9 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }
+# 2b-2 起为生产依赖（WindowsPaneSession）。0.9 无条件设 INHERIT_CURSOR → 读线程必须
+# 应答 DSR ESC[6n，否则启动阻塞（spike research/conpty-spike-2026-06-11 实证）。
+portable-pty = "0.9"
 
 [dev-dependencies]
 serde_json = "1"
-# D2 spike（2026-06-11）：portable-pty 0.9 + 真实 ConPTY spawn 集成测试
-# （tests/conpty_spike.rs）。正式接入 PaneBackend 时移入 [dependencies]。
-portable-pty = "0.9"

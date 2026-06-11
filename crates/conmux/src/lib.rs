@@ -45,6 +45,10 @@ pub mod job;
 /// `pub(crate)` 隐私墙（MF-1）；`PaneHost`/`CommandSpec`/`SpawnRequest` 对外公开。
 pub mod pane;
 
+/// Windows ConPTY 后端（cutover 2b-2，portable-pty 0.9 + DSR 应答）。仅 cfg(windows)。
+#[cfg(windows)]
+pub mod pane_win;
+
 // ===== 公开 API 重导出（顶层可达）=====
 pub use capture::{CaptureRange, CaptureRequest, CaptureResult};
 pub use error::ConmuxError;
@@ -52,6 +56,8 @@ pub use inject::{InjectionContext, InjectionHook};
 pub use job::{ProcessSupervisor, SupervisorFactory};
 #[cfg(windows)]
 pub use job::{JobObjectSupervisor, JobObjectSupervisorFactory};
+#[cfg(windows)]
+pub use pane_win::WindowsPaneBackend;
 // PaneHost 类型 + 公开入参类型对外可见；构造器 2a 仍 pub(crate)（待 2b Windows 构造器）。
 pub use pane::{CommandSpec, PaneHost, SpawnRequest};
 pub use types::{InjectionSource, PaneId, PaneLifecycle, PaneSize, PaneState, ScrollbackInfo};
