@@ -340,13 +340,15 @@ pub async fn destroy_agent_instance(
         state.injection_rate_counter.write().remove(&instance_id.0);
     }
 
-    // 4.6. A.2 hook：停掉 watcher 线程 + 删 per-instance hook 文件（settings/ndjson）。
+    // 4.6. A.2 hook：停掉 watcher 线程 + 删 settings 文件。
+    // out_file（ndjson）由 watcher 在 stop 退出时自删——watcher 是唯一读者，避免与其
+    // 轮询读取在 Windows 上抢文件句柄的竞态（destroy 只碰 watcher 不读的 settings）。
     {
         if let Some(stop) = state.hook_watchers.write().remove(&instance_id.0) {
             stop.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         let paths = crate::hook_runtime::instance_paths(&state.hook_dir, &instance_id.0);
-        crate::hook_runtime::cleanup_instance(&paths);
+        crate::hook_runtime::cleanup_settings(&paths);
     }
 
     // 5. 标记 agent_instances 结束时间

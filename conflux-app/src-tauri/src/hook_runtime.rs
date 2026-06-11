@@ -73,10 +73,18 @@ pub fn write_instance_settings(
     Ok(())
 }
 
-/// 清理某实例的 hook 文件（destroy 时调用，best-effort）。
+/// 清理某实例的 hook 文件（settings + out，best-effort）。
+/// 注意：destroy 路径**不**用此函数删 out_file——out_file 由 watcher 在 stop 退出时
+/// 自删（它是唯一读者，避免与轮询读取的 Windows 文件占用竞态）；destroy 只删 settings。
+/// 本函数保留给"无 watcher"路径与测试。
 pub fn cleanup_instance(paths: &HookPaths) {
     let _ = std::fs::remove_file(&paths.settings_file);
     let _ = std::fs::remove_file(&paths.out_file);
+}
+
+/// 仅删 settings 文件（destroy 用——out_file 交给 watcher 自删，消除竞态）。
+pub fn cleanup_settings(paths: &HookPaths) {
+    let _ = std::fs::remove_file(&paths.settings_file);
 }
 
 fn now_millis() -> i64 {
@@ -102,49 +110,63 @@ pub fn spawn_hook_watcher(
     std::thread::spawn(move || {
         let mut offset: u64 = 0;
         log::debug!("hook watcher 启动: instance_id={instance_id}, out={out_file:?}");
-        while !stop.load(Ordering::Relaxed) {
-            std::thread::sleep(POLL_INTERVAL);
-            // 文件可能尚未被 relay 创建（还没触发 hook）。
-            let content = match std::fs::read(&out_file) {
-                Ok(bytes) => bytes,
-                Err(_) => continue,
-            };
-            let len = content.len() as u64;
-            if len <= offset {
-                continue; // 无新增（== 无变化；< 仅在文件被截断时，保守跳过）
-            }
-            let new_slice = &content[offset as usize..];
-            // 只处理到最后一个换行，半行留到下次。
-            let last_nl = match new_slice.iter().rposition(|&b| b == b'\n') {
-                Some(p) => p,
-                None => continue, // 还没有完整行
-            };
-            let complete = &new_slice[..=last_nl];
-            offset += complete.len() as u64;
-
-            let text = String::from_utf8_lossy(complete);
-            for ev in parse_hook_ndjson(&text) {
-                if !ev.is_approval_signal() {
-                    continue; // PreToolUse 等不上浮
-                }
-                let mut req = ev.to_permission_request(&instance_id, now_millis());
-                if req.id.is_empty() {
-                    req.id = uuid::Uuid::new_v4().to_string();
-                }
-                let event = ConfluxEvent::PermissionRequested {
-                    instance_id: InstanceId(instance_id.clone()),
-                    request: req,
-                    timestamp: now_millis(),
-                };
-                emit_conflux_event(&app, &event);
-                log::debug!(
-                    "hook watcher 上浮权限请求: instance_id={instance_id}, tool={}",
-                    ev.tool_name
-                );
-            }
-        }
-        log::debug!("hook watcher 退出: instance_id={instance_id}");
+        run_watch_loop(&app, &instance_id, &out_file, &stop, &mut offset);
+        // 退出时自删 out_file——watcher 是唯一读者，此处删除无竞态（对照 destroy 侧
+        // 删除会与轮询读取在 Windows 上抢文件句柄）。
+        let _ = std::fs::remove_file(&out_file);
+        log::debug!("hook watcher 退出 + 清理 out_file: instance_id={instance_id}");
     });
+}
+
+/// watcher 轮询主循环（抽出以便退出后统一删 out_file）。
+fn run_watch_loop(
+    app: &AppHandle,
+    instance_id: &str,
+    out_file: &Path,
+    stop: &Arc<AtomicBool>,
+    offset: &mut u64,
+) {
+    while !stop.load(Ordering::Relaxed) {
+        std::thread::sleep(POLL_INTERVAL);
+        // 文件可能尚未被 relay 创建（还没触发 hook）。
+        let content = match std::fs::read(out_file) {
+            Ok(bytes) => bytes,
+            Err(_) => continue,
+        };
+        let len = content.len() as u64;
+        if len <= *offset {
+            continue; // 无新增（== 无变化；< 仅在文件被截断时，保守跳过）
+        }
+        let new_slice = &content[*offset as usize..];
+        // 只处理到最后一个换行，半行留到下次。
+        let last_nl = match new_slice.iter().rposition(|&b| b == b'\n') {
+            Some(p) => p,
+            None => continue, // 还没有完整行
+        };
+        let complete = &new_slice[..=last_nl];
+        *offset += complete.len() as u64;
+
+        let text = String::from_utf8_lossy(complete);
+        for ev in parse_hook_ndjson(&text) {
+            if !ev.is_approval_signal() {
+                continue; // PreToolUse 等不上浮
+            }
+            let mut req = ev.to_permission_request(instance_id, now_millis());
+            if req.id.is_empty() {
+                req.id = uuid::Uuid::new_v4().to_string();
+            }
+            let event = ConfluxEvent::PermissionRequested {
+                instance_id: InstanceId(instance_id.to_string()),
+                request: req,
+                timestamp: now_millis(),
+            };
+            emit_conflux_event(app, &event);
+            log::debug!(
+                "hook watcher 上浮权限请求: instance_id={instance_id}, tool={}",
+                ev.tool_name
+            );
+        }
+    }
 }
 
 #[cfg(test)]
