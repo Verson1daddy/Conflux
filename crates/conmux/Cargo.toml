@@ -10,10 +10,19 @@ license = "MIT"
 name = "conmux"
 
 [dependencies]
-# V0 增量 2 起引入（按 conmux_api_contract.md）：
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
-# 后续增量：portable-pty 0.9（D2）、windows-sys（JobObjects，D9/MF-4）、base64（capture）、tokio（按需）
+# 后续增量：portable-pty 0.9（D2，2b-2 移入）、base64（capture）、tokio（按需）
+
+# cutover 2b-1：JobObject 整树监管（MF-4 / V0-1 / V0-5）。windows-sys（非整 windows
+# crate，体积纪律，契约 §3.1）。仅 Windows 编译——conmux 纯逻辑层保持跨平台可测。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",         # CreateJobObjectW 的 SECURITY_ATTRIBUTES 参数需要
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 serde_json = "1"

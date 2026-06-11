@@ -50,6 +50,8 @@ pub use capture::{CaptureRange, CaptureRequest, CaptureResult};
 pub use error::ConmuxError;
 pub use inject::{InjectionContext, InjectionHook};
 pub use job::{ProcessSupervisor, SupervisorFactory};
+#[cfg(windows)]
+pub use job::{JobObjectSupervisor, JobObjectSupervisorFactory};
 // PaneHost 类型 + 公开入参类型对外可见；构造器 2a 仍 pub(crate)（待 2b Windows 构造器）。
 pub use pane::{CommandSpec, PaneHost, SpawnRequest};
 pub use types::{InjectionSource, PaneId, PaneLifecycle, PaneSize, PaneState, ScrollbackInfo};
