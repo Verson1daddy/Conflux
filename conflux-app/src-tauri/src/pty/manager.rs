@@ -947,3 +947,219 @@ impl PtyManager {
         }
     }
 }
+
+// ===== 特征测试（characterization）— mux cutover §3.5 第 1 步 =====
+//
+// 在把 PtyManager 迁移进 conmux::PaneHost **之前**，先用真实 cmd.exe 锁住现有
+// spawn/kill/respawn/inject/resize/rename/status/buffer/state 的可观察行为，
+// 迁移后这些测试（接口形态可调，语义不变）继续绿即视为无回归（cutover gate）。
+//
+// 安全前提（已核实）：本 crate 用 portable-pty 0.8.1，CreatePseudoConsole 仅设
+// RESIZE_QUIRK | WIN32_INPUT_MODE、**无 INHERIT_CURSOR** → 不触发 DSR `ESC[6n`
+// 启动阻塞，故 shell 模式 spawn cmd.exe 不会挂（迁到 0.9 后需 DSR 应答，见 D2/spike）。
+//
+// 纪律：每个 spawn 真实进程的测试结束必 kill，避免泄漏 cmd.exe。仅 Windows 有意义。
+#[cfg(test)]
+#[cfg(windows)]
+mod characterization_tests {
+    use super::*;
+
+    /// shell 模式 spawn cmd.exe（adapter=None / dispatch=None → 只写 OutputBuffer，
+    /// 无 parser/事件派发），返回 instance_id。
+    fn spawn_shell(mgr: &PtyManager) -> String {
+        mgr.spawn(
+            "cmd.exe",
+            &[],
+            ".",
+            "shell",
+            "Shell",
+            None,
+            None,
+            AgentMode::Full,
+            false,
+            None,
+        )
+        .expect("spawn cmd.exe 应成功")
+    }
+
+    #[test]
+    fn spawn_registers_instance_with_expected_fields() {
+        let mgr = PtyManager::new();
+        let id = spawn_shell(&mgr);
+
+        let list = mgr.list_instances();
+        assert_eq!(list.len(), 1, "spawn 后应有 1 个实例");
+        let info = &list[0];
+        assert_eq!(info.instance_id.0, id);
+        assert_eq!(info.adapter_id.0, "shell");
+        assert_eq!(info.adapter_name, "Shell");
+        assert_eq!(info.display_name, None);
+        assert_eq!(info.status, AgentStatus::Idle, "初始状态为 Idle");
+        assert!(!info.hidden);
+        assert_eq!(info.mode, AgentMode::Full);
+        assert_eq!(info.ended_at, None, "运行中 ended_at 为 None");
+
+        // get_instance_state 与 list 一致
+        let st = mgr.get_instance_state(&id).expect("state 应存在");
+        assert_eq!(st.adapter_id.0, "shell");
+        assert_eq!(st.status, AgentStatus::Idle);
+
+        mgr.kill(&id).expect("kill 应成功");
+    }
+
+    #[test]
+    fn spawn_with_id_uses_provided_id() {
+        let mgr = PtyManager::new();
+        let id = mgr
+            .spawn_with_id(
+                "char-fixed-id".to_string(),
+                "cmd.exe",
+                &[],
+                ".",
+                "shell",
+                "Shell",
+                None,
+                None,
+                AgentMode::Full,
+                false,
+                None,
+            )
+            .expect("spawn_with_id 应成功");
+        assert_eq!(id, "char-fixed-id");
+        assert!(mgr
+            .list_instances()
+            .iter()
+            .any(|i| i.instance_id.0 == "char-fixed-id"));
+        mgr.kill("char-fixed-id").expect("kill 应成功");
+    }
+
+    #[test]
+    fn operations_on_unknown_instance_return_not_found() {
+        let mgr = PtyManager::new();
+        let unknown = "does-not-exist";
+        assert!(matches!(
+            mgr.inject_stdin(unknown, "x"),
+            Err(ConfluxError::InstanceNotFound { .. })
+        ));
+        assert!(matches!(
+            mgr.resize(unknown, 80, 24),
+            Err(ConfluxError::InstanceNotFound { .. })
+        ));
+        assert!(matches!(
+            mgr.rename_instance(unknown, Some("a".into())),
+            Err(ConfluxError::InstanceNotFound { .. })
+        ));
+        assert!(matches!(
+            mgr.update_status(unknown, AgentStatus::Coding),
+            Err(ConfluxError::InstanceNotFound { .. })
+        ));
+        assert!(matches!(
+            mgr.get_instance_state(unknown),
+            Err(ConfluxError::InstanceNotFound { .. })
+        ));
+        assert!(matches!(
+            mgr.get_buffer(unknown),
+            Err(ConfluxError::InstanceNotFound { .. })
+        ));
+        assert!(matches!(
+            mgr.get_agent_tree(unknown),
+            Err(ConfluxError::InstanceNotFound { .. })
+        ));
+        assert!(matches!(
+            mgr.kill(unknown),
+            Err(ConfluxError::InstanceNotFound { .. })
+        ));
+        assert!(matches!(
+            mgr.is_process_exited(unknown),
+            Err(ConfluxError::InstanceNotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn inject_resize_ok_on_running_instance() {
+        let mgr = PtyManager::new();
+        let id = spawn_shell(&mgr);
+        assert!(mgr.inject_stdin(&id, "echo hi\r\n").is_ok());
+        assert!(mgr.resize(&id, 100, 40).is_ok());
+        mgr.kill(&id).expect("kill 应成功");
+    }
+
+    #[test]
+    fn rename_updates_display_name() {
+        let mgr = PtyManager::new();
+        let id = spawn_shell(&mgr);
+        mgr.rename_instance(&id, Some("my-alias".into())).unwrap();
+        assert_eq!(
+            mgr.get_instance_state(&id).unwrap().display_name,
+            Some("my-alias".into())
+        );
+        mgr.rename_instance(&id, None).unwrap();
+        assert_eq!(mgr.get_instance_state(&id).unwrap().display_name, None);
+        mgr.kill(&id).expect("kill 应成功");
+    }
+
+    #[test]
+    fn update_status_is_reflected_in_state() {
+        let mgr = PtyManager::new();
+        let id = spawn_shell(&mgr);
+        mgr.update_status(&id, AgentStatus::Coding).unwrap();
+        assert_eq!(mgr.get_instance_state(&id).unwrap().status, AgentStatus::Coding);
+        mgr.kill(&id).expect("kill 应成功");
+    }
+
+    #[test]
+    fn shell_mode_agent_tree_is_single_root_node() {
+        let mgr = PtyManager::new();
+        let id = spawn_shell(&mgr);
+        let tree = mgr.get_agent_tree(&id).unwrap();
+        assert_eq!(tree.root.id, id);
+        assert_eq!(tree.root.name, "Shell");
+        assert!(tree.children.is_empty(), "shell 模式无 sub-agent");
+        mgr.kill(&id).expect("kill 应成功");
+    }
+
+    #[test]
+    fn kill_removes_instance_from_registry() {
+        let mgr = PtyManager::new();
+        let id = spawn_shell(&mgr);
+        assert_eq!(mgr.list_instances().len(), 1);
+        mgr.kill(&id).expect("kill 应成功");
+        assert_eq!(mgr.list_instances().len(), 0, "kill 后实例应移除");
+        assert!(matches!(
+            mgr.get_instance_state(&id),
+            Err(ConfluxError::InstanceNotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn respawn_reuses_same_id() {
+        let mgr = PtyManager::new();
+        let id = spawn_shell(&mgr);
+        mgr.respawn(
+            &id, "cmd.exe", &[], ".", "shell", "Shell", None, None, AgentMode::Full, false, None,
+        )
+        .expect("respawn 应成功");
+        let list = mgr.list_instances();
+        assert_eq!(list.len(), 1, "respawn 复用 id，不新增实例");
+        assert_eq!(list[0].instance_id.0, id);
+        mgr.kill(&id).expect("kill 应成功");
+    }
+
+    #[test]
+    fn reader_thread_captures_output_into_buffer() {
+        // 锁住核心行为：读取线程把 PTY 输出写进 OutputBuffer。
+        let mgr = PtyManager::new();
+        let id = spawn_shell(&mgr);
+        // cmd.exe 交互态会回显输入；注入一条 echo 并给读取线程时间落盘。
+        mgr.inject_stdin(&id, "echo CHARTEST_MARKER\r\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+        let buf = mgr.get_buffer(&id).expect("buffer 应存在");
+        let bytes = buf.read().read_all();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("CHARTEST_MARKER"),
+            "读取线程应把回显写进 buffer，实际:\n{text}"
+        );
+        mgr.kill(&id).expect("kill 应成功");
+    }
+}
