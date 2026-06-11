@@ -76,11 +76,25 @@ pub(crate) trait PaneSession: Send {
     ) -> Option<std::sync::Arc<std::sync::Mutex<Box<dyn std::io::Write + Send>>>> {
         None
     }
+
+    /// 非阻塞查询子进程退出码（cutover ③ D-2a）。`None` = 仍在运行或不可得。
+    /// `PaneHost::poll_exit` 与读线程 EOF 时兑现精确退出码用——ConPTY reader 在 child
+    /// 退出后**可能不返回 EOF**（实测已知），消费方必须有事件之外的轮询兜底。
+    fn try_exit_code(&mut self) -> Option<i32> {
+        None
+    }
 }
 
 /// 单个 pane 的运行时状态（`pub(crate)`，私有字段——不导出本体，仅经 `PaneState` 暴露语义）。
+///
+/// **D-1a 结构**：`session` 置于 `Arc<Mutex>`——`inject_stdin` 在**全局表锁外**经此句柄写
+/// （钩子可执行任意消费方逻辑如审计落库，在表锁内调钩子会制造跨锁死锁窗口）。该 Arc 仅在
+/// conmux 内部流转（Pane 本身 `pub(crate)` 私有字段），可写句柄仍不出模块（MF-1 不破）。
+/// `inject_lock` 为 per-pane 注入串行锁：保证「before 钩子 → write → after 钩子」整序原子
+/// （MF-6），且审计落库顺序 == 字节抵达 PTY 顺序。
 pub(crate) struct Pane {
-    session: Box<dyn PaneSession>,
+    session: Arc<Mutex<Box<dyn PaneSession>>>,
+    inject_lock: Arc<Mutex<()>>,
     supervisor: Box<dyn ProcessSupervisor>,
     lifecycle: PaneLifecycle,
     pid: Option<u32>,
@@ -200,16 +214,26 @@ impl PaneHost {
 
         let scrollback = Arc::new(Mutex::new(LineIndexedBuffer::new(DEFAULT_BUFFER_CAPACITY)));
 
+        // D-1a：session 进入 Arc<Mutex>——inject/poll_exit 在表锁外经此句柄操作。
+        let session = Arc::new(Mutex::new(session));
+
         // 读线程（仅当有事件出口 = Windows 路径；mock 路径 event_sink=None 跳过，2a 测试不受扰）：
         // pump_reader_with_dsr 读 PTY → 应答 DSR → feed scrollback → 推 PaneOutput；
-        // EOF 推 PaneExited。reader/writer 是独立句柄，在 session 移入 pane 表前取出。
+        // EOF 推 PaneExited（D-2a：经 Weak 取精确退出码）。
         #[cfg(windows)]
         if let Some(sink) = self.event_sink.clone() {
-            if let Some(writer) = session.protocol_writer() {
-                match session.take_reader() {
+            let (writer, reader) = {
+                let mut s = session.lock().expect("session 锁未中毒");
+                (s.protocol_writer(), s.take_reader())
+            };
+            if let Some(writer) = writer {
+                match reader {
                     Ok(reader) => {
                         let pane_id = req.pane_id.clone();
                         let sb = Arc::clone(&scrollback);
+                        // Weak：kill/drop 后读线程不得延长 session 寿命——否则 master 不释放、
+                        // reader 永不 EOF、线程泄漏。upgrade 失败（pane 已移除）⇒ exit_code=None。
+                        let session_weak = Arc::downgrade(&session);
                         std::thread::spawn(move || {
                             let mut seq: u64 = 0;
                             crate::pane_win::pump_reader_with_dsr(reader, writer, |chunk| {
@@ -221,11 +245,12 @@ impl PaneHost {
                                     data: chunk.to_vec(),
                                 });
                             });
-                            // pump 返回 = reader EOF（进程退出 + master drop）。
-                            sink.on_notify(MuxNotify::PaneExited {
-                                pane_id,
-                                exit_code: None, // 退出码精确映射 2b-3b/后续（try_exit_code）
-                            });
+                            // pump 返回 = reader EOF（进程退出 / master drop）。
+                            // D-2a：自然退出时 pane 仍在表中、session 存活 → try_exit_code 取精确码。
+                            let exit_code = session_weak
+                                .upgrade()
+                                .and_then(|s| s.lock().ok().and_then(|mut g| g.try_exit_code()));
+                            sink.on_notify(MuxNotify::PaneExited { pane_id, exit_code });
                         });
                     }
                     Err(_e) => {
@@ -239,6 +264,7 @@ impl PaneHost {
         let working_dir = req.command.cwd.clone().unwrap_or_default();
         let pane = Pane {
             session,
+            inject_lock: Arc::new(Mutex::new(())),
             supervisor,
             lifecycle: PaneLifecycle::Running,
             pid: Some(pid),
@@ -261,18 +287,32 @@ impl PaneHost {
     /// before_inject（全部钩子，任一 Err ⇒ 不写）→ session.write_all → after_inject。
     /// `source` 由调用方按**信道身份**传入（in-proc 命令边界硬编码 / V2 管道客户端身份），
     /// **不来自** `MuxOp::Send`（它无 source 字段，MF-2）。
+    ///
+    /// **D-1a 锁纪律（库级不变量）**：钩子**绝不在全局 panes 表锁内调用**——钩子可执行任意
+    /// 消费方逻辑（审计落库 / policy 查询 / 回调 PaneHost 自身），表锁内调用会制造跨锁死锁。
+    /// 表锁仅用于取句柄；钩子链 + 写在 per-pane `inject_lock` 串行段内执行（保证 MF-6 整序
+    /// 原子 + 审计落库顺序 == 字节抵达顺序）。
+    ///
+    /// 语义注：pane 在「取句柄之后、写之前」被并发 kill 时，本次注入不再报 PaneNotFound，
+    /// 而是 write_all 对已关闭 PTY 返回 Err（after_inject 收到 Failed）——句柄经 Arc 短暂
+    /// 存活，不阻塞 kill。
     pub fn inject_stdin(
         &self,
         pane_id: &PaneId,
         data: &[u8],
         source: InjectionSource,
     ) -> Result<(), ConmuxError> {
-        let mut panes = self.panes.lock().expect("panes 锁未中毒");
-        let pane = panes
-            .get_mut(pane_id)
-            .ok_or_else(|| ConmuxError::PaneNotFound {
-                pane_id: pane_id.0.clone(),
-            })?;
+        // 表锁内只取句柄，立即释放（D-1a）。
+        let (inject_lock, session) = {
+            let panes = self.panes.lock().expect("panes 锁未中毒");
+            let pane = panes
+                .get(pane_id)
+                .ok_or_else(|| ConmuxError::PaneNotFound {
+                    pane_id: pane_id.0.clone(),
+                })?;
+            (Arc::clone(&pane.inject_lock), Arc::clone(&pane.session))
+        };
+        let _serial = inject_lock.lock().expect("inject 锁未中毒");
 
         let ctx = InjectionContext {
             pane_id,
@@ -293,7 +333,7 @@ impl PaneHost {
             }
         }
 
-        let result = pane.session.write_all(data);
+        let result = session.lock().expect("session 锁未中毒").write_all(data);
         for hook in &self.hooks {
             hook.after_inject(&ctx, &result);
         }
@@ -337,9 +377,37 @@ impl PaneHost {
             .ok_or_else(|| ConmuxError::PaneNotFound {
                 pane_id: pane_id.0.clone(),
             })?;
-        pane.session.resize(size)?;
+        pane.session.lock().expect("session 锁未中毒").resize(size)?;
         pane.size = size;
         Ok(())
+    }
+
+    /// 非阻塞退出检测（cutover ③ D-2a）。查到退出 ⇒ lifecycle 翻成 `Exited(code)` 并记
+    /// `exit_code`（兑现契约 §3.3——此前 lifecycle 永远 Running 的语义缺口）；仍在运行 ⇒
+    /// `Ok(None)`。
+    ///
+    /// 与 `PaneExited` 事件互补：ConPTY reader 在 child 退出后**可能不返回 EOF**（实测
+    /// 已知），事件可能永不到达——消费方（conflux `is_process_exited` 轮询）必须有此兜底。
+    pub fn poll_exit(&self, pane_id: &PaneId) -> Result<Option<i32>, ConmuxError> {
+        let mut panes = self.panes.lock().expect("panes 锁未中毒");
+        let pane = panes
+            .get_mut(pane_id)
+            .ok_or_else(|| ConmuxError::PaneNotFound {
+                pane_id: pane_id.0.clone(),
+            })?;
+        if let PaneLifecycle::Exited(code) = pane.lifecycle {
+            return Ok(Some(code));
+        }
+        let code = pane
+            .session
+            .lock()
+            .expect("session 锁未中毒")
+            .try_exit_code();
+        if let Some(c) = code {
+            pane.lifecycle = PaneLifecycle::Exited(c);
+            pane.exit_code = Some(c);
+        }
+        Ok(code)
     }
 
     /// 对账/死亡检测用。
@@ -418,6 +486,8 @@ mod tests {
         reader_taken: bool,
         resized_to: Option<PaneSize>,
         spawn_should_fail: bool,
+        /// D-2a：模拟 try_exit_code 返回值（None = 仍在运行）。
+        exit_code: Option<i32>,
     }
 
     #[derive(Clone)]
@@ -452,6 +522,9 @@ mod tests {
         fn write_all(&mut self, data: &[u8]) -> Result<(), ConmuxError> {
             self.state.lock().unwrap().written.push(data.to_vec());
             Ok(())
+        }
+        fn try_exit_code(&mut self) -> Option<i32> {
+            self.state.lock().unwrap().exit_code
         }
     }
 
@@ -801,6 +874,96 @@ mod tests {
         assert_send_sync::<PaneHost>();
     }
 
+    // ===== D-1a：钩子不在全局表锁内调用（cutover ③ 锁纪律回归） =====
+
+    /// 钩子在 before_inject 里回调 PaneHost 自身（list_panes 取表锁）。
+    /// 旧实现持表锁全程调钩子 ⇒ 此处自死锁；D-1a 后必须正常完成。
+    struct ReentrantHook {
+        host: Arc<StdMutex<Option<Arc<PaneHost>>>>,
+        reentered: Arc<StdMutex<bool>>,
+    }
+    impl InjectionHook for ReentrantHook {
+        fn before_inject(&self, _ctx: &InjectionContext) -> Result<(), ConmuxError> {
+            if let Some(host) = self.host.lock().unwrap().as_ref() {
+                let _ = host.list_panes(); // 表锁内调钩子时此行死锁
+                *self.reentered.lock().unwrap() = true;
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn inject_hook_may_reenter_panehost_without_deadlock() {
+        let session_state = Arc::new(StdMutex::new(MockSessionState::default()));
+        let sup_rec = Arc::new(StdMutex::new(SupervisorRecord::default()));
+        let host_slot: Arc<StdMutex<Option<Arc<PaneHost>>>> = Arc::new(StdMutex::new(None));
+        let reentered = Arc::new(StdMutex::new(false));
+        let host = Arc::new(PaneHost::new(PaneHostConfig {
+            backend: Box::new(MockBackend {
+                state: Arc::clone(&session_state),
+                pid: 1,
+            }),
+            supervisor_factory: Box::new(MockSupervisorFactory {
+                rec: Arc::clone(&sup_rec),
+            }),
+            hooks: vec![Arc::new(ReentrantHook {
+                host: Arc::clone(&host_slot),
+                reentered: Arc::clone(&reentered),
+            })],
+            event_sink: None,
+        }));
+        *host_slot.lock().unwrap() = Some(Arc::clone(&host));
+        host.spawn(req("p1")).unwrap();
+
+        // 在子线程跑 inject + 超时看护：死锁时 recv 超时而非测试挂死。
+        let (tx, rx) = std::sync::mpsc::channel();
+        let h2 = Arc::clone(&host);
+        std::thread::spawn(move || {
+            let r = h2.inject_stdin(&PaneId("p1".into()), b"x", InjectionSource::UserDirect);
+            let _ = tx.send(r);
+        });
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("inject 应在 5s 内完成（超时 = 钩子在表锁内被调用 → 死锁回归）");
+        assert!(result.is_ok());
+        assert!(*reentered.lock().unwrap(), "钩子应成功回调 list_panes");
+        // 字节仍正常抵达（锁外钩子不破坏唯一写链）。
+        assert_eq!(session_state.lock().unwrap().written, vec![b"x".to_vec()]);
+    }
+
+    // ===== D-2a：poll_exit 退出检测兜底 =====
+
+    #[test]
+    fn poll_exit_running_returns_none_and_keeps_lifecycle() {
+        let f = fixture_with_pid(1);
+        f.host.spawn(req("p1")).unwrap();
+        assert_eq!(f.host.poll_exit(&PaneId("p1".into())).unwrap(), None);
+        assert_eq!(f.host.list_panes()[0].lifecycle, PaneLifecycle::Running);
+    }
+
+    #[test]
+    fn poll_exit_flips_lifecycle_and_records_exit_code() {
+        let f = fixture_with_pid(1);
+        f.host.spawn(req("p1")).unwrap();
+        f.session_state.lock().unwrap().exit_code = Some(7);
+        assert_eq!(f.host.poll_exit(&PaneId("p1".into())).unwrap(), Some(7));
+        let st = &f.host.list_panes()[0];
+        assert_eq!(st.lifecycle, PaneLifecycle::Exited(7));
+        assert_eq!(st.exit_code, Some(7));
+        // 已 Exited 后走缓存路径（即使 session 不再报码也稳定返回）。
+        f.session_state.lock().unwrap().exit_code = None;
+        assert_eq!(f.host.poll_exit(&PaneId("p1".into())).unwrap(), Some(7));
+    }
+
+    #[test]
+    fn poll_exit_unknown_pane_returns_not_found() {
+        let f = fixture_with_pid(1);
+        assert!(matches!(
+            f.host.poll_exit(&PaneId("nope".into())),
+            Err(ConmuxError::PaneNotFound { .. })
+        ));
+    }
+
     // ===== Windows 端到端集成（cutover 2b-3）：new_windows 真实组装 =====
     #[cfg(windows)]
     mod windows_e2e {
@@ -968,6 +1131,55 @@ mod tests {
             ));
 
             host.kill(&PaneId("w3".into())).unwrap();
+        }
+
+        /// D-2a：自然退出后 PaneExited 事件携带精确退出码 + poll_exit 兜底返回同码。
+        #[test]
+        fn new_windows_exit_code_via_event_and_poll() {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let host = PaneHost::new_windows(
+                vec![],
+                Arc::new(CollectSink {
+                    events: Arc::clone(&events),
+                }),
+            );
+            host.spawn(SpawnRequest {
+                pane_id: PaneId("w4".into()),
+                command: CommandSpec {
+                    program: "cmd.exe".into(),
+                    args: vec!["/c".into(), "exit 5".into()],
+                    cwd: None,
+                    env: vec![],
+                },
+                size: PaneSize { rows: 24, cols: 80 },
+                adapter_id: "shell".into(),
+                display_name: None,
+                created_at: 0,
+            })
+            .unwrap();
+            std::thread::sleep(Duration::from_millis(2000));
+
+            // poll_exit 兜底（不依赖 reader EOF 是否到达）。
+            let polled = host.poll_exit(&PaneId("w4".into())).expect("poll_exit 应成功");
+            assert_eq!(polled, Some(5), "cmd /c exit 5 的退出码应为 5");
+            assert_eq!(host.list_panes()[0].lifecycle, PaneLifecycle::Exited(5));
+
+            // PaneExited 事件若已到达（reader EOF），exit_code 必须同为 Some(5)，
+            // 不得伪装 None（D9 诚实原则；EOF 未到达则跳过该断言——poll 已覆盖）。
+            let exited: Vec<Option<i32>> = events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|e| match e {
+                    MuxNotify::PaneExited { exit_code, .. } => Some(*exit_code),
+                    _ => None,
+                })
+                .collect();
+            if let Some(code) = exited.first() {
+                assert_eq!(*code, Some(5), "PaneExited 应携带精确退出码");
+            }
+
+            host.kill(&PaneId("w4".into())).unwrap();
         }
     }
 }

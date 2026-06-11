@@ -68,18 +68,16 @@ pub struct WindowsPaneSession {
     reader_taken: bool,
 }
 
-impl WindowsPaneSession {
-    /// 非阻塞查询子进程是否已退出（退出码映射用；kill 成败不信此返回值，见 spike #5）。
-    #[allow(dead_code)] // 2b-3 PaneHost 退出检测/PaneExited 事件会用。
-    pub(crate) fn try_exit_code(&mut self) -> Option<i32> {
+impl PaneSession for WindowsPaneSession {
+    /// 非阻塞查询子进程是否已退出（D-2a poll_exit / PaneExited 退出码；kill 成败不信此
+    /// 返回值，见 spike #5）。
+    fn try_exit_code(&mut self) -> Option<i32> {
         match self.child.as_mut()?.try_wait() {
             Ok(Some(status)) => Some(status.exit_code() as i32),
             _ => None,
         }
     }
-}
 
-impl PaneSession for WindowsPaneSession {
     fn spawn(&mut self, cmd: &CommandSpec) -> Result<u32, ConmuxError> {
         let slave = self.slave.as_ref().ok_or_else(|| ConmuxError::SpawnFailed {
             message: "session 已 spawn 或 slave 缺失".into(),
