@@ -64,6 +64,7 @@ pub(crate) fn build_injection_audit(
         result,
         created_at: now_ms,
         rationale_ref: None,
+        payload: None,
     }
 }
 

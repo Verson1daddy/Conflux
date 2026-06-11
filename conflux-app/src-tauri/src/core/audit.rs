@@ -55,6 +55,10 @@ pub enum AuditAction {
     Terminate,
     /// 恢复（被忽略 item 的 restore）
     Restore,
+    /// 超时落定（V1-core sweep：活跃项超 timeout_seconds 未处置，actor=System）
+    Expire,
+    /// 提醒回归（V1-core sweep：deferred 项到 remind_at 复活回 active，actor=System）
+    Remind,
 }
 
 /// 审计动作结果（§7.1）
@@ -95,6 +99,10 @@ pub struct AuditEvent {
     pub created_at: i64,
     /// 决策依据引用（可空）
     pub rationale_ref: Option<String>,
+    /// 批审计载荷（V1-core D3：UserDirect 合批的 JSON——data_base64/key_count/
+    /// first_key_ts/flush_ts/seq；其余动作为 None）。serde default 向后兼容。
+    #[serde(default)]
+    pub payload: Option<String>,
 }
 
 impl AuditEvent {

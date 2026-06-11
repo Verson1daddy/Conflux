@@ -101,6 +101,8 @@ mod tests {
             audit_event_id: None,
             permission_context: None,
             timeout_seconds: None,
+            remind_at: None,
+            signal_source: None,
         }
     }
 

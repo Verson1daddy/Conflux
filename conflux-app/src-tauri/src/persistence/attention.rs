@@ -29,8 +29,8 @@ pub fn insert_attention_item(conn: &Connection, item: &AttentionItem) -> Result<
             attention_item_id, instance_id, kind, priority, source_event_id, \
             interaction_id, payload_summary, available_actions, jump_back_target_id, \
             created_at, resolved_at, resolution, audit_event_id, \
-            permission_context, timeout_seconds) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            permission_context, timeout_seconds, remind_at, signal_source) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         params![
             item.attention_item_id,
             item.instance_id.0,
@@ -47,6 +47,8 @@ pub fn insert_attention_item(conn: &Connection, item: &AttentionItem) -> Result<
             item.audit_event_id,
             context_json,
             item.timeout_seconds,
+            item.remind_at,
+            item.signal_source,
         ],
     )
     .map_err(|e| ConfluxError::DatabaseError {
@@ -70,7 +72,8 @@ pub fn update_attention_item(conn: &Connection, item: &AttentionItem) -> Result<
                 interaction_id = ?6, payload_summary = ?7, available_actions = ?8, \
                 jump_back_target_id = ?9, created_at = ?10, resolved_at = ?11, \
                 resolution = ?12, audit_event_id = ?13, \
-                permission_context = ?14, timeout_seconds = ?15 \
+                permission_context = ?14, timeout_seconds = ?15, \
+                remind_at = ?16, signal_source = ?17 \
              WHERE attention_item_id = ?1",
             params![
                 item.attention_item_id,
@@ -88,6 +91,8 @@ pub fn update_attention_item(conn: &Connection, item: &AttentionItem) -> Result<
                 item.audit_event_id,
                 context_json,
                 item.timeout_seconds,
+                item.remind_at,
+                item.signal_source,
             ],
         )
         .map_err(|e| ConfluxError::DatabaseError {
@@ -111,7 +116,7 @@ pub fn list_active_attention_items(conn: &Connection) -> Result<Vec<AttentionIte
         "SELECT attention_item_id, instance_id, kind, priority, source_event_id, \
          interaction_id, payload_summary, available_actions, jump_back_target_id, \
          created_at, resolved_at, resolution, audit_event_id, \
-         permission_context, timeout_seconds \
+         permission_context, timeout_seconds, remind_at, signal_source \
          FROM attention_items WHERE resolution IS NULL \
          ORDER BY priority ASC, created_at ASC",
     )
@@ -124,7 +129,7 @@ pub fn list_ignored_attention_items(conn: &Connection) -> Result<Vec<AttentionIt
         "SELECT attention_item_id, instance_id, kind, priority, source_event_id, \
          interaction_id, payload_summary, available_actions, jump_back_target_id, \
          created_at, resolved_at, resolution, audit_event_id, \
-         permission_context, timeout_seconds \
+         permission_context, timeout_seconds, remind_at, signal_source \
          FROM attention_items WHERE resolution = 'ignored' \
          ORDER BY created_at ASC",
     )
@@ -174,6 +179,8 @@ fn map_row(row: &rusqlite::Row) -> rusqlite::Result<AttentionItem> {
             ctx_json.and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
         },
         timeout_seconds: row.get(14)?,
+        remind_at: row.get(15)?,
+        signal_source: row.get(16)?,
     })
 }
 

@@ -71,7 +71,8 @@ CREATE TABLE IF NOT EXISTS audit_events (
     injection_source TEXT,
     result TEXT NOT NULL,
     created_at INTEGER NOT NULL,
-    rationale_ref TEXT
+    rationale_ref TEXT,
+    payload TEXT            -- V1-core D3：批审计载荷 JSON（data_base64/key_count/时间区间/seq），可空
 );
 CREATE INDEX IF NOT EXISTS idx_audit_events_instance_ts ON audit_events(instance_id, created_at);
 
@@ -104,7 +105,9 @@ CREATE TABLE IF NOT EXISTS attention_items (
     resolution TEXT,                    -- NULL = active；非 NULL = 已处置
     audit_event_id TEXT,
     permission_context TEXT,            -- JSON 数组（PermissionRequest.raw_context），仅 kind=Permission
-    timeout_seconds INTEGER             -- PermissionRequest.timeout_seconds，仅 kind=Permission
+    timeout_seconds INTEGER,            -- PermissionRequest.timeout_seconds，仅 kind=Permission
+    remind_at INTEGER,                  -- V1-core：defer 提醒时间（ms），仅 resolution=deferred 有值
+    signal_source TEXT                  -- V1-core §4.7：信号来源标注 hook|scrape（刮屏源不可靠提示）
 );
 CREATE INDEX IF NOT EXISTS idx_attention_items_active ON attention_items(resolution, priority, created_at);
 CREATE INDEX IF NOT EXISTS idx_attention_items_instance_kind ON attention_items(instance_id, kind, resolution);
@@ -194,8 +197,11 @@ pub fn init_database(path: &str) -> Result<Connection, ConfluxError> {
 
     // 控制面语义层 P1：存量库幂等迁移（给旧 session_events 补新列）
     migrate_session_events(&conn)?;
-    // 控制面语义层 P5：给旧 attention_items 补权限 payload 列（permission_context/timeout_seconds）
+    // 控制面语义层 P5 + V1-core：给旧 attention_items 补新列
+    // （permission_context/timeout_seconds/remind_at/signal_source）
     migrate_attention_items(&conn)?;
+    // V1-core D3：给旧 audit_events 补批审计载荷列（payload）
+    migrate_audit_events(&conn)?;
 
     log::debug!("SQLite 数据库初始化完成: {}", path);
     Ok(conn)
@@ -239,16 +245,19 @@ pub fn migrate_session_events(conn: &Connection) -> Result<(), ConfluxError> {
     Ok(())
 }
 
-/// 给存量 `attention_items` 表幂等补齐 P5 权限 payload 列（F1 §6 投影完整性）。
+/// 给存量 `attention_items` 表幂等补齐新列（P5 权限 payload + V1-core 提醒/信号源）。
 ///
-/// 新建库已在 CREATE TABLE 时带上 `permission_context`/`timeout_seconds`；
-/// 此函数针对**旧 schema**（不含这两列）的存量库做 `ALTER TABLE ADD COLUMN`。
-/// 通过 `PRAGMA table_info` 检测列是否存在，缺哪列补哪列；重复调用不报错（幂等）。
+/// 新建库已在 CREATE TABLE 时带上全部列；此函数针对**旧 schema** 的存量库做
+/// `ALTER TABLE ADD COLUMN`。通过 `PRAGMA table_info` 检测列是否存在，缺哪列补哪列；
+/// 重复调用不报错（幂等）。
 pub fn migrate_attention_items(conn: &Connection) -> Result<(), ConfluxError> {
     let existing = attention_items_columns(conn)?;
     let new_columns = [
         ("permission_context", "TEXT"),
         ("timeout_seconds", "INTEGER"),
+        // V1-core：defer 提醒时间 + 信号来源标注（hook|scrape，§4.7）
+        ("remind_at", "INTEGER"),
+        ("signal_source", "TEXT"),
     ];
     for (col, ty) in new_columns {
         if !existing.iter().any(|c| c == col) {
@@ -260,6 +269,36 @@ pub fn migrate_attention_items(conn: &Connection) -> Result<(), ConfluxError> {
                 message: format!("attention_items 迁移失败（ADD COLUMN {}）: {}", col, e),
             })?;
         }
+    }
+    Ok(())
+}
+
+/// 给存量 `audit_events` 表幂等补齐 V1-core D3 的 `payload` 列（批审计载荷）。
+///
+/// `ALTER TABLE ADD COLUMN` 不触发 append-only 触发器（其只拦 UPDATE/DELETE 行操作），
+/// 不可变语义不受影响。幂等同 migrate_attention_items。
+pub fn migrate_audit_events(conn: &Connection) -> Result<(), ConfluxError> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(audit_events)")
+        .map_err(|e| ConfluxError::DatabaseError {
+            message: format!("PRAGMA table_info(audit_events) 准备失败: {}", e),
+        })?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| ConfluxError::DatabaseError {
+            message: format!("PRAGMA table_info(audit_events) 查询失败: {}", e),
+        })?;
+    let mut cols = Vec::new();
+    for r in rows {
+        cols.push(r.map_err(|e| ConfluxError::DatabaseError {
+            message: format!("audit_events 列名解析失败: {}", e),
+        })?);
+    }
+    if !cols.iter().any(|c| c == "payload") {
+        conn.execute_batch("ALTER TABLE audit_events ADD COLUMN payload TEXT;")
+            .map_err(|e| ConfluxError::DatabaseError {
+                message: format!("audit_events 迁移失败（ADD COLUMN payload）: {}", e),
+            })?;
     }
     Ok(())
 }
@@ -453,6 +492,66 @@ mod tests {
             1_000,
         )
         .expect("first agent instance insert should pass after single adapter upsert");
+    }
+
+    /// V1-core：旧库（attention_items 缺 remind_at/signal_source、audit_events 缺
+    /// payload）经 init_database 幂等补列，且 append-only 触发器仍生效。
+    #[test]
+    fn test_v1core_migrations_add_columns_on_legacy_db() {
+        let path = std::env::temp_dir().join(format!(
+            "conflux_schema_v1core_legacy_test_{}.db",
+            std::process::id()
+        ));
+        let path_str = path.to_str().expect("temp path utf8").to_string();
+        let _ = std::fs::remove_file(&path);
+
+        // 1. 预置旧 schema（V1-core 之前的列集合）+ 各一行旧数据
+        {
+            let conn = Connection::open(&path_str).expect("建旧库应成功");
+            conn.execute_batch(
+                "CREATE TABLE attention_items (\
+                    attention_item_id TEXT PRIMARY KEY, instance_id TEXT NOT NULL, \
+                    kind TEXT NOT NULL, priority TEXT NOT NULL, source_event_id TEXT, \
+                    interaction_id TEXT, payload_summary TEXT NOT NULL, \
+                    available_actions TEXT NOT NULL, jump_back_target_id TEXT, \
+                    created_at INTEGER NOT NULL, resolved_at INTEGER, resolution TEXT, \
+                    audit_event_id TEXT, permission_context TEXT, timeout_seconds INTEGER);\
+                 INSERT INTO attention_items (attention_item_id, instance_id, kind, priority, \
+                    payload_summary, available_actions, created_at) \
+                    VALUES ('a1','i1','permission','critical','x','[]',1);\
+                 CREATE TABLE audit_events (\
+                    audit_event_id TEXT PRIMARY KEY, actor TEXT NOT NULL, action TEXT NOT NULL, \
+                    instance_id TEXT, source_event_id TEXT, interaction_id TEXT, \
+                    injection_source TEXT, result TEXT NOT NULL, created_at INTEGER NOT NULL, \
+                    rationale_ref TEXT);\
+                 INSERT INTO audit_events (audit_event_id, actor, action, result, created_at) \
+                    VALUES ('au1','user','approve','ok',1);",
+            )
+            .expect("预置旧 schema 应成功");
+        }
+
+        // 2. init_database 在旧库上不得崩，且新列补齐、旧数据保留
+        let conn = init_database(&path_str).expect("旧库上 init_database 应成功");
+        let att_cols = columns_of(&conn, "attention_items");
+        assert!(att_cols.iter().any(|c| c == "remind_at"), "应补 remind_at");
+        assert!(
+            att_cols.iter().any(|c| c == "signal_source"),
+            "应补 signal_source"
+        );
+        let audit_cols = columns_of(&conn, "audit_events");
+        assert!(audit_cols.iter().any(|c| c == "payload"), "应补 payload");
+
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM attention_items", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "旧数据保留");
+
+        // 3. append-only 触发器仍生效（迁移不破坏不可变语义）
+        let upd = conn.execute("UPDATE audit_events SET result='failed' WHERE audit_event_id='au1'", []);
+        assert!(upd.is_err(), "audit_events UPDATE 必须仍被触发器拒绝");
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
     }
 
     /// 读取 session_events 当前列名集合（测试辅助）

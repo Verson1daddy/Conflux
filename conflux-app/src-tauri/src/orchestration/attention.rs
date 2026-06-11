@@ -67,6 +67,12 @@ pub struct AttentionItem {
     pub permission_context: Option<Vec<String>>,
     /// 权限超时秒数（仅 kind=Permission；来自 PermissionRequest.timeout_seconds）
     pub timeout_seconds: Option<i64>,
+    /// defer 提醒时间（Unix ms；仅 resolution=Deferred 有值，到点由 sweep 复活）。
+    #[serde(default)]
+    pub remind_at: Option<i64>,
+    /// 信号来源标注（V1-core §4.7："hook"=结构化可靠 / "scrape"=刮屏兜底不可靠）。
+    #[serde(default)]
+    pub signal_source: Option<String>,
 }
 
 impl AttentionItem {
@@ -93,6 +99,8 @@ struct IngestDescriptor {
     created_at: i64,
     permission_context: Option<Vec<String>>,
     timeout_seconds: Option<i64>,
+    /// 信号来源标注（"hook"/"scrape"；批次 4 接线，当前 Permission 路径填充）。
+    signal_source: Option<String>,
 }
 
 /// 后端唯一注意力队列引擎（§4）
@@ -176,6 +184,8 @@ impl AttentionQueue {
             audit_event_id: None,
             permission_context: desc.permission_context,
             timeout_seconds: desc.timeout_seconds,
+            remind_at: None,
+            signal_source: desc.signal_source,
         };
 
         db_attention::insert_attention_item(conn, &item)?;
@@ -345,6 +355,7 @@ impl AttentionQueue {
             result: AuditResult::Ok,
             created_at: now_ms,
             rationale_ref: None,
+            payload: None,
         };
 
         // fail-closed：落库失败则内存仍是 ignored（未改动），直接向上抛错
@@ -398,6 +409,7 @@ impl AttentionQueue {
             result: audit_result,
             created_at: now_ms,
             rationale_ref: None,
+            payload: None,
         };
 
         // MF-8：UPDATE + 审计 INSERT 同一事务，失败回滚（fail-closed）
@@ -465,6 +477,7 @@ fn map_event_to_descriptor(event: &ConfluxEvent) -> Option<IngestDescriptor> {
             created_at: *timestamp,
             permission_context: Some(request.raw_context.clone()),
             timeout_seconds: Some(request.timeout_seconds as i64),
+            signal_source: None, // 批次 4：从 request.signal_source 投影
         }),
 
         ConfluxEvent::ErrorOccurred {
@@ -494,6 +507,7 @@ fn map_event_to_descriptor(event: &ConfluxEvent) -> Option<IngestDescriptor> {
                 created_at: *timestamp,
                 permission_context: None,
                 timeout_seconds: None,
+                signal_source: None,
             })
         }
 
@@ -516,6 +530,7 @@ fn map_event_to_descriptor(event: &ConfluxEvent) -> Option<IngestDescriptor> {
             created_at: *timestamp,
             permission_context: None,
             timeout_seconds: None,
+            signal_source: None,
         }),
 
         // 非必上浮事件——不入注意力队列
@@ -1050,6 +1065,27 @@ mod tests {
                 "V1 派生 target_kind 必须 ∈ {{Card, TerminalRange, FallbackContext}}"
             );
         }
+    }
+
+    /// V1-core 批次 2：remind_at / signal_source 字段 DB 完整往返。
+    #[test]
+    fn test_remind_at_and_signal_source_roundtrip() {
+        let conn = init_database(":memory:").unwrap();
+        let mut q = AttentionQueue::new();
+        let mut item = q
+            .ingest(&conn, &perm_event("inst-a", "req-1", 1_000))
+            .unwrap()
+            .unwrap();
+
+        // 直接经持久层写入新字段（语义接线在批次 4/5；此处锁存储往返）
+        item.remind_at = Some(9_999);
+        item.signal_source = Some("hook".to_string());
+        db_attention::update_attention_item(&conn, &item).unwrap();
+
+        let reloaded = db_attention::list_active_attention_items(&conn).unwrap();
+        assert_eq!(reloaded.len(), 1);
+        assert_eq!(reloaded[0].remind_at, Some(9_999));
+        assert_eq!(reloaded[0].signal_source.as_deref(), Some("hook"));
     }
 
     /// reload_from_db：活跃 + 忽略项都能恢复进内存

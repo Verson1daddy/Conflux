@@ -22,8 +22,8 @@ pub fn insert_audit_event(conn: &Connection, event: &AuditEvent) -> Result<(), C
     conn.execute(
         "INSERT INTO audit_events (\
             audit_event_id, actor, action, instance_id, source_event_id, \
-            interaction_id, injection_source, result, created_at, rationale_ref) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            interaction_id, injection_source, result, created_at, rationale_ref, payload) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             event.audit_event_id,
             actor_to_str(&event.actor),
@@ -35,6 +35,7 @@ pub fn insert_audit_event(conn: &Connection, event: &AuditEvent) -> Result<(), C
             result_to_str(&event.result),
             event.created_at,
             event.rationale_ref,
+            event.payload,
         ],
     )
     .map_err(|e| ConfluxError::DatabaseError {
@@ -58,7 +59,7 @@ pub fn list_audit_events(
     // 动态拼接 WHERE / LIMIT，但值仍走参数化绑定（防注入）
     let mut sql = String::from(
         "SELECT audit_event_id, actor, action, instance_id, source_event_id, \
-         interaction_id, injection_source, result, created_at, rationale_ref \
+         interaction_id, injection_source, result, created_at, rationale_ref, payload \
          FROM audit_events",
     );
     if instance_id.is_some() {
@@ -91,6 +92,7 @@ pub fn list_audit_events(
             result: result_from_str(&row.get::<_, String>(7)?),
             created_at: row.get(8)?,
             rationale_ref: row.get(9)?,
+            payload: row.get(10)?,
         })
     };
 
@@ -144,6 +146,8 @@ fn action_to_str(action: &AuditAction) -> &'static str {
         AuditAction::Interrupt => "interrupt",
         AuditAction::Terminate => "terminate",
         AuditAction::Restore => "restore",
+        AuditAction::Expire => "expire",
+        AuditAction::Remind => "remind",
     }
 }
 
@@ -160,6 +164,8 @@ fn action_from_str(s: &str) -> AuditAction {
         "interrupt" => AuditAction::Interrupt,
         "terminate" => AuditAction::Terminate,
         "restore" => AuditAction::Restore,
+        "expire" => AuditAction::Expire,
+        "remind" => AuditAction::Remind,
         // 未知值降级为 Interrupt 是不安全的语义；落库值由后端硬编码控制，
         // 此处理论上不可达；保守降级为 Ignore（不产生新副作用）。
         _ => AuditAction::Ignore,
@@ -220,6 +226,7 @@ mod tests {
             result: AuditResult::Ok,
             created_at,
             rationale_ref: Some("rationale://approve".to_string()),
+            payload: Some(r#"{"key_count":1}"#.to_string()),
         }
     }
 
