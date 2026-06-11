@@ -1,14 +1,17 @@
 // ===== stdin 注入唯一入口（MF-1 / CRIT-01 修复，契约 §13.1） =====
 //
-// 全代码库**唯一**的 stdin 注入路径。`pty_manager.inject_stdin` 只允许在
+// 全代码库**唯一**的 stdin 注入路径。`pane_runtime.inject_stdin` 只允许在
 // `inject_with_policy` 内被调用一次（command 包装、coordinator 自动注入等所有
 // 路径统一收敛于此），构成单一 chokepoint。任何旁路裸调 `inject_stdin` 都违反
 // 契约 §13.1，会在 X4 安全闸被拒。
 //
-// 本模块收敛：
-//   1. StdinInjectionPolicy 检查（长度 / forbidden_patterns / per-window 速率）
-//   2. 实际 `pty_manager.inject_stdin` 调用（唯一真实注入点）
-//   3. emit `StdinInjected` 事件
+// cutover ③：policy 闸（长度/forbidden_patterns/per-pane 速率）与 fail-closed 审计
+// 已下沉为 conmux 注入钩子（`pty/hooks.rs::PolicyHook/AuditHook`，AppState 装配时
+// 注册）——「审计先于字节抵达 PTY」从项目约定升级为 conmux 库级保证（MF-6），且
+// 可写 PTY 句柄被 conmux 类型级密封（绕过本入口在类型上不可达）。本模块保留：
+//   1. 实例存在性校验 + 唯一通道调用
+//   2. emit `StdinInjected` 事件
+//   3. 钩子复用的纯函数（policy 判定 / 限速 / 审计构造——单测无 Tauri 依赖）
 //
 // 注意：`forbidden_patterns` 仅为 defense-in-depth 黑名单，**不是唯一防线、不提供
 // 安全保证**（契约 §13.5，已知可被引号拼接 / 空格 / 编码 / 同义命令绕过）。真正的
@@ -19,7 +22,6 @@ use tauri::AppHandle;
 use crate::core::audit::{AuditAction, AuditActor, AuditEvent, AuditResult};
 use crate::core::event_emit::emit_conflux_event;
 use crate::core::{ConfluxError, ConfluxEvent, InjectionSource, InstanceId, StdinInjectionPolicy};
-use crate::persistence::audit::insert_audit_event;
 use crate::AppState;
 
 /// 后端硬编码：把注入来源映射为审计 (actor, action)（MF-6 / §13.2）。
@@ -63,54 +65,6 @@ pub(crate) fn build_injection_audit(
         created_at: now_ms,
         rationale_ref: None,
     }
-}
-
-/// 写一条注入审计（在 `state.db` 锁内执行 INSERT）。
-///
-/// 返回 `Ok` 表示审计已落库；`Err` 表示审计写入失败，调用方据此 fail-closed。
-fn write_injection_audit(state: &AppState, event: &AuditEvent) -> Result<(), ConfluxError> {
-    let conn = state.db.lock();
-    insert_audit_event(&conn, event)
-}
-
-/// **审计-注入核心**（fail-closed 不变量，MF-2 / §13.2）——与 Tauri 运行时解耦的可测试种子。
-///
-/// 顺序严格固定，保证「绝不出现未审计的注入」：
-///   1. **先**写一条 `result=Ok` 审计；审计 INSERT 失败 ⇒ 立即返回 Err，
-///      **绝不调用 `do_inject`**（fail-closed：无注入）。
-///   2. 审计成功后才调用 `do_inject` 真正写 stdin。
-///   3. 注入本身失败 ⇒ 追加一条 `result=Failed` 审计（Ok 审计保留以体现已尝试），
-///      再向上抛错。
-///
-/// `actor` / `action` / `injection_source` 均由 `build_injection_audit` 按 `source`
-/// 后端硬编码（MF-6），调用方无法绕过。
-///
-/// 返回 `Ok(audit_event_id)`——已落库的 Ok 审计 ID（供调用方关联）。
-fn audited_inject<F>(
-    conn: &rusqlite::Connection,
-    instance_id: &str,
-    source: &InjectionSource,
-    now_ms: i64,
-    do_inject: F,
-) -> Result<String, ConfluxError>
-where
-    F: FnOnce() -> Result<(), ConfluxError>,
-{
-    // 1. 先审计（fail-closed 关键步）
-    let ok_audit = build_injection_audit(instance_id, source, AuditResult::Ok, now_ms);
-    insert_audit_event(conn, &ok_audit)?; // 审计失败 ⇒ ? 早返回，do_inject 永不执行
-
-    // 2. 审计成功后才注入
-    if let Err(e) = do_inject() {
-        // 3. 注入失败 ⇒ 追加 Failed 审计（best-effort，不掩盖原始注入错误）
-        let failed_audit = build_injection_audit(instance_id, source, AuditResult::Failed, now_ms);
-        if let Err(ae) = insert_audit_event(conn, &failed_audit) {
-            log::warn!("注入失败且 Failed 审计写入失败: {ae}");
-        }
-        return Err(e);
-    }
-
-    Ok(ok_audit.audit_event_id)
 }
 
 /// 判断该注入来源是否需要执行 StdinInjectionPolicy 安全检查。
@@ -180,19 +134,24 @@ pub(crate) fn check_and_record_rate_limit(
 
 /// **唯一注入入口**（MF-1 / CRIT-01，契约 §13.1）。
 ///
-/// 收敛 policy 检查 + `pty_manager.inject_stdin` 实际注入 + `StdinInjected` emit。
+/// 收敛 `pane_runtime.inject_stdin` 实际注入 + `StdinInjected` emit。
 /// 所有需要写 agent stdin 的路径（IPC command、coordinator 自动注入、讨论消息）
-/// 必须经此函数，不得旁路裸调 `pty_manager.inject_stdin`。
+/// 必须经此函数，不得旁路裸调 `inject_stdin`。
+///
+/// cutover ③：policy 闸 / per-pane 限速 / fail-closed 审计在 conmux 钩子链内发生
+/// （`before_inject` 全过才写 PTY，任一 Err ⇒ 字节绝不抵达——库级 MF-6），本层不再
+/// 内联这些步骤。拒绝以 `ConmuxError::InjectionRejected` 返回 → 映射为
+/// `OrchestrationError`（消息与原实现同源）。
 ///
 /// `source` 由后端命令边界按命令身份硬编码赋值，前端永不能自标
 /// `OrchestrationAuto`（契约 §13.2）。
 ///
 /// # 参数
 /// - `app`: Tauri AppHandle，用于 emit `StdinInjected`
-/// - `state`: 全局状态（policy / 速率计数器 / pty_manager）
+/// - `state`: 全局状态（pane_runtime / instance_adapter_map）
 /// - `instance_id`: 目标实例标识
 /// - `content`: 要注入的文本内容
-/// - `source`: 注入来源分类（用于审计和策略判断）
+/// - `source`: 注入来源分类（钩子据此做审计归属与策略判断）
 pub fn inject_with_policy(
     app: &AppHandle,
     state: &AppState,
@@ -210,8 +169,6 @@ pub fn inject_with_policy(
         }
     }
 
-    let enforce_policy = should_enforce_stdin_injection_policy(&source);
-
     let now_ms = || {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -219,60 +176,13 @@ pub fn inject_with_policy(
             .unwrap_or(0)
     };
 
-    // 2. 内容策略检查（长度 + forbidden_patterns）
-    // policy 拒绝 ⇒ 写一条 result=Rejected 审计后返回 Err（不注入）。MF-2/§13.2。
-    if enforce_policy {
-        let policy = state.stdin_policy.read();
-        if let Err(e) = check_content_policy(&policy, content) {
-            drop(policy);
-            let audit =
-                build_injection_audit(instance_id, &source, AuditResult::Rejected, now_ms());
-            // Rejected 路径本就不注入；审计 best-effort（失败仅记日志，仍返回拒绝 Err）。
-            if let Err(ae) = write_injection_audit(state, &audit) {
-                log::warn!("注入被策略拒绝且 Rejected 审计写入失败: {ae}");
-            }
-            return Err(e);
-        }
-    }
+    // 2. 唯一通道：PolicyHook（内容+限速）→ AuditHook（Ok 审计先于字节）→ 写 PTY
+    //    → after 钩子（Rejected/Failed 审计），全序由 conmux 保证（MF-6）。
+    state
+        .pane_runtime
+        .inject_stdin(instance_id, content, source.clone())?;
 
-    // 3. 速率限制检查（1 分钟滑动窗口，MF-3：**per-instance**；判定见 check_and_record_rate_limit）
-    if enforce_policy {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        // 先读 policy（独立锁），再拿计数器，避免持计数器锁期间再取另一把锁。
-        let max_rate = state.stdin_policy.read().rate_limit_per_minute;
-
-        let mut counters = state.injection_rate_counter.write();
-        if let Err(count) = check_and_record_rate_limit(&mut counters, instance_id, now, max_rate) {
-            drop(counters);
-            let audit =
-                build_injection_audit(instance_id, &source, AuditResult::Rejected, now_ms());
-            if let Err(ae) = write_injection_audit(state, &audit) {
-                log::warn!("注入速率超限且 Rejected 审计写入失败: {ae}");
-            }
-            return Err(ConfluxError::OrchestrationError {
-                message: format!(
-                    "注入速率超限: 实例 {} 过去 1 分钟内已注入 {} 次（限制 {}）",
-                    instance_id, count, max_rate
-                ),
-            });
-        }
-    }
-
-    // 4. 审计-注入核心（fail-closed，MF-2 / §13.2 + chokepoint §13.1）。
-    // 在单个 db 锁关键区内：**先**写 Ok 审计，审计失败 ⇒ 不注入直接返回 Err；
-    // 审计成功后才经 `pty_manager.inject_stdin`（全代码库唯一真实 stdin 注入点）注入。
-    // actor / injection_source 由 source 后端硬编码（MF-6）。
-    {
-        let conn = state.db.lock();
-        audited_inject(&conn, instance_id, &source, now_ms(), || {
-            state.pty_manager.inject_stdin(instance_id, content)
-        })?;
-    }
-
-    // 5. emit StdinInjected 事件（B3 契约 1）
+    // 3. emit StdinInjected 事件（B3 契约 1）
     // UTF-8 安全截断：避免在多字节字符中间切断导致 panic
     let preview = if content.len() > 200 {
         match content.char_indices().take_while(|(i, _)| *i < 200).last() {
@@ -362,13 +272,9 @@ mod tests {
         assert!(msg.contains("最大长度"), "拒绝原因应为长度超限: {msg}");
     }
 
-    // ===== P3 MF-2 / MF-6：审计-注入 fail-closed 测试 =====
-    // 用与 Tauri 运行时解耦的 `audited_inject` 种子验证不变量，
-    // 不依赖真实 PTY / AppHandle（成功路径的实际 inject 由 do_inject 闭包模拟）。
-
-    use crate::persistence::audit::list_audit_events;
-    use crate::persistence::schema::init_database;
-    use std::cell::Cell;
+    // ===== P3 MF-2 / MF-6：审计归属硬编码 =====
+    //（fail-closed / Rejected / Failed 时序测试已随实现迁至 pty/hooks.rs::tests——
+    // cutover ③ 后审计-注入顺序由 conmux 钩子链承担。）
 
     /// actor / action 由 source 后端硬编码（MF-6）——前端无法影响归属。
     #[test]
@@ -389,92 +295,6 @@ mod tests {
             audit_identity_for_source(&InjectionSource::OrchestrationAuto),
             (AuditActor::Coordinator, AuditAction::AutoInjection)
         );
-    }
-
-    /// 成功注入后 audit_events 多一条 result=Ok，且 actor/injection_source 按 source 正确。
-    #[test]
-    fn audited_inject_writes_ok_audit_on_success() {
-        let conn = init_database(":memory:").unwrap();
-        let injected = Cell::new(false);
-
-        let id = audited_inject(
-            &conn,
-            "inst-a",
-            &InjectionSource::OrchestrationAuto,
-            1_000,
-            || {
-                injected.set(true);
-                Ok(())
-            },
-        )
-        .expect("成功路径应返回 Ok");
-
-        assert!(injected.get(), "审计成功后必须真正注入");
-
-        let audits = list_audit_events(&conn, None, None).unwrap();
-        assert_eq!(audits.len(), 1, "成功注入应恰好写一条审计");
-        let a = &audits[0];
-        assert_eq!(a.audit_event_id, id);
-        assert_eq!(a.result, AuditResult::Ok);
-        // actor / injection_source 后端硬编码（OrchestrationAuto → Coordinator）
-        assert_eq!(a.actor, AuditActor::Coordinator);
-        assert_eq!(a.action, AuditAction::AutoInjection);
-        assert_eq!(a.injection_source, Some(InjectionSource::OrchestrationAuto));
-    }
-
-    /// **fail-closed 核心**：审计 INSERT 失败 ⇒ 返回 Err 且 **do_inject 永不被调用**
-    /// （绝不出现未审计的注入）。
-    #[test]
-    fn audited_inject_fail_closed_when_audit_insert_fails() {
-        let conn = init_database(":memory:").unwrap();
-        // 令审计 INSERT 必然失败：删除 audit_events 表。
-        conn.execute("DROP TABLE audit_events", []).unwrap();
-
-        let injected = Cell::new(false);
-        let res = audited_inject(
-            &conn,
-            "inst-a",
-            &InjectionSource::OrchestrationAuto,
-            1_000,
-            || {
-                injected.set(true);
-                Ok(())
-            },
-        );
-
-        assert!(res.is_err(), "审计写入失败时必须返回 Err");
-        assert!(
-            !injected.get(),
-            "fail-closed：审计失败时绝不能注入（do_inject 不得被调用）"
-        );
-    }
-
-    /// 注入本身失败 ⇒ Ok 审计已落库 + 追加一条 result=Failed 审计，并向上抛错。
-    #[test]
-    fn audited_inject_appends_failed_audit_when_injection_fails() {
-        let conn = init_database(":memory:").unwrap();
-
-        let res = audited_inject(
-            &conn,
-            "inst-a",
-            &InjectionSource::PermissionResponse,
-            2_000,
-            || {
-                Err(ConfluxError::PtyError {
-                    message: "stdin 写入失败".to_string(),
-                })
-            },
-        );
-        assert!(res.is_err(), "注入失败应向上抛错");
-
-        let audits = list_audit_events(&conn, None, None).unwrap();
-        // 一条 Ok（注入前）+ 一条 Failed（注入失败后）
-        assert_eq!(audits.len(), 2);
-        assert!(audits.iter().any(|a| a.result == AuditResult::Ok));
-        assert!(audits.iter().any(|a| a.result == AuditResult::Failed));
-        // 两条都按 source 硬编码归属（PermissionResponse → User）
-        assert!(audits.iter().all(|a| a.actor == AuditActor::User
-            && a.injection_source == Some(InjectionSource::PermissionResponse)));
     }
 
     // ===== MF-3：per-instance 限速 =====

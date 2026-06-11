@@ -9,7 +9,6 @@
 //   pub db: parking_lot::Mutex<rusqlite::Connection>
 //   pub discussion_engine: parking_lot::RwLock<DiscussionEngine>
 
-use std::sync::Arc;
 
 use tauri::{AppHandle, State};
 
@@ -40,7 +39,6 @@ const MAX_CONTENT_LENGTH: usize = 50_000;
 
 #[tauri::command]
 pub async fn start_discussion(
-    app: AppHandle,
     state: State<'_, AppState>,
     topic: String,
     participant_ids: Vec<InstanceId>,
@@ -93,7 +91,7 @@ pub async fn start_discussion(
 
                 // Get the workspace instance's working_dir to reuse
                 let work_dir = state
-                    .pty_manager
+                    .pane_runtime
                     .get_instance_state(&participant_id.0)
                     .map(|detail| detail.working_dir)
                     .unwrap_or_else(|_| ".".to_string());
@@ -102,22 +100,14 @@ pub async fn start_discussion(
                 let mut spawn_args = adapter_config.default_args.clone();
                 spawn_args.extend(adapter_config.sandbox_args.clone());
 
-                // Build event dispatcher
-                let app_handle = app.clone();
-                let dispatcher: crate::pty::manager::EventDispatcher =
-                    Arc::new(move |event: &ConfluxEvent| {
-                        emit_conflux_event(&app_handle, event);
-                    });
-
-                // Spawn hidden sandbox instance
-                let sandbox_id_str = state.pty_manager.spawn(
+                // Spawn hidden sandbox instance（cutover ③：事件派发由全局 MuxEventBridge 承担）
+                let sandbox_id_str = state.pane_runtime.spawn(
                     &adapter_config.command,
                     &spawn_args,
                     &work_dir,
                     &adapter_id,
                     &adapter_config.name,
                     Some(adapter_arc),
-                    Some(dispatcher),
                     AgentMode::Sandbox,
                     true, // hidden = true
                     None, // display_name: sandbox 实例不需要别名
@@ -173,7 +163,7 @@ pub async fn start_discussion(
         Ok(v) => v,
         Err(e) => {
             let killed = rollback_spawned_sandboxes(
-                |id| state.pty_manager.kill(id),
+                |id| state.pane_runtime.kill(id),
                 &state.instance_adapter_map,
                 &sandbox_instance_ids,
             );
@@ -289,7 +279,7 @@ pub async fn end_discussion(
 
     // 2. Destroy all sandbox instances
     for sandbox_id in &sandbox_ids {
-        if let Err(e) = state.pty_manager.kill(&sandbox_id.0) {
+        if let Err(e) = state.pane_runtime.kill(&sandbox_id.0) {
             log::warn!(
                 "end_discussion: failed to kill sandbox instance {}: {:?}",
                 sandbox_id.0,

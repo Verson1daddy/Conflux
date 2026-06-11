@@ -299,7 +299,7 @@ fn to_agent_state_detail(
     state: &crate::AppState,
     info: &crate::core::types::AgentInstanceInfo,
 ) -> crate::core::AgentStateDetail {
-    if let Ok(mut detail) = state.pty_manager.get_instance_state(&info.instance_id.0) {
+    if let Ok(mut detail) = state.pane_runtime.get_instance_state(&info.instance_id.0) {
         detail.is_pinned = state.pinned_instances.read().contains(&info.instance_id.0);
         return detail;
     }
@@ -366,7 +366,7 @@ fn trigger_coordinator(app: &AppHandle, state: &crate::AppState, event: &Conflux
         }
     };
 
-    let instances = state.pty_manager.list_instances();
+    let instances = state.pane_runtime.list_instances();
     let details: Vec<_> = instances
         .iter()
         .map(|info| to_agent_state_detail(state, info))

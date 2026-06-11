@@ -89,7 +89,7 @@ pub async fn resize_pty(
     }
 
     // 执行 resize
-    state.pty_manager.resize(&instance_id.0, cols, rows)
+    state.pane_runtime.resize(&instance_id.0, cols, rows)
 }
 
 /// 响应权限请求（F-02 修复：前端 PermissionDialog 调用此命令）
@@ -112,7 +112,7 @@ pub async fn respond_to_permission(
 ) -> Result<(), ConfluxError> {
     // 1. 验证实例存在且状态为 WaitingPermission
     {
-        let detail = state.pty_manager.get_instance_state(&instance_id.0)?;
+        let detail = state.pane_runtime.get_instance_state(&instance_id.0)?;
         if detail.status != crate::core::AgentStatus::WaitingPermission {
             log::warn!(
                 "respond_to_permission: 实例 {} 状态不是 WaitingPermission（当前: {:?}），permission_id={}",

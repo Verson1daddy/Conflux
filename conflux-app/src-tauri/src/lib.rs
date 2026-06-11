@@ -34,19 +34,21 @@ use crate::core::{AgentInstanceInfo, IslandMode, StdinInjectionPolicy};
 use crate::orchestration::attention::AttentionQueue;
 use crate::orchestration::coordinator::Coordinator;
 use crate::orchestration::discussion::DiscussionEngine;
-use crate::pty::manager::PtyManager;
+use crate::pty::runtime::PaneRuntime;
 
 /// 全局应用状态——通过 tauri::State 注入到 command handler
 ///
-/// ## 锁获取协议（HIGH-04 修复）
+/// ## 锁获取协议（HIGH-04 修复 / cutover ③ D-1 更新）
 /// 当需要同时持有多把锁时，必须按以下顺序获取，防止死锁：
 ///   1. `discussion_engine` (RwLock)
 ///   2. `db` (Mutex)
-///   3. `pty_manager` / `adapter_registry`（Arc 内部锁）
-/// 任何代码路径不得逆序获取这些锁。
+///   3. `pane_runtime` / `adapter_registry`（Arc 内部锁）
+/// 任何代码路径不得逆序获取这些锁。注入路径的「panes 表锁 → db（审计钩子）」由
+/// conmux D-1a 保证不成立（钩子在表锁外调用）；conflux 侧双保险：**持 db 锁时
+/// 不调用 pane_runtime 的任何方法**（create 回滚已修锁作用域）。
 pub struct AppState {
-    /// PTY 进程管理器
-    pub pty_manager: Arc<PtyManager>,
+    /// Pane 运行时（cutover ③：conmux::PaneHost 门面，替代 PtyManager）
+    pub pane_runtime: Arc<PaneRuntime>,
     /// 适配器注册表
     pub adapter_registry: Arc<RwLock<AdapterRegistry>>,
     pub island_window_ready: RwLock<bool>,
@@ -62,13 +64,14 @@ pub struct AppState {
     pub primary_adapter: RwLock<Option<String>>,
     /// Agent 实例映射: instance_id -> adapter_id
     pub instance_adapter_map: RwLock<HashMap<String, String>>,
-    /// stdin 注入安全策略（附录 B1）
-    pub stdin_policy: RwLock<StdinInjectionPolicy>,
+    /// stdin 注入安全策略（附录 B1）。Arc：与 PolicyHook 共享（cutover ③）。
+    pub stdin_policy: Arc<RwLock<StdinInjectionPolicy>>,
     /// 注入速率计数器（MF-3：**per-instance**，避免单 pane 刷注入饿死全体 pane）：
     /// instance_id -> 该实例近 1 分钟注入时间戳（秒级）滑动窗口。
-    pub injection_rate_counter: RwLock<HashMap<String, Vec<u64>>>,
-    /// SQLite 数据库连接（BE-4 持久化层）
-    pub db: parking_lot::Mutex<rusqlite::Connection>,
+    /// Arc：与 PolicyHook 共享（cutover ③）；destroy 的 C8 清理路径不变。
+    pub injection_rate_counter: Arc<RwLock<HashMap<String, Vec<u64>>>>,
+    /// SQLite 数据库连接（BE-4 持久化层）。Arc：与 AuditHook 共享同一把锁（cutover ③）。
+    pub db: Arc<parking_lot::Mutex<rusqlite::Connection>>,
     /// 讨论引擎（BE-4 编排层）
     pub discussion_engine: RwLock<DiscussionEngine>,
     /// 协调器（C-Δ1 激活）
@@ -90,7 +93,8 @@ impl AppState {
     ///
     /// db_path 应为绝对路径（由 Tauri setup hook 通过 app_data_dir 解析）。
     /// CRIT-01 修复：不再使用相对路径，由 run() 中的 setup hook 传入安全目录。
-    pub fn new(db_path: &str) -> Self {
+    /// cutover ③：需要 AppHandle——MuxEventBridge（PaneEventSink → Tauri emit）构造用。
+    pub fn new(db_path: &str, app_handle: tauri::AppHandle) -> Self {
         let db_conn = persistence::schema::init_database(db_path).expect("SQLite 数据库初始化失败");
 
         // 控制面 P2：从持久层恢复注意力队列（活跃 + 被忽略项）
@@ -113,8 +117,31 @@ impl AppState {
             }
         };
 
+        // cutover ③ 装配：db/policy/计数器 Arc 化与钩子共享；meta 与 bridge 共享；
+        // PaneHost 由 PaneRuntime 内部经 new_windows 组装（ConPTY + JobObject）。
+        let db = Arc::new(parking_lot::Mutex::new(db_conn));
+        let stdin_policy = Arc::new(RwLock::new(StdinInjectionPolicy::default()));
+        let injection_rate_counter: Arc<RwLock<HashMap<String, Vec<u64>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+
+        let meta = Arc::new(crate::pty::meta::InstanceMetaRegistry::new());
+        let bridge = Arc::new(crate::pty::bridge::MuxEventBridge::new(
+            app_handle,
+            Arc::clone(&meta),
+        ));
+        // 钩子顺序冻结 [PolicyHook, AuditHook]：policy 先拒 ⇒ 不写 Ok 审计，
+        // AuditHook.after 补写 Rejected（语义与原 inject_with_policy 一致）。
+        let hooks: Vec<Arc<dyn conmux::InjectionHook>> = vec![
+            Arc::new(crate::pty::hooks::PolicyHook::new(
+                Arc::clone(&stdin_policy),
+                Arc::clone(&injection_rate_counter),
+            )),
+            Arc::new(crate::pty::hooks::AuditHook::new(Arc::clone(&db))),
+        ];
+        let pane_runtime = Arc::new(PaneRuntime::new_windows(hooks, bridge, meta));
+
         Self {
-            pty_manager: Arc::new(PtyManager::new()),
+            pane_runtime,
             adapter_registry: Arc::new(RwLock::new(AdapterRegistry::new())),
             island_window_ready: RwLock::new(false),
             pending_compact_show: RwLock::new(false),
@@ -124,9 +151,9 @@ impl AppState {
             favorite_adapters: RwLock::new(Vec::new()),
             primary_adapter: RwLock::new(None),
             instance_adapter_map: RwLock::new(HashMap::new()),
-            stdin_policy: RwLock::new(StdinInjectionPolicy::default()),
-            injection_rate_counter: RwLock::new(HashMap::new()),
-            db: parking_lot::Mutex::new(db_conn),
+            stdin_policy,
+            injection_rate_counter,
+            db,
             discussion_engine: RwLock::new(DiscussionEngine::new()),
             coordinator: Coordinator,
             recent_events: RwLock::new(Vec::new()),
@@ -143,7 +170,7 @@ impl AppState {
     pub fn find_coordination_target(&self) -> Option<String> {
         let primary_adapter = self.primary_adapter.read().clone();
         let pinned_instances = self.pinned_instances.read().clone();
-        let instances = self.pty_manager.list_instances();
+        let instances = self.pane_runtime.list_instances();
 
         select_coordination_target_candidate(
             &instances,
@@ -151,7 +178,7 @@ impl AppState {
             &pinned_instances,
             |instance_id| {
                 !self
-                    .pty_manager
+                    .pane_runtime
                     .is_process_exited(instance_id)
                     .unwrap_or(true)
             },
@@ -271,7 +298,10 @@ pub fn run() {
             std::fs::create_dir_all(&app_data_dir).expect("无法创建应用数据目录");
             let db_path = app_data_dir.join("conflux.db");
 
-            let app_state = AppState::new(db_path.to_str().expect("数据库路径包含非 UTF-8 字符"));
+            let app_state = AppState::new(
+                db_path.to_str().expect("数据库路径包含非 UTF-8 字符"),
+                app.handle().clone(),
+            );
 
             // 注册内置适配器
             {

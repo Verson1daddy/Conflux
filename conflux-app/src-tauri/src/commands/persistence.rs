@@ -142,7 +142,7 @@ pub async fn auto_pack_layout(
     config: AutoPackConfig,
 ) -> Result<WorkspaceLayout, ConfluxError> {
     // 1. 获取所有活跃实例
-    let instances = state.pty_manager.list_instances();
+    let instances = state.pane_runtime.list_instances();
 
     if instances.is_empty() {
         let now = now_millis();

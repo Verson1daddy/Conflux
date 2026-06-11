@@ -3,14 +3,11 @@
 // 所有命令通过 tauri::State<AppState> 访问全局状态
 // 依赖 BE-2 (PtyManager) 和 BE-3 (AdapterRegistry) 的具体实现
 
-use std::sync::Arc;
-
 use tauri::State;
 
-use crate::core::event_emit::emit_conflux_event;
 use crate::core::{
     AdapterId, AgentInstanceInfo, AgentMode, AgentStateDetail, AgentStatus, AgentTree,
-    ConfluxError, ConfluxEvent, InstanceId,
+    ConfluxError, InstanceId,
 };
 use crate::AppState;
 
@@ -183,15 +180,10 @@ pub async fn create_agent_instance(
         )?;
     }
 
-    // 5. 构造事件派发器——PTY 读取线程内的 parser 会通过它把解析出的
-    //    ConfluxEvent 路由到 Tauri 前端。AppHandle clone 进闭包，让线程可以
-    //    在 command 函数返回后继续使用。
-    let app_handle = app.clone();
-    let dispatcher: crate::pty::manager::EventDispatcher = Arc::new(move |event: &ConfluxEvent| {
-        emit_conflux_event(&app_handle, event);
-    });
+    // 5.（cutover ③）事件派发不再 per-spawn 构造 dispatcher——全局 MuxEventBridge
+    //    （AppState 构造时装配）把读线程事件转 Tauri emit；parser 经 meta registry 共享。
 
-    // 6. 通过 PtyManager 启动 PTY 进程（带事件流）
+    // 6. 通过 PaneRuntime 启动 PTY 进程（带事件流）
     // Normalize: treat empty string as None
     let normalized_name = display_name.filter(|s| !s.trim().is_empty());
 
@@ -208,7 +200,7 @@ pub async fn create_agent_instance(
         &mut spawn_args,
     );
 
-    let instance_id_str = state.pty_manager.spawn_with_id(
+    let instance_id_str = state.pane_runtime.spawn_with_id(
         instance_id_str,
         &adapter_config.command,
         &spawn_args,
@@ -216,7 +208,6 @@ pub async fn create_agent_instance(
         &adapter_id.0,
         &adapter_config.name,
         Some(adapter_arc),
-        Some(dispatcher),
         agent_mode.clone(),
         is_hidden,
         normalized_name.clone(),
@@ -251,28 +242,31 @@ pub async fn create_agent_instance(
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
 
-    // 8b. 写入 agent_instances 表
-    {
+    // 8b. 写入 agent_instances 表。
+    // D-1 双保险：INSERT 结果先取出、**db 锁先释放**，回滚 kill 在锁外执行——
+    // 「持 db 锁调 pane_runtime」是被禁的锁序（见 AppState 锁协议）。
+    let insert_result = {
         let conn = state.db.lock();
-        if let Err(e) = crate::persistence::session::insert_agent_instance(
+        crate::persistence::session::insert_agent_instance(
             &conn,
             &instance_id.0,
             &adapter_id.0,
             &adapter_config.name,
             &work_dir,
             now_ms,
-        ) {
-            {
-                let mut map = state.instance_adapter_map.write();
-                map.remove(&instance_id.0);
-            }
-            if let Err(kill_err) = state.pty_manager.kill(&instance_id.0) {
-                log::warn!("rollback PTY kill failed after DB insert error: {kill_err}");
-            }
-            return Err(ConfluxError::DatabaseError {
-                message: format!("Failed to persist agent instance: {e}"),
-            });
+        )
+    };
+    if let Err(e) = insert_result {
+        {
+            let mut map = state.instance_adapter_map.write();
+            map.remove(&instance_id.0);
         }
+        if let Err(kill_err) = state.pane_runtime.kill(&instance_id.0) {
+            log::warn!("rollback PTY kill failed after DB insert error: {kill_err}");
+        }
+        return Err(ConfluxError::DatabaseError {
+            message: format!("Failed to persist agent instance: {e}"),
+        });
     }
 
     Ok(AgentInstanceInfo {
@@ -312,14 +306,8 @@ pub async fn destroy_agent_instance(
         }
     }
 
-    // 2. 终止 PTY 进程
-    // TODO(BE-2): 通过 pty_manager 获取实例并调用 kill()
-    // 预期调用:
-    //   let instance = state.pty_manager.get(&instance_id)?;
-    //   instance.kill().await?;
-    //   state.pty_manager.remove(&instance_id)?;
-    // TODO(集成): pty_manager.kill(&instance_id.0)
-    state.pty_manager.kill(&instance_id.0)?;
+    // 2. 终止 PTY 进程（cutover ③：JobObject 整树终结，不留孤儿孙进程）
+    state.pane_runtime.kill(&instance_id.0)?;
 
     // 3. 清理实例映射
     {
@@ -373,7 +361,7 @@ pub async fn list_agent_instances(
     state: State<'_, AppState>,
     include_hidden: Option<bool>,
 ) -> Result<Vec<AgentInstanceInfo>, ConfluxError> {
-    let mut all = state.pty_manager.list_instances();
+    let mut all = state.pane_runtime.list_instances();
 
     // Merge pin state from AppState (PtyManager always returns is_pinned=false)
     {
@@ -413,7 +401,7 @@ pub async fn rename_agent_instance(
 
     let normalized = display_name.filter(|s| !s.trim().is_empty());
     state
-        .pty_manager
+        .pane_runtime
         .rename_instance(&instance_id.0, normalized)?;
 
     log::debug!("Agent 实例重命名: {}", instance_id.0);
@@ -467,11 +455,7 @@ pub async fn get_agent_state(
     };
 
     // 3. 获取实例运行状态
-    // TODO(BE-2): 通过 pty_manager 获取实例并读取状态
-    // 预期调用:
-    //   let instance = state.pty_manager.get(&instance_id)?;
-    //   let agent_state = instance.get_state();
-    let detail = state.pty_manager.get_instance_state(&instance_id.0)?;
+    let detail = state.pane_runtime.get_instance_state(&instance_id.0)?;
 
     // 4. 检查是否为钉选
     let is_pinned = {
@@ -481,7 +465,7 @@ pub async fn get_agent_state(
 
     // 5. 获取 sub-agents（从 parser tree 扁平化）
     let sub_agents = state
-        .pty_manager
+        .pane_runtime
         .get_agent_tree(&instance_id.0)
         .map(|tree| flatten_agent_tree(tree))
         .unwrap_or_default();
@@ -528,8 +512,8 @@ pub async fn get_agent_tree(
         }
     }
 
-    // 2. 委托给 PtyManager，从共享 parser 中读取 AgentTree
-    state.pty_manager.get_agent_tree(&instance_id.0)
+    // 2. 委托给 PaneRuntime，从共享 parser 中读取 AgentTree
+    state.pane_runtime.get_agent_tree(&instance_id.0)
 }
 
 /// C2-T1 Exit Overlay · respawn 模式——restart 原 agent 或切换到 shell
@@ -569,7 +553,6 @@ const SHELL_ADAPTER_PSEUDO_ID: &str = "__shell__";
 #[tauri::command]
 pub async fn respawn_agent_instance(
     state: State<'_, AppState>,
-    app: tauri::AppHandle,
     instance_id: InstanceId,
     mode: RespawnMode,
 ) -> Result<AgentInstanceInfo, ConfluxError> {
@@ -580,10 +563,10 @@ pub async fn respawn_agent_instance(
         map.get(&instance_id.0).cloned()
     };
 
-    // 1b. 先读取旧实例的 working_dir / mode / hidden —— 必须在 pty_manager.respawn 之前读，
+    // 1b. 先读取旧实例的 working_dir / mode / hidden —— 必须在 pane_runtime.respawn 之前读，
     //     因为 respawn 内部会先 kill 旧实例，之后 get_instance_state 就查
     //     不到原 cwd 了。C2-T1 review 发现的 bug（先拿再删）。
-    let preserved_detail = state.pty_manager.get_instance_state(&instance_id.0).ok();
+    let preserved_detail = state.pane_runtime.get_instance_state(&instance_id.0).ok();
     let preserved_work_dir = preserved_detail.as_ref().map(|d| d.working_dir.clone());
     let preserved_mode = preserved_detail
         .as_ref()
@@ -649,15 +632,10 @@ pub async fn respawn_agent_instance(
     //    fallback 到 Conflux 进程自己的 cwd。
     let work_dir = trimmed_non_empty(preserved_work_dir).unwrap_or_else(default_working_dir);
 
-    // 4. 构造 dispatcher——和 create_agent_instance 一致
-    let app_handle = app.clone();
-    let dispatcher: crate::pty::manager::EventDispatcher =
-        Arc::new(move |event: &crate::core::ConfluxEvent| {
-            emit_conflux_event(&app_handle, event);
-        });
+    // 4.（cutover ③）事件派发由全局 MuxEventBridge 承担，无须 per-spawn dispatcher。
 
-    // 5. 通过 PtyManager::respawn spawn 新 child（复用 instance_id）
-    state.pty_manager.respawn(
+    // 5. 通过 PaneRuntime::respawn spawn 新 child（复用 instance_id）
+    state.pane_runtime.respawn(
         &instance_id.0,
         &command,
         &args,
@@ -665,7 +643,6 @@ pub async fn respawn_agent_instance(
         &new_adapter_id,
         &new_adapter_name,
         adapter_arc_opt,
-        Some(dispatcher),
         preserved_mode.clone(),
         preserved_hidden,
         preserved_display_name.clone(),
@@ -717,7 +694,6 @@ pub async fn respawn_agent_instance(
 #[tauri::command]
 pub async fn set_agent_mode(
     state: State<'_, AppState>,
-    app: tauri::AppHandle,
     instance_id: InstanceId,
     mode: AgentMode,
 ) -> Result<AgentInstanceInfo, ConfluxError> {
@@ -748,7 +724,7 @@ pub async fn set_agent_mode(
     };
 
     // 3. Read preserved working_dir, hidden, display_name BEFORE kill
-    let detail = state.pty_manager.get_instance_state(&instance_id.0).ok();
+    let detail = state.pane_runtime.get_instance_state(&instance_id.0).ok();
     let work_dir = detail
         .as_ref()
         .map(|d| d.working_dir.clone())
@@ -763,14 +739,10 @@ pub async fn set_agent_mode(
         AgentMode::Full => spawn_args.extend(adapter_config.full_args.clone()),
     }
 
-    // 5. Build dispatcher
-    let app_handle = app.clone();
-    let dispatcher: crate::pty::manager::EventDispatcher = Arc::new(move |event: &ConfluxEvent| {
-        emit_conflux_event(&app_handle, event);
-    });
+    // 5.（cutover ③）事件派发由全局 MuxEventBridge 承担，无须 per-spawn dispatcher。
 
     // 6. Respawn with same instance_id but new args
-    state.pty_manager.respawn(
+    state.pane_runtime.respawn(
         &instance_id.0,
         &adapter_config.command,
         &spawn_args,
@@ -778,7 +750,6 @@ pub async fn set_agent_mode(
         &adapter_id,
         &adapter_config.name,
         Some(adapter_arc),
-        Some(dispatcher),
         mode.clone(),
         is_hidden,
         preserved_name.clone(),
@@ -808,14 +779,14 @@ pub async fn set_agent_mode(
 
 /// C2-T1 exit 检测 · 前端轮询
 ///
-/// 双重检测：先查 reader_done flag，再调 child.try_wait()。
-/// 即使 ConPTY reader 永远不 break，try_wait 也能可靠检测进程退出。
+/// 双重检测（cutover ③）：先查 meta.exited（PaneExited 事件置位），再调
+/// PaneHost::poll_exit 兜底。即使 ConPTY reader 永远不 EOF，poll_exit 也能可靠检测退出。
 #[tauri::command]
 pub async fn is_process_exited(
     state: State<'_, AppState>,
     instance_id: InstanceId,
 ) -> Result<bool, ConfluxError> {
-    state.pty_manager.is_process_exited(&instance_id.0)
+    state.pane_runtime.is_process_exited(&instance_id.0)
 }
 
 /// 获取指定实例 PTY OutputBuffer 的历史内容（base64 编码）
@@ -841,13 +812,9 @@ pub async fn get_pty_history(
     state: State<'_, AppState>,
     instance_id: InstanceId,
 ) -> Result<String, ConfluxError> {
-    use base64::engine::general_purpose::STANDARD as BASE64;
-    use base64::Engine;
-
-    let buffer_arc = state.pty_manager.get_buffer(&instance_id.0)?;
-    let buffer = buffer_arc.read();
-    let bytes = buffer.read_all();
-    Ok(BASE64.encode(&bytes))
+    // cutover ③：走 conmux capture（行索引 scrollback，ansi=true 保留原始字节），
+    // conmux 已 base64 编码——语义与原 OutputBuffer.read_all + encode 等价。
+    state.pane_runtime.get_history_base64(&instance_id.0)
 }
 
 #[cfg(test)]
