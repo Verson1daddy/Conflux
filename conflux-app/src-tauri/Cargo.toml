@@ -51,11 +51,4 @@ env_logger = "0.11"
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 
-# Release profile tuned for a small, lean Windows binary.
-# lto + codegen-units=1 + strip typically cut 30-50% off the binary size;
-# opt-level "s" optimizes for size without hurting an IO-bound PTY app.
-[profile.release]
-opt-level = "s"
-lto = true
-codegen-units = 1
-strip = true
+# Release profile 已上移到 workspace 根 Cargo.toml（workspace 只认根 profile，留在此处会被忽略）。

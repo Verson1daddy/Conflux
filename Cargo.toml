@@ -1,0 +1,15 @@
+# Conflux workspace
+# - crates/conmux          : 机制层独立库（Windows 终端多路复用 + agent 隔离运行时接入），不依赖 Tauri
+# - conflux-app/src-tauri  : Conflux 工作台（策略/产品层），依赖 conmux
+# 双项目定位见 .workbench/coordination/handoffs/F1_mux_contract.md §0.2
+[workspace]
+members = ["crates/conmux", "conflux-app/src-tauri"]
+resolver = "2"
+
+# Release profile（上移自 conflux-app/src-tauri/Cargo.toml —— workspace 只认根 profile）。
+# lto + codegen-units=1 + strip 削 30-50% 体积；opt-level "s" 对 IO-bound PTY app 无损。
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
