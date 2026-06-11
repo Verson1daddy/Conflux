@@ -26,6 +26,10 @@ pub mod injection;
 /// 控制面语义层 P4: 精确回场对象（JumpBackTarget 及枚举）
 pub mod jumpback;
 
+/// 控制面 / mux V1-core: Claude Code hook 事件源（PreToolUse → PermissionRequest）。
+/// 修复 X4 A.2（真实 agent 权限请求刮屏检测不到，契约 §4.7：hook 优先于刮屏）。
+pub mod hook;
+
 // ===== Re-exports（方便外部模块直接使用） =====
 
 // 标识符类型
@@ -115,6 +119,9 @@ pub use jumpback::JumpBackTarget;
 pub use jumpback::JumpConfidence;
 pub use jumpback::JumpKind;
 pub use jumpback::TerminalRange;
+
+// 控制面 / mux V1-core：Claude Code hook 事件源
+pub use hook::PreToolUseHookEvent;
 
 // 事件
 pub use event::ConfluxEvent;
