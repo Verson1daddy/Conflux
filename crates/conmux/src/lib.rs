@@ -35,9 +35,21 @@ pub(crate) mod scrollback;
 /// capture：ANSI 开关捕获 + 等效全量审计判定（契约 §6）。
 pub mod capture;
 
+/// 注入下沉：InjectionHook / InjectionContext（库级唯一注入路径，契约 §4 / MF-1/5/6）。
+pub mod inject;
+
+/// 进程监管：ProcessSupervisor / SupervisorFactory（每 pane 一 Job，契约 §3 / MF-4）。
+pub mod job;
+
+/// Pane 抽象与 PaneHost 门面（契约 §2）。`PaneBackend`/`PaneSession`/`Pane` 为
+/// `pub(crate)` 隐私墙（MF-1）；`PaneHost`/`CommandSpec`/`SpawnRequest` 对外公开。
+pub mod pane;
+
 // ===== 公开 API 重导出（顶层可达）=====
 pub use capture::{CaptureRange, CaptureRequest, CaptureResult};
 pub use error::ConmuxError;
-pub use types::{
-    InjectionSource, PaneId, PaneLifecycle, PaneSize, PaneState, ScrollbackInfo,
-};
+pub use inject::{InjectionContext, InjectionHook};
+pub use job::{ProcessSupervisor, SupervisorFactory};
+// PaneHost 类型 + 公开入参类型对外可见；构造器 2a 仍 pub(crate)（待 2b Windows 构造器）。
+pub use pane::{CommandSpec, PaneHost, SpawnRequest};
+pub use types::{InjectionSource, PaneId, PaneLifecycle, PaneSize, PaneState, ScrollbackInfo};
