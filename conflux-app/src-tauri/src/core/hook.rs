@@ -108,6 +108,48 @@ impl PreToolUseHookEvent {
     }
 }
 
+/// 构建注入给 claude `--settings` 的内联 JSON 串：配置 PreToolUse hook，命令为
+/// `node "<relay_js>" --out "<hook_out>"`（relay 见 research/hook-spike：把 stdin
+/// JSON 单行 append 到 per-instance 文件）。
+///
+/// 实测裁决（research/hook-spike-2026-06-11）：node relay 输出干净 ndjson；cmd/findstr
+/// 一行被 claude 的 hook shell 包裹后混入 banner 污染、PowerShell relay 读不到 stdin，
+/// 二者均弃用。node 在 claude 运行期必然存在（claude 本身是 node 应用）。
+///
+/// 用 serde_json 构建——路径里的反斜杠/引号由序列化自动转义，杜绝手写转义 bug。
+/// matcher="" 匹配所有工具；hook 不输出决策 → claude 走正常 permission 流程（交互态弹
+/// 终端权限框，Conflux approve 复用 PTY 注入）。
+pub fn build_claude_hook_settings_arg(relay_js_path: &str, hook_out_path: &str) -> String {
+    let command = format!(
+        "node \"{}\" --out \"{}\"",
+        relay_js_path, hook_out_path
+    );
+    let settings = serde_json::json!({
+        "hooks": {
+            "PreToolUse": [{
+                "matcher": "",
+                "hooks": [{
+                    "type": "command",
+                    "command": command
+                }]
+            }]
+        }
+    });
+    serde_json::to_string(&settings).expect("hook settings 序列化不应失败")
+}
+
+/// 解析累积的 hook ndjson（每行一条 PreToolUse JSON），跳过空行/坏行，
+/// 仅保留有效 PreToolUse 事件。后端 watcher 读到新行后调用。
+pub fn parse_pretooluse_ndjson(content: &str) -> Vec<PreToolUseHookEvent> {
+    content
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| PreToolUseHookEvent::parse(l).ok())
+        .filter(PreToolUseHookEvent::is_pre_tool_use)
+        .collect()
+}
+
 /// 截断到 max 字符（按 char 边界，避免切碎多字节）。
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
@@ -235,5 +277,57 @@ mod tests {
     fn rejects_malformed_json() {
         assert!(PreToolUseHookEvent::parse("not json").is_err());
         assert!(PreToolUseHookEvent::parse("").is_err());
+    }
+
+    #[test]
+    fn hook_settings_arg_is_valid_json_with_node_relay_command() {
+        let arg = build_claude_hook_settings_arg(
+            r"C:\app\hook-relay.js",
+            r"C:\app\hooks\inst-1.ndjson",
+        );
+        // 必须是合法 JSON（claude 会解析它）
+        let v: serde_json::Value = serde_json::from_str(&arg).expect("settings 应为合法 JSON");
+        let cmd = v["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+            .as_str()
+            .expect("command 字段应存在");
+        // 反斜杠路径完整保留（serde 负责转义/反转义）
+        assert!(cmd.contains(r"C:\app\hook-relay.js"));
+        assert!(cmd.contains(r"C:\app\hooks\inst-1.ndjson"));
+        assert!(cmd.starts_with("node "));
+        assert!(cmd.contains("--out"));
+        assert_eq!(
+            v["hooks"]["PreToolUse"][0]["matcher"].as_str(),
+            Some("")
+        );
+        assert_eq!(
+            v["hooks"]["PreToolUse"][0]["hooks"][0]["type"].as_str(),
+            Some("command")
+        );
+    }
+
+    #[test]
+    fn parse_ndjson_keeps_valid_skips_blank_and_malformed() {
+        // 模拟真实 relay 落盘：2 条有效 PreToolUse + 1 空行 + 1 坏行 + 1 非 PreToolUse。
+        let content = concat!(
+            r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo one"},"tool_use_id":"t1"}"#,
+            "\n",
+            "\n",
+            "garbage not json\n",
+            r#"{"hook_event_name":"Stop","tool_name":""}"#,
+            "\n",
+            r#"{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"a.rs"},"tool_use_id":"t2"}"#,
+            "\n"
+        );
+        let events = parse_pretooluse_ndjson(content);
+        assert_eq!(events.len(), 2, "只保留 2 条有效 PreToolUse");
+        assert_eq!(events[0].tool_use_id, "t1");
+        assert_eq!(events[1].tool_use_id, "t2");
+        assert_eq!(events[1].tool_name, "Write");
+    }
+
+    #[test]
+    fn parse_ndjson_empty_content_yields_nothing() {
+        assert!(parse_pretooluse_ndjson("").is_empty());
+        assert!(parse_pretooluse_ndjson("\n\n  \n").is_empty());
     }
 }
