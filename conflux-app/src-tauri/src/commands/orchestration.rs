@@ -55,102 +55,137 @@ pub async fn start_discussion(
     let rounds = max_rounds.unwrap_or(5);
 
     // B3.1 Contract 2: For each participant, spawn a hidden sandbox instance
+    //
+    // P1-3 修复：spawn 开始后任一步失败（后续参与者查 map / spawn 失败、入库失败）
+    // 必须回滚已 spawn 的 sandbox（kill + instance_adapter_map 清理），否则泄漏隐藏
+    // PTY 进程。setup 闭包内任何 `?` 早返回都落入下方统一回滚分支。
     let mut sandbox_instance_ids: Vec<InstanceId> = Vec::new();
 
-    for participant_id in &participant_ids {
-        // Look up the adapter_id from the workspace instance
-        let adapter_id = {
-            let map = state.instance_adapter_map.read();
-            map.get(&participant_id.0)
-                .cloned()
-                .ok_or_else(|| ConfluxError::InstanceNotFound {
-                    instance_id: participant_id.0.clone(),
-                })?
-        };
+    let setup_result =
+        (|| -> Result<(DiscussionSession, Option<DiscussionMessage>), ConfluxError> {
+            for participant_id in &participant_ids {
+                // Look up the adapter_id from the workspace instance
+                let adapter_id = {
+                    let map = state.instance_adapter_map.read();
+                    map.get(&participant_id.0).cloned().ok_or_else(|| {
+                        ConfluxError::InstanceNotFound {
+                            instance_id: participant_id.0.clone(),
+                        }
+                    })?
+                };
 
-        // Get adapter config + trait object
-        let (adapter_config, adapter_arc) = {
-            let registry = state.adapter_registry.read();
-            let config = registry.get_config(&adapter_id).cloned().ok_or_else(|| {
-                ConfluxError::AdapterNotFound {
-                    adapter_id: adapter_id.clone(),
-                }
-            })?;
-            let adapter =
-                registry
-                    .get(&adapter_id)
-                    .ok_or_else(|| ConfluxError::AdapterNotFound {
-                        adapter_id: adapter_id.clone(),
+                // Get adapter config + trait object
+                let (adapter_config, adapter_arc) = {
+                    let registry = state.adapter_registry.read();
+                    let config = registry.get_config(&adapter_id).cloned().ok_or_else(|| {
+                        ConfluxError::AdapterNotFound {
+                            adapter_id: adapter_id.clone(),
+                        }
                     })?;
-            (config, adapter)
-        };
+                    let adapter =
+                        registry
+                            .get(&adapter_id)
+                            .ok_or_else(|| ConfluxError::AdapterNotFound {
+                                adapter_id: adapter_id.clone(),
+                            })?;
+                    (config, adapter)
+                };
 
-        // Get the workspace instance's working_dir to reuse
-        let work_dir = state
-            .pty_manager
-            .get_instance_state(&participant_id.0)
-            .map(|detail| detail.working_dir)
-            .unwrap_or_else(|_| ".".to_string());
+                // Get the workspace instance's working_dir to reuse
+                let work_dir = state
+                    .pty_manager
+                    .get_instance_state(&participant_id.0)
+                    .map(|detail| detail.working_dir)
+                    .unwrap_or_else(|_| ".".to_string());
 
-        // Build sandbox args: default_args + sandbox_args
-        let mut spawn_args = adapter_config.default_args.clone();
-        spawn_args.extend(adapter_config.sandbox_args.clone());
+                // Build sandbox args: default_args + sandbox_args
+                let mut spawn_args = adapter_config.default_args.clone();
+                spawn_args.extend(adapter_config.sandbox_args.clone());
 
-        // Build event dispatcher
-        let app_handle = app.clone();
-        let dispatcher: crate::pty::manager::EventDispatcher =
-            Arc::new(move |event: &ConfluxEvent| {
-                emit_conflux_event(&app_handle, event);
-            });
+                // Build event dispatcher
+                let app_handle = app.clone();
+                let dispatcher: crate::pty::manager::EventDispatcher =
+                    Arc::new(move |event: &ConfluxEvent| {
+                        emit_conflux_event(&app_handle, event);
+                    });
 
-        // Spawn hidden sandbox instance
-        let sandbox_id_str = state.pty_manager.spawn(
-            &adapter_config.command,
-            &spawn_args,
-            &work_dir,
-            &adapter_id,
-            &adapter_config.name,
-            Some(adapter_arc),
-            Some(dispatcher),
-            AgentMode::Sandbox,
-            true, // hidden = true
-            None, // display_name: sandbox 实例不需要别名
-        )?;
+                // Spawn hidden sandbox instance
+                let sandbox_id_str = state.pty_manager.spawn(
+                    &adapter_config.command,
+                    &spawn_args,
+                    &work_dir,
+                    &adapter_id,
+                    &adapter_config.name,
+                    Some(adapter_arc),
+                    Some(dispatcher),
+                    AgentMode::Sandbox,
+                    true, // hidden = true
+                    None, // display_name: sandbox 实例不需要别名
+                )?;
 
-        let sandbox_id = InstanceId(sandbox_id_str);
+                let sandbox_id = InstanceId(sandbox_id_str);
 
-        // Record instance_id -> adapter_id mapping
-        {
-            let mut map = state.instance_adapter_map.write();
-            map.insert(sandbox_id.0.clone(), adapter_id.clone());
+                // Record instance_id -> adapter_id mapping
+                {
+                    let mut map = state.instance_adapter_map.write();
+                    map.insert(sandbox_id.0.clone(), adapter_id.clone());
+                }
+
+                sandbox_instance_ids.push(sandbox_id);
+            }
+
+            // 1. 在内存中创建讨论（带 sandbox_instance_ids）
+            let (session, system_msg) = {
+                let mut engine = state.discussion_engine.write();
+                let session =
+                    engine.start(topic, participant_ids, sandbox_instance_ids.clone(), rounds);
+                // 获取系统开场消息用于写入数据库
+                let msgs = engine
+                    .get_messages(&session.id.0)
+                    .cloned()
+                    .unwrap_or_default();
+                let system_msg = msgs.into_iter().next();
+                (session, system_msg)
+            };
+
+            // 2. 持久化到数据库；失败时同时移除刚建的内存 session
+            //（防 ghost 讨论引用已被回滚的 sandbox）
+            let persisted: Result<(), ConfluxError> = (|| {
+                let db = state.db.lock();
+                db_query::insert_discussion(&db, &session)?;
+
+                // 同步写入系统开场消息
+                if let Some(msg) = &system_msg {
+                    db_query::insert_discussion_message(&db, msg)?;
+                }
+                Ok(())
+            })();
+            if let Err(e) = persisted {
+                let mut engine = state.discussion_engine.write();
+                let _ = engine.end(&session.id.0); // best-effort 移除内存侧
+                return Err(e);
+            }
+
+            Ok((session, system_msg))
+        })();
+
+    let (session, _system_msg) = match setup_result {
+        Ok(v) => v,
+        Err(e) => {
+            let killed = rollback_spawned_sandboxes(
+                |id| state.pty_manager.kill(id),
+                &state.instance_adapter_map,
+                &sandbox_instance_ids,
+            );
+            log::warn!(
+                "start_discussion 失败，已回滚 {}/{} 个 sandbox 实例: {:?}",
+                killed,
+                sandbox_instance_ids.len(),
+                e
+            );
+            return Err(e);
         }
-
-        sandbox_instance_ids.push(sandbox_id);
-    }
-
-    // 1. 在内存中创建讨论（带 sandbox_instance_ids）
-    let (session, system_msg) = {
-        let mut engine = state.discussion_engine.write();
-        let session = engine.start(topic, participant_ids, sandbox_instance_ids, rounds);
-        // 获取系统开场消息用于写入数据库
-        let msgs = engine
-            .get_messages(&session.id.0)
-            .cloned()
-            .unwrap_or_default();
-        let system_msg = msgs.into_iter().next();
-        (session, system_msg)
     };
-
-    // 2. 持久化到数据库
-    {
-        let db = state.db.lock();
-        db_query::insert_discussion(&db, &session)?;
-
-        // 同步写入系统开场消息
-        if let Some(msg) = &system_msg {
-            db_query::insert_discussion_message(&db, msg)?;
-        }
-    }
 
     log::debug!(
         "讨论已创建: id={}, topic={}, sandbox_instances={}",
@@ -343,4 +378,102 @@ pub async fn get_pinned_instances(
 ) -> Result<Vec<InstanceId>, ConfluxError> {
     let pinned = state.pinned_instances.read();
     Ok(pinned.iter().map(|id| InstanceId(id.clone())).collect())
+}
+
+/// P1-3 修复：回滚已 spawn 的隐藏 sandbox 实例（kill + instance_adapter_map 清理）。
+///
+/// 单个 kill 失败不中断后续回滚（实例可能已自行退出），map 条目无论 kill 结果
+/// 一律移除——与 destroy_agent_instance「kill 失败仍清理」同语义（mux 契约 MF-4 第 4 条）。
+/// 返回成功 kill 的数量（日志用）。kill 经闭包注入以便单测。
+fn rollback_spawned_sandboxes<F>(
+    mut kill: F,
+    instance_adapter_map: &parking_lot::RwLock<std::collections::HashMap<String, String>>,
+    sandbox_ids: &[InstanceId],
+) -> usize
+where
+    F: FnMut(&str) -> Result<(), ConfluxError>,
+{
+    let mut killed = 0;
+    for id in sandbox_ids {
+        match kill(&id.0) {
+            Ok(()) => killed += 1,
+            Err(e) => log::warn!(
+                "start_discussion 回滚: kill sandbox {} 失败（可能已自行退出）: {:?}",
+                id.0,
+                e
+            ),
+        }
+        instance_adapter_map.write().remove(&id.0);
+    }
+    killed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn map_with(ids: &[&str]) -> parking_lot::RwLock<HashMap<String, String>> {
+        let mut m = HashMap::new();
+        for id in ids {
+            m.insert(id.to_string(), "claude-code".to_string());
+        }
+        parking_lot::RwLock::new(m)
+    }
+
+    #[test]
+    fn rollback_kills_all_spawned_sandboxes_and_cleans_map() {
+        let map = map_with(&["sb-1", "sb-2"]);
+        let ids = vec![InstanceId("sb-1".into()), InstanceId("sb-2".into())];
+        let mut killed_ids: Vec<String> = Vec::new();
+
+        let killed = rollback_spawned_sandboxes(
+            |id| {
+                killed_ids.push(id.to_string());
+                Ok(())
+            },
+            &map,
+            &ids,
+        );
+
+        assert_eq!(killed, 2);
+        assert_eq!(killed_ids, vec!["sb-1".to_string(), "sb-2".to_string()]);
+        assert!(map.read().is_empty(), "map 条目必须全部清理");
+    }
+
+    #[test]
+    fn rollback_continues_after_kill_failure_and_still_cleans_map() {
+        let map = map_with(&["sb-1", "sb-2"]);
+        let ids = vec![InstanceId("sb-1".into()), InstanceId("sb-2".into())];
+
+        let killed = rollback_spawned_sandboxes(
+            |id| {
+                if id == "sb-1" {
+                    Err(ConfluxError::InstanceNotFound {
+                        instance_id: id.to_string(),
+                    })
+                } else {
+                    Ok(())
+                }
+            },
+            &map,
+            &ids,
+        );
+
+        assert_eq!(killed, 1, "kill 失败不应中断后续回滚");
+        assert!(
+            map.read().is_empty(),
+            "kill 失败的实例 map 条目同样必须清理"
+        );
+    }
+
+    #[test]
+    fn rollback_with_no_spawned_sandboxes_is_noop() {
+        let map = map_with(&["workspace-1"]);
+
+        let killed = rollback_spawned_sandboxes(|_| Ok(()), &map, &[]);
+
+        assert_eq!(killed, 0);
+        assert_eq!(map.read().len(), 1, "非 sandbox 条目不受影响");
+    }
 }
