@@ -306,7 +306,18 @@ function loadFavorites(): Set<string> {
   return new Set();
 }
 function loadPrimaryAdapter(): string | null {
-  return localStorage.getItem("conflux.primaryAdapter") || null;
+  try {
+    return localStorage.getItem("conflux.primaryAdapter") || null;
+  } catch { /* corrupt / blocked - ignore */ return null; }
+}
+// P1-1: 损坏的 localStorage 不应在 store 初始化（模块导入）时抛异常导致白屏。
+// 与 loadFavorites 同款保护：非法 JSON / getItem 抛错时回退空 Map。
+function loadEntryMap(key: string): Map<string, string> {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw) return new Map(JSON.parse(raw) as [string, string][]);
+  } catch { /* corrupt - ignore */ }
+  return new Map();
 }
 
 export const useAgentStore = create<AgentStoreState>((set, get) => ({
@@ -314,12 +325,8 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   statuses: new Map(),
   trees: new Map(),
   exitStates: new Map(),
-  permissionTiers: new Map<string, string>(
-    JSON.parse(localStorage.getItem("conflux.permissionTiers") || "[]") as [string, string][]
-  ),
-  cardColors: new Map<string, string>(
-    JSON.parse(localStorage.getItem("conflux.cardColors") || "[]") as [string, string][]
-  ),
+  permissionTiers: loadEntryMap("conflux.permissionTiers"),
+  cardColors: loadEntryMap("conflux.cardColors"),
   favoriteAdapters: loadFavorites(),
   primaryAdapter: loadPrimaryAdapter(),
   expandedCardId: null,

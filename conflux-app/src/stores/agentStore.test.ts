@@ -380,3 +380,52 @@ describe("agentStore instance snapshots", () => {
     expect([...useAgentStore.getState().statuses.keys()]).toEqual([]);
   });
 });
+
+describe("agentStore P1-1: 损坏 localStorage 不在初始化时崩溃", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("permissionTiers/cardColors 为非法 JSON 时回退空 Map、不抛异常", async () => {
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) =>
+        key === "conflux.permissionTiers" || key === "conflux.cardColors"
+          ? "{not-json"
+          : null,
+      setItem: () => undefined,
+      removeItem: () => undefined,
+    });
+
+    const { useAgentStore } = await import("./agentStore");
+    const state = useAgentStore.getState();
+    expect(state.permissionTiers.size).toBe(0);
+    expect(state.cardColors.size).toBe(0);
+  });
+
+  it("localStorage.getItem 抛错时仍能初始化 store", async () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => {
+        throw new Error("storage blocked");
+      },
+      setItem: () => undefined,
+      removeItem: () => undefined,
+    });
+
+    const { useAgentStore } = await import("./agentStore");
+    expect(useAgentStore.getState().permissionTiers.size).toBe(0);
+  });
+
+  it("合法 JSON 正常 hydrate 进 Map", async () => {
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) =>
+        key === "conflux.permissionTiers"
+          ? JSON.stringify([["inst-1", "trusted"]])
+          : null,
+      setItem: () => undefined,
+      removeItem: () => undefined,
+    });
+
+    const { useAgentStore } = await import("./agentStore");
+    expect(useAgentStore.getState().permissionTiers.get("inst-1")).toBe("trusted");
+  });
+});
