@@ -612,19 +612,11 @@ pub struct AgentInstanceInfo {
 
 // ===== 附录 B1: stdin 注入安全策略 =====
 
-/// stdin 注入来源分类（附录 B1——修复 CRIT-01）
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InjectionSource {
-    /// 用户在 UI 中直接输入（无需额外确认）
-    UserDirect,
-    /// 权限确认响应（approve/deny 的 "Y"/"N" 注入）
-    PermissionResponse,
-    /// 讨论引擎自动调度指令（需用户确认或处于已授权模式）
-    OrchestrationAuto,
-    /// 讨论中用户手动发送的消息
-    DiscussionUserMessage,
-}
+/// stdin 注入来源分类（附录 B1——修复 CRIT-01）。
+///
+/// cutover ③ D-3 裁决：与机制层统一，直接复用 conmux 类型——四变体一致、serde 同为
+/// snake_case（字节级兼容，审计落库 / 事件序列化不变），消除映射函数与未来漂移。
+pub use conmux::InjectionSource;
 
 /// stdin 注入策略配置（附录 B1——修复 CRIT-01）
 #[derive(Debug, Clone, Serialize, Deserialize)]

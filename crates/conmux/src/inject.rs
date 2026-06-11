@@ -23,6 +23,20 @@ pub struct InjectionContext<'a> {
     pub content: &'a [u8],
 }
 
+impl<'a> InjectionContext<'a> {
+    /// 构造上下文（`byte_len` 派生自 `content`）。生产路径仅 `PaneHost::inject_stdin`
+    /// 构造；公开此构造器供消费方为自己的 `InjectionHook` 实现写单测（`#[non_exhaustive]`
+    /// 否则挡住外部字面量构造）。
+    pub fn new(pane_id: &'a PaneId, source: InjectionSource, content: &'a [u8]) -> Self {
+        Self {
+            pane_id,
+            source,
+            byte_len: content.len(),
+            content,
+        }
+    }
+}
+
 /// 注入钩子。所有 send 经 `PaneHost::inject_stdin` 时按注册顺序触发。
 ///
 /// **conmux 保证（顺序不变量，MF-6）**：`before_inject`（全部钩子）→ `session.write_all`

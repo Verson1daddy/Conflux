@@ -90,3 +90,22 @@ impl From<serde_json::Error> for ConfluxError {
         }
     }
 }
+
+/// 机制层错误 → IPC 边界错误（cutover ③）。
+/// `InjectionRejected` 携带的 reason 由 conflux 钩子产生（policy/限速/审计 fail-closed），
+/// 与原 inject_with_policy 的拒绝消息同源，故归 OrchestrationError 保持前端语义不变。
+impl From<conmux::ConmuxError> for ConfluxError {
+    fn from(err: conmux::ConmuxError) -> Self {
+        match err {
+            conmux::ConmuxError::PaneNotFound { pane_id } => ConfluxError::InstanceNotFound {
+                instance_id: pane_id,
+            },
+            conmux::ConmuxError::InjectionRejected { reason } => ConfluxError::OrchestrationError {
+                message: reason,
+            },
+            other => ConfluxError::PtyError {
+                message: other.to_string(),
+            },
+        }
+    }
+}

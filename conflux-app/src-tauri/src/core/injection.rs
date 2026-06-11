@@ -42,7 +42,8 @@ pub fn audit_identity_for_source(source: &InjectionSource) -> (AuditActor, Audit
 }
 
 /// 构造一条注入审计事件（后端硬编码 actor/action/injection_source，MF-6）。
-fn build_injection_audit(
+/// `pub(crate)`：cutover ③ 起 `pty/hooks.rs::AuditHook` 复用同一构造。
+pub(crate) fn build_injection_audit(
     instance_id: &str,
     source: &InjectionSource,
     result: AuditResult,
@@ -160,7 +161,8 @@ pub fn check_content_policy(
 /// 拆出为纯函数以便不依赖 Tauri AppHandle / AppState 做单元测试。
 /// 放行时记录本次 `now` 并返回 `Ok(())`；超限时**不记录**、返回 `Err(当前窗口内计数)`。
 /// 各 instance 互不影响——单 pane 刷注入不会饿死其它 pane。
-fn check_and_record_rate_limit(
+/// `pub(crate)`：cutover ③ 起 `pty/hooks.rs::PolicyHook` 复用同一判定。
+pub(crate) fn check_and_record_rate_limit(
     counters: &mut std::collections::HashMap<String, Vec<u64>>,
     instance_id: &str,
     now: u64,
