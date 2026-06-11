@@ -117,14 +117,15 @@ impl AttentionQueue {
         Self { items: Vec::new() }
     }
 
-    /// 从 DB 重新加载内存态（活跃 + 被忽略项）。
+    /// 从 DB 重新加载内存态（活跃 + 被忽略 + 被延后项）。
     ///
-    /// 启动恢复时调用：active（resolution IS NULL）+ ignored（持久保留）都需进内存，
-    /// 这样 restore 才能命中。其余终态项（approved/denied/...）不必驻留内存。
+    /// 启动恢复时调用：active（resolution IS NULL）+ ignored（持久保留，restore 命中）
+    /// + **deferred（V1-core：sweep 到点复活——不载入则提醒闭环跨重启断裂）**。
+    /// 其余终态项（approved/denied/expired/...）不必驻留内存。
     pub fn reload_from_db(&mut self, conn: &Connection) -> Result<(), ConfluxError> {
         let mut items = db_attention::list_active_attention_items(conn)?;
-        let ignored = db_attention::list_ignored_attention_items(conn)?;
-        items.extend(ignored);
+        items.extend(db_attention::list_ignored_attention_items(conn)?);
+        items.extend(db_attention::list_deferred_attention_items(conn)?);
         self.items = items;
         Ok(())
     }
@@ -270,13 +271,23 @@ impl AttentionQueue {
         audit_action: AuditAction,
         now_ms: i64,
     ) -> Result<AttentionItem, ConfluxError> {
-        self.apply_resolution(conn, id, resolution, audit_action, AuditResult::Ok, now_ms)
+        self.apply_resolution(
+            conn,
+            id,
+            resolution,
+            audit_action,
+            AuditActor::User,
+            AuditResult::Ok,
+            now_ms,
+            None,
+        )
     }
 
     /// defer：延后处理。**必须**带 remind_at（提醒时间，ms）。
     ///
     /// remind_at 为 None 时返回 Err（契约要求 defer 必带提醒时间）。
-    /// remind_at 当前持久化进 payload_summary 末尾的标记（P4 接入提醒调度时改为专列）。
+    /// V1-core：remind_at 持久化专列（attention_items.remind_at），到点由
+    /// [`Self::sweep`] 复活回 active（提醒闭环）。
     pub fn defer(
         &mut self,
         conn: &Connection,
@@ -297,8 +308,10 @@ impl AttentionQueue {
             id,
             InteractionResolution::Deferred,
             AuditAction::Defer,
+            AuditActor::User,
             AuditResult::Ok,
             now_ms,
+            Some(remind_at),
         )
     }
 
@@ -317,8 +330,10 @@ impl AttentionQueue {
             id,
             InteractionResolution::Ignored,
             AuditAction::Ignore,
+            AuditActor::User,
             AuditResult::Ok,
             now_ms,
+            None,
         )
     }
 
@@ -379,14 +394,19 @@ impl AttentionQueue {
     /// 处置核心：原子地（事务）更新 resolution + 写审计，成功后提交内存态。
     ///
     /// MF-8 fail-closed：事务内任一步失败则整体回滚，内存态保持处置前不变。
+    /// `actor`：用户主动处置 = User；sweep 自动落定（Expire/Remind）= System（MF-6
+    /// 后端硬编码，不接受前端入参）。`set_remind_at`：仅 defer 路径传 Some。
+    #[allow(clippy::too_many_arguments)]
     fn apply_resolution(
         &mut self,
         conn: &Connection,
         id: &str,
         resolution: InteractionResolution,
         audit_action: AuditAction,
+        actor: AuditActor,
         audit_result: AuditResult,
         now_ms: i64,
+        set_remind_at: Option<i64>,
     ) -> Result<AttentionItem, ConfluxError> {
         let idx = self
             .items
@@ -408,10 +428,13 @@ impl AttentionQueue {
         updated.resolution = Some(resolution);
         updated.resolved_at = Some(now_ms);
         updated.audit_event_id = Some(audit_event_id.clone());
+        if let Some(remind_at) = set_remind_at {
+            updated.remind_at = Some(remind_at);
+        }
 
         let audit = AuditEvent {
             audit_event_id,
-            actor: AuditActor::User,
+            actor,
             action: audit_action,
             instance_id: Some(updated.instance_id.clone()),
             source_event_id: updated.source_event_id.clone(),
@@ -429,6 +452,130 @@ impl AttentionQueue {
         // 落库成功后才提交内存态
         self.items[idx] = updated.clone();
         Ok(updated)
+    }
+
+    /// sweep（V1-core 超时 + 提醒闭环）：周期由 sweeper 线程驱动，每 tick 调一次。
+    ///
+    /// 顺序冻结：**先提醒后超时**——deferred 到点复活时清掉 `timeout_seconds`
+    /// （用户已主动接管节奏，复活即过期会让 defer 失去意义），故复活项不会被
+    /// 同 tick 的超时段误杀。
+    ///
+    /// 单项失败（审计写入等）记日志跳过，不阻断其余项——失败项下个 tick 重试
+    /// （MF-8 保证失败项状态未动）。
+    pub fn sweep(&mut self, conn: &Connection, now_ms: i64) -> SweepReport {
+        let mut report = SweepReport::default();
+
+        // 1) 提醒：Deferred && remind_at 到点 → 复活回 active（System/Remind 审计）。
+        let remind_ids: Vec<String> = self
+            .items
+            .iter()
+            .filter(|i| i.resolution == Some(InteractionResolution::Deferred))
+            .filter(|i| i.remind_at.is_some_and(|r| r <= now_ms))
+            .map(|i| i.attention_item_id.clone())
+            .collect();
+        for id in &remind_ids {
+            match self.reactivate_deferred(conn, id, now_ms) {
+                Ok(_) => report.reminded += 1,
+                Err(e) => log::warn!("sweep 提醒复活失败（下个 tick 重试）: id={id}, {e}"),
+            }
+        }
+
+        // 2) 超时：活跃 && timeout_seconds 到点 → Expired（System/Expire 审计）。
+        //    纯控制面记账（用户裁决 Q4）：不向 agent 注入任何决定，用户仍可在终端响应。
+        let expired_ids: Vec<String> = self
+            .items
+            .iter()
+            .filter(|i| i.is_active())
+            .filter(|i| {
+                i.timeout_seconds
+                    .is_some_and(|t| t > 0 && i.created_at + t * 1000 <= now_ms)
+            })
+            .map(|i| i.attention_item_id.clone())
+            .collect();
+        for id in &expired_ids {
+            match self.apply_resolution(
+                conn,
+                id,
+                InteractionResolution::Expired,
+                AuditAction::Expire,
+                AuditActor::System,
+                AuditResult::Ok,
+                now_ms,
+                None,
+            ) {
+                Ok(_) => report.expired += 1,
+                Err(e) => log::warn!("sweep 超时落定失败（下个 tick 重试）: id={id}, {e}"),
+            }
+        }
+
+        report
+    }
+
+    /// 提醒复活：Deferred → 活跃（resolution/resolved_at/remind_at 清空），写
+    /// System/Remind 审计（MF-8 原子，同 restore 模式）。
+    ///
+    /// 复活同时清 `timeout_seconds`：原始超时约束随 defer 由用户主动接管——
+    /// 否则「10 分钟后提醒」复活即被超时段落定 Expired，提醒闭环失效。
+    fn reactivate_deferred(
+        &mut self,
+        conn: &Connection,
+        id: &str,
+        now_ms: i64,
+    ) -> Result<AttentionItem, ConfluxError> {
+        let idx = self
+            .items
+            .iter()
+            .position(|i| i.attention_item_id == id)
+            .ok_or_else(|| ConfluxError::OrchestrationError {
+                message: format!("提醒复活失败：注意力项不存在 (id={})", id),
+            })?;
+        if self.items[idx].resolution != Some(InteractionResolution::Deferred) {
+            return Err(ConfluxError::OrchestrationError {
+                message: format!("提醒复活失败：仅 deferred 项可复活 (id={})", id),
+            });
+        }
+
+        let remind_audit_id = AuditEvent::new_id();
+        let mut reactivated = self.items[idx].clone();
+        reactivated.resolution = None;
+        reactivated.resolved_at = None;
+        reactivated.remind_at = None;
+        reactivated.timeout_seconds = None;
+        reactivated.audit_event_id = Some(remind_audit_id.clone());
+
+        let audit = AuditEvent {
+            audit_event_id: remind_audit_id,
+            actor: AuditActor::System,
+            action: AuditAction::Remind,
+            instance_id: Some(reactivated.instance_id.clone()),
+            source_event_id: reactivated.source_event_id.clone(),
+            interaction_id: reactivated.interaction_id.clone(),
+            injection_source: None,
+            result: AuditResult::Ok,
+            created_at: now_ms,
+            rationale_ref: None,
+            payload: None,
+        };
+
+        atomic_persist(conn, &reactivated, &audit)?;
+        self.items[idx] = reactivated.clone();
+        Ok(reactivated)
+    }
+}
+
+/// sweep 结果统计（sweeper 线程据此决定是否 emit attention_updated）。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SweepReport {
+    /// 本 tick 超时落定（Expired）的项数
+    pub expired: usize,
+    /// 本 tick 提醒复活（Deferred → active）的项数
+    pub reminded: usize,
+}
+
+impl SweepReport {
+    /// 是否有任何状态变更（需要 emit attention_updated）。
+    pub fn changed(&self) -> bool {
+        self.expired + self.reminded > 0
     }
 }
 
@@ -1167,6 +1314,129 @@ mod tests {
         assert_eq!(reloaded.len(), 1);
         assert_eq!(reloaded[0].remind_at, Some(9_999));
         assert_eq!(reloaded[0].signal_source.as_deref(), Some("hook"));
+    }
+
+    // ===== V1-core：超时 sweep + defer 提醒闭环 =====
+
+    /// 超时：活跃 Permission 项超 timeout_seconds → Expired + System/Expire 审计；
+    /// 未到点不动；无 timeout 的项（Error）永不超时。
+    #[test]
+    fn test_sweep_expires_timed_out_items_with_system_audit() {
+        let conn = init_database(":memory:").unwrap();
+        let mut q = AttentionQueue::new();
+        // perm_event 夹具 timeout=120s，created_at=1_000
+        let item = q
+            .ingest(&conn, &perm_event("inst-a", "req-1", 1_000))
+            .unwrap()
+            .unwrap();
+        // Error 项无 timeout，permanently active
+        q.ingest(
+            &conn,
+            &error_event("inst-e", "boom", ErrorSeverity::Error, 1_000),
+        )
+        .unwrap();
+
+        // 未到点（1_000 + 120_000 - 1）：无变更
+        let r1 = q.sweep(&conn, 120_999);
+        assert_eq!(r1, SweepReport::default());
+        assert_eq!(q.list_active().len(), 2);
+
+        // 到点：Permission 项 Expired，Error 项不动
+        let r2 = q.sweep(&conn, 121_000);
+        assert_eq!(r2.expired, 1);
+        assert_eq!(r2.reminded, 0);
+        let active = q.list_active();
+        assert_eq!(active.len(), 1, "仅 Error 项仍活跃");
+        assert_eq!(active[0].kind, InteractionKind::ErrorRecovery);
+        assert_eq!(
+            q.get(&item.attention_item_id).unwrap().resolution,
+            Some(InteractionResolution::Expired)
+        );
+
+        // System/Expire 审计已落（MF-6：sweep 归属 System 非 User）
+        let audits = list_audit_events(&conn, None, None).unwrap();
+        assert!(audits
+            .iter()
+            .any(|a| a.action == AuditAction::Expire
+                && a.actor == crate::core::audit::AuditActor::System));
+    }
+
+    /// 提醒闭环：defer 持久化 remind_at → 到点复活回 active（清 remind_at +
+    /// timeout_seconds）+ System/Remind 审计；未到点不动。
+    #[test]
+    fn test_sweep_reactivates_deferred_at_remind_time() {
+        let conn = init_database(":memory:").unwrap();
+        let mut q = AttentionQueue::new();
+        let item = q
+            .ingest(&conn, &perm_event("inst-a", "req-1", 1_000))
+            .unwrap()
+            .unwrap();
+
+        let deferred = q
+            .defer(&conn, &item.attention_item_id, Some(9_000), 5_000)
+            .unwrap();
+        assert_eq!(deferred.remind_at, Some(9_000), "remind_at 必须持久化");
+        // DB 侧也已持久（重启恢复提醒闭环的前提）
+        let from_db = db_attention::list_ignored_attention_items(&conn).unwrap();
+        assert!(from_db.is_empty()); // deferred 不在 ignored 列表
+        assert!(q.list_active().is_empty());
+
+        // 未到点：不复活
+        assert_eq!(q.sweep(&conn, 8_999), SweepReport::default());
+
+        // 到点：复活回 active，remind_at/timeout 清空（复活即过期会让提醒失效）
+        let r = q.sweep(&conn, 9_000);
+        assert_eq!(r.reminded, 1);
+        assert_eq!(r.expired, 0, "复活项清了 timeout，不被同 tick 超时段误杀");
+        let active = q.list_active();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].attention_item_id, item.attention_item_id);
+        assert_eq!(active[0].remind_at, None);
+        assert_eq!(active[0].timeout_seconds, None);
+
+        // System/Remind 审计已落
+        let audits = list_audit_events(&conn, None, None).unwrap();
+        assert!(audits
+            .iter()
+            .any(|a| a.action == AuditAction::Remind
+                && a.actor == crate::core::audit::AuditActor::System));
+    }
+
+    /// MF-8：sweep 的审计写入失败 → 项状态不动（下个 tick 重试），不 panic。
+    #[test]
+    fn test_sweep_audit_failure_keeps_items_untouched() {
+        let conn = init_database(":memory:").unwrap();
+        let mut q = AttentionQueue::new();
+        q.ingest(&conn, &perm_event("inst-a", "req-1", 1_000))
+            .unwrap()
+            .unwrap();
+        conn.execute("DROP TABLE audit_events", []).unwrap();
+
+        let r = q.sweep(&conn, 999_999_999);
+        assert_eq!(r.expired, 0, "审计失败 → 不落定");
+        assert_eq!(q.list_active().len(), 1, "fail-closed：项仍活跃");
+    }
+
+    /// 重启恢复：deferred 项（含 remind_at）经 reload 后 sweep 仍能复活——
+    /// 提醒闭环跨重启成立。
+    #[test]
+    fn test_sweep_reminder_survives_reload() {
+        let conn = init_database(":memory:").unwrap();
+        let mut q = AttentionQueue::new();
+        let item = q
+            .ingest(&conn, &perm_event("inst-a", "req-1", 1_000))
+            .unwrap()
+            .unwrap();
+        q.defer(&conn, &item.attention_item_id, Some(9_000), 5_000)
+            .unwrap();
+
+        // 模拟重启：新队列从 DB 重载……但 deferred 项既不在 active 也不在 ignored
+        // 查询里——必须能被 reload 捞回，否则提醒闭环跨重启断裂。
+        let mut q2 = AttentionQueue::new();
+        q2.reload_from_db(&conn).unwrap();
+        let r = q2.sweep(&conn, 9_000);
+        assert_eq!(r.reminded, 1, "重启后 deferred 项仍能按时复活");
+        assert_eq!(q2.list_active().len(), 1);
     }
 
     /// reload_from_db：活跃 + 忽略项都能恢复进内存

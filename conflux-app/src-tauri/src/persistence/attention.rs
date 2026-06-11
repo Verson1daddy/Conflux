@@ -135,6 +135,22 @@ pub fn list_ignored_attention_items(conn: &Connection) -> Result<Vec<AttentionIt
     )
 }
 
+/// 查询全部延后项（resolution = 'deferred'），按 remind_at 升序（V1-core 提醒闭环：
+/// 重启恢复时进内存，sweep 到点复活——不载入则提醒跨重启断裂）。
+pub fn list_deferred_attention_items(
+    conn: &Connection,
+) -> Result<Vec<AttentionItem>, ConfluxError> {
+    query_items(
+        conn,
+        "SELECT attention_item_id, instance_id, kind, priority, source_event_id, \
+         interaction_id, payload_summary, available_actions, jump_back_target_id, \
+         created_at, resolved_at, resolution, audit_event_id, \
+         permission_context, timeout_seconds, remind_at, signal_source \
+         FROM attention_items WHERE resolution = 'deferred' \
+         ORDER BY remind_at ASC",
+    )
+}
+
 fn query_items(conn: &Connection, sql: &str) -> Result<Vec<AttentionItem>, ConfluxError> {
     let mut stmt = conn.prepare(sql).map_err(|e| ConfluxError::DatabaseError {
         message: format!("attention_items 查询准备失败: {}", e),

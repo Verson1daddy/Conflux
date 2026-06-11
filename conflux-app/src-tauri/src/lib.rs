@@ -86,6 +86,8 @@ pub struct AppState {
     pub hook_relay_path: Option<std::path::PathBuf>,
     /// per-instance hook watcher 停止信号：instance_id -> stop flag（destroy 时置位）。
     pub hook_watchers: RwLock<HashMap<String, Arc<AtomicBool>>>,
+    /// 后台线程统一停止信号（V1-core sweeper 等；app 退出路径置位）。
+    pub background_stop: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -161,6 +163,7 @@ impl AppState {
             hook_dir,
             hook_relay_path,
             hook_watchers: RwLock::new(HashMap::new()),
+            background_stop: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -316,6 +319,15 @@ pub fn run() {
             }
 
             app.manage(app_state);
+
+            // V1-core：注意力 sweeper（超时 Expired + defer 提醒复活，1s tick）
+            {
+                let state = app.state::<AppState>();
+                crate::orchestration::sweeper::spawn_attention_sweeper(
+                    app.handle().clone(),
+                    Arc::clone(&state.background_stop),
+                );
+            }
 
             // 系统托盘
             if let Err(e) = tray::create_tray(app) {

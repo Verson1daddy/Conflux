@@ -17,3 +17,6 @@ pub mod coordinator;
 
 /// 控制面语义层 P2: 注意力队列引擎（AttentionItem + AttentionQueue）
 pub mod attention;
+
+/// V1-core: 注意力队列 sweeper 线程（超时 Expired + defer 提醒复活）
+pub mod sweeper;
