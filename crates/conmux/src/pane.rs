@@ -22,7 +22,8 @@ use crate::ConmuxError;
 
 /// 进程启动规格（契约 §13 空白-1 裁决：spawn cwd 用 `cwd`，与 `PaneState.working_dir`
 /// 展示语义区分）。retrofit 自 conflux `pty/manager.rs` 的 `CommandBuilder`。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// serde：经 `MuxOp::Spawn` 过协议面（§7，V2 命名管道预留）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CommandSpec {
     pub program: String,
     pub args: Vec<String>,
@@ -33,7 +34,8 @@ pub struct CommandSpec {
 
 /// spawn 请求。`pane_id` 由调用方提供（= conflux instance_id，契约 §1 不改 ID 体系）——
 /// conmux 不生成 ID，避免引入 uuid 依赖且对齐"PaneId == InstanceId"。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// serde：经 `MuxOp::Spawn` 过协议面（§7）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SpawnRequest {
     pub pane_id: PaneId,
     pub command: CommandSpec,
@@ -414,6 +416,18 @@ impl PaneHost {
     pub fn list_panes(&self) -> Vec<PaneState> {
         let panes = self.panes.lock().expect("panes 锁未中毒");
         panes.iter().map(|(id, pane)| pane.to_state(id)).collect()
+    }
+
+    /// 单 pane 状态查询（V1-core：行级 jump-back 的 scrollback 高水位取数路径——
+    /// ingest 每事件一查，避免 list_panes O(n)）。
+    pub fn pane_state(&self, pane_id: &PaneId) -> Result<PaneState, ConmuxError> {
+        let panes = self.panes.lock().expect("panes 锁未中毒");
+        panes
+            .get(pane_id)
+            .map(|pane| pane.to_state(pane_id))
+            .ok_or_else(|| ConmuxError::PaneNotFound {
+                pane_id: pane_id.0.clone(),
+            })
     }
 
     /// 捕获 pane scrollback（契约 §3.4 / §6）。ANSI 开关：`ansi=false` 剥离 VT 序列
@@ -964,6 +978,20 @@ mod tests {
         ));
     }
 
+    /// V1-core：单 pane 状态查询（行级 jump-back 高水位取数路径）。
+    #[test]
+    fn pane_state_returns_single_pane_or_not_found() {
+        let f = fixture_with_pid(7);
+        f.host.spawn(req("p1")).unwrap();
+        let st = f.host.pane_state(&PaneId("p1".into())).unwrap();
+        assert_eq!(st.pane_id, PaneId("p1".into()));
+        assert_eq!(st.pid, Some(7));
+        assert!(matches!(
+            f.host.pane_state(&PaneId("nope".into())),
+            Err(ConmuxError::PaneNotFound { .. })
+        ));
+    }
+
     // ===== Windows 端到端集成（cutover 2b-3）：new_windows 真实组装 =====
     #[cfg(windows)]
     mod windows_e2e {
@@ -1027,6 +1055,23 @@ mod tests {
             assert!(
                 text.contains("conmux-2b3-e2e"),
                 "应收到含 echo marker 的 PaneOutput（DSR 已应答否则挂死），实际:\n{text}"
+            );
+
+            // V1-1：seq 单调——per-pane 从 1 起严格 +1 递增（V2 重放对账前提）。
+            let seqs: Vec<u64> = events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|e| match e {
+                    MuxNotify::PaneOutput { seq, .. } => Some(*seq),
+                    _ => None,
+                })
+                .collect();
+            assert!(!seqs.is_empty());
+            assert_eq!(seqs[0], 1, "seq 从 1 起");
+            assert!(
+                seqs.windows(2).all(|w| w[1] == w[0] + 1),
+                "seq 必须严格 +1 递增（无缺口/乱序），实际: {seqs:?}"
             );
 
             // kill：移除 pane → drop session（master）→ 读线程 EOF → PaneExited；

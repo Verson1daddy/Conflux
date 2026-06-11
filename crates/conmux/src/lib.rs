@@ -41,6 +41,10 @@ pub mod inject;
 /// Pane 事件出口：MuxNotify / PaneEventSink（契约 §9，conmux 不依赖 Tauri）。
 pub mod event;
 
+/// Mux 协议类型冻结：MuxRequest/MuxReply/MuxOp/MuxPayload（契约 §7 / §4.4，V1 仅
+/// 类型 + serde，V2 命名管道原样传输；MF-2：Send 无 source 且 wire 拒收）。
+pub mod protocol;
+
 /// 进程监管：ProcessSupervisor / SupervisorFactory（每 pane 一 Job，契约 §3 / MF-4）。
 pub mod job;
 
@@ -64,4 +68,5 @@ pub use job::{JobObjectSupervisor, JobObjectSupervisorFactory};
 pub use pane_win::WindowsPaneBackend;
 // PaneHost 类型 + 公开入参类型对外可见；构造器 2a 仍 pub(crate)（待 2b Windows 构造器）。
 pub use pane::{CommandSpec, PaneHost, SpawnRequest};
+pub use protocol::{MuxOp, MuxPayload, MuxReply, MuxRequest};
 pub use types::{InjectionSource, PaneId, PaneLifecycle, PaneSize, PaneState, ScrollbackInfo};
