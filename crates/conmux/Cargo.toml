@@ -17,3 +17,6 @@ thiserror = "2"
 
 [dev-dependencies]
 serde_json = "1"
+# D2 spike（2026-06-11）：portable-pty 0.9 + 真实 ConPTY spawn 集成测试
+# （tests/conpty_spike.rs）。正式接入 PaneBackend 时移入 [dependencies]。
+portable-pty = "0.9"
