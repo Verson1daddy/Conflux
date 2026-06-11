@@ -110,7 +110,11 @@ impl Pane {
             working_dir: self.working_dir.clone(),
             size: self.size,
             scrollback: ScrollbackInfo {
-                total_bytes: 0, // 2b-3b capture 接线时填 LineIndexedBuffer 字节计
+                total_bytes: self
+                    .scrollback
+                    .lock()
+                    .expect("scrollback 锁未中毒")
+                    .total_bytes(),
                 first_abs_line: first,
                 last_abs_line: last,
             },
@@ -343,6 +347,62 @@ impl PaneHost {
         let panes = self.panes.lock().expect("panes 锁未中毒");
         panes.iter().map(|(id, pane)| pane.to_state(id)).collect()
     }
+
+    /// 捕获 pane scrollback（契约 §3.4 / §6）。ANSI 开关：`ansi=false` 剥离 VT 序列
+    /// （喂 LLM / 搜索）；`true` 保留原始。替代现状 manager.get_buffer 的历史读取。
+    ///
+    /// **读审计（C2）现状**：本子步只实现数据路径。等效全量请求的 read 审计触发是 conflux
+    /// 策略关注点（需 read-hook 抽象），后置——V0 cutover 替代的 get_buffer 本无审计，故无回归。
+    /// `capture::is_effectively_full` 纯函数已就绪，供 conflux 决定何时审计。
+    pub fn capture(
+        &self,
+        req: crate::capture::CaptureRequest,
+    ) -> Result<crate::capture::CaptureResult, ConmuxError> {
+        use crate::capture::CaptureRange;
+        let panes = self.panes.lock().expect("panes 锁未中毒");
+        let pane = panes
+            .get(&req.pane_id)
+            .ok_or_else(|| ConmuxError::PaneNotFound {
+                pane_id: req.pane_id.0.clone(),
+            })?;
+        let sb = pane.scrollback.lock().expect("scrollback 锁未中毒");
+        let (first, last) = sb.line_range_available();
+
+        // 取字节 + truncated 判定（LineRange 被环覆盖 → None → truncated）。
+        let (raw, truncated) = match &req.range {
+            CaptureRange::All => (sb.read_all_bytes(), false),
+            CaptureRange::LastBytes(n) => {
+                let valid = sb.total_bytes() as usize;
+                (sb.read_last_bytes(*n), *n > valid)
+            }
+            CaptureRange::LineRange { start_abs, end_abs } => {
+                // read_lines 是 [start, end)；契约 end_abs 含端 → +1。
+                match sb.read_lines(*start_abs, end_abs.saturating_add(1)) {
+                    Some(bytes) => (bytes, false),
+                    None => (Vec::new(), true), // 起始已被环覆盖，不静默返部分
+                }
+            }
+        };
+
+        let data = if req.ansi {
+            raw
+        } else {
+            crate::capture::strip_ansi(&raw)
+        };
+        let data_base64 = base64_encode(&data);
+
+        Ok(crate::capture::CaptureResult {
+            data_base64,
+            first_abs_line: first,
+            last_abs_line: last,
+            truncated,
+        })
+    }
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(data)
 }
 
 #[cfg(test)]
@@ -862,6 +922,52 @@ mod tests {
                 "注入内容应经唯一写链到达 ConPTY 并回显，实际:\n{text}"
             );
             host.kill(&PaneId("w2".into())).unwrap();
+        }
+
+        /// capture：spawn echo → 输出进 scrollback → capture(All, ansi=false) 读回含 marker。
+        #[test]
+        fn new_windows_capture_reads_scrollback() {
+            use crate::capture::{CaptureRange, CaptureRequest};
+            use base64::Engine;
+
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let host = PaneHost::new_windows(
+                vec![],
+                Arc::new(CollectSink {
+                    events: Arc::clone(&events),
+                }),
+            );
+            host.spawn(win_req("w3", "conmux-capture-2b3b")).unwrap();
+            std::thread::sleep(Duration::from_millis(1800));
+
+            let result = host
+                .capture(CaptureRequest {
+                    pane_id: PaneId("w3".into()),
+                    range: CaptureRange::All,
+                    ansi: false, // 剥离 VT
+                })
+                .expect("capture 应成功");
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(result.data_base64.as_bytes())
+                .expect("base64 应可解");
+            let text = String::from_utf8_lossy(&decoded);
+            assert!(
+                text.contains("conmux-capture-2b3b"),
+                "capture 应读回 scrollback 内容，实际:\n{text}"
+            );
+            assert!(!result.truncated, "All 范围不应 truncated");
+
+            // 未知 pane → PaneNotFound。
+            assert!(matches!(
+                host.capture(CaptureRequest {
+                    pane_id: PaneId("nope".into()),
+                    range: CaptureRange::All,
+                    ansi: true,
+                }),
+                Err(ConmuxError::PaneNotFound { .. })
+            ));
+
+            host.kill(&PaneId("w3".into())).unwrap();
         }
     }
 }

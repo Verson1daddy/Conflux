@@ -12,7 +12,9 @@ name = "conmux"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
-# 后续增量：portable-pty 0.9（D2，2b-2 移入）、base64（capture）、tokio（按需）
+# capture() 的 CaptureResult.data_base64 编码（cutover 2b-3b）。
+base64 = "0.22"
+# 后续增量：tokio（按需）
 
 # cutover 2b（MF-4 JobObject + ConPTY 后端）。windows-sys（非整 windows crate，体积
 # 纪律 §3.1）+ portable-pty 0.9（D2 裁决）。仅 Windows 编译——conmux 纯逻辑层跨平台可测。

@@ -152,6 +152,21 @@ impl LineIndexedBuffer {
         self.next_abs_line
     }
 
+    /// 当前 ring 内有效字节数（capture / ScrollbackInfo.total_bytes 用）。
+    pub(crate) fn total_bytes(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+
+    /// 读取 ring 内全部有效字节（capture `All`）= read_last(len)。
+    pub(crate) fn read_all_bytes(&self) -> Vec<u8> {
+        self.bytes.read_last(self.bytes.len())
+    }
+
+    /// 读取最后 n 字节（capture `LastBytes`）。
+    pub(crate) fn read_last_bytes(&self, n: usize) -> Vec<u8> {
+        self.bytes.read_last(n)
+    }
+
     /// ring 内仍可完整读取的行窗 `(first, last)`，`last` = 当前行。
     /// 无任何完整可读行时返回 `(next_abs_line, next_abs_line)`。
     pub(crate) fn line_range_available(&self) -> (u64, u64) {
