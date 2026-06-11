@@ -15,6 +15,9 @@
 pub mod adapter;
 pub mod commands;
 pub mod core;
+/// Hook 事件源运行时（A.2 修复 / mux V1-core）：Claude Code PermissionRequest hook
+/// → 注意力队列。relay 落盘 + 轮询 + emit；纯逻辑在 core/hook.rs。
+pub mod hook_runtime;
 pub mod orchestration;
 pub mod persistence;
 pub mod pty;
@@ -22,6 +25,7 @@ pub mod tray;
 
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tauri::Manager;
 
@@ -73,6 +77,12 @@ pub struct AppState {
     pub recent_events: RwLock<Vec<(u64, crate::core::ConfluxEvent)>>,
     /// 控制面语义层 P2：后端 owned 的唯一注意力队列（ingest/resolve/defer/ignore/restore）
     pub attention_queue: RwLock<AttentionQueue>,
+    /// A.2 修复：hook 文件目录（app_data/hooks）。per-instance settings/ndjson 落此。
+    pub hook_dir: std::path::PathBuf,
+    /// hook relay 脚本绝对路径；`None` = 启动时落盘失败 → hook 感知降级禁用（不阻塞）。
+    pub hook_relay_path: Option<std::path::PathBuf>,
+    /// per-instance hook watcher 停止信号：instance_id -> stop flag（destroy 时置位）。
+    pub hook_watchers: RwLock<HashMap<String, Arc<AtomicBool>>>,
 }
 
 impl AppState {
@@ -88,6 +98,20 @@ impl AppState {
         if let Err(e) = attention_queue.reload_from_db(&db_conn) {
             log::warn!("注意力队列启动恢复失败（继续以空队列运行）: {e}");
         }
+
+        // A.2 修复：hook 目录 = 数据库同级的 hooks/；落盘 relay 脚本（best-effort，
+        // 失败则 hook 感知降级禁用，不阻塞 app 启动）。
+        let hook_dir = std::path::Path::new(db_path)
+            .parent()
+            .map(|p| p.join("hooks"))
+            .unwrap_or_else(|| std::path::PathBuf::from("hooks"));
+        let hook_relay_path = match hook_runtime::provision_relay(&hook_dir) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                log::warn!("hook relay 落盘失败，hook 感知禁用（PTY 仍正常）: {e}");
+                None
+            }
+        };
 
         Self {
             pty_manager: Arc::new(PtyManager::new()),
@@ -107,6 +131,9 @@ impl AppState {
             coordinator: Coordinator,
             recent_events: RwLock::new(Vec::new()),
             attention_queue: RwLock::new(attention_queue),
+            hook_dir,
+            hook_relay_path,
+            hook_watchers: RwLock::new(HashMap::new()),
         }
     }
 

@@ -261,6 +261,40 @@ impl PtyManager {
         )
     }
 
+    /// 用调用方预生成的 `instance_id` 启动 PTY（A.2 hook 修复需要：先知道 id 才能把
+    /// per-instance hook 文件路径写进 `--settings`，再 spawn）。薄包装 `spawn_inner`。
+    ///
+    /// 调用方须保证 `instance_id` 当前不在 processes map 里（与 spawn_inner 同约束）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_with_id(
+        &self,
+        instance_id: String,
+        command: &str,
+        args: &[String],
+        working_dir: &str,
+        adapter_id: &str,
+        adapter_name: &str,
+        adapter: Option<Arc<dyn AgentAdapter>>,
+        dispatch: Option<EventDispatcher>,
+        mode: AgentMode,
+        hidden: bool,
+        display_name: Option<String>,
+    ) -> Result<String, ConfluxError> {
+        self.spawn_inner(
+            instance_id,
+            command,
+            args,
+            working_dir,
+            adapter_id,
+            adapter_name,
+            adapter,
+            dispatch,
+            mode,
+            hidden,
+            display_name,
+        )
+    }
+
     /// 用指定的 `instance_id` 启动一个 PTY 进程（C2-T1 Exit Overlay 需要 respawn 复用同一个 id）。
     ///
     /// 调用者必须自己保证 `instance_id` 当前不在 processes map 里——否则后续

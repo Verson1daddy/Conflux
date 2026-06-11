@@ -20,6 +20,26 @@ use crate::core::{InstanceId, PermissionRequest, PermissionStatus};
 /// 默认权限超时（与 PermissionRequest 现状一致，附录 B3）。
 const DEFAULT_PERMISSION_TIMEOUT_SECS: u32 = 120;
 
+/// 随 app 落盘的 hook relay 脚本内容（实测裁决 = node relay，
+/// research/hook-spike-2026-06-11）。读 claude 经 stdin 传来的 hook JSON，压成单行
+/// append 到 `--out` 指定的 per-instance ndjson；不输出决策 → claude 走正常 permission
+/// 流程（交互态弹终端权限框，Conflux approve 复用 PTY 注入 Y/N）。node 在 claude
+/// 运行期必然存在（claude 本身是 node 应用）。
+pub const HOOK_RELAY_JS: &str = r#"// conmux hook relay (provisioned by Conflux). Do not edit.
+const fs = require('fs');
+function argval(name){const i=process.argv.indexOf(name);return i>=0&&i+1<process.argv.length?process.argv[i+1]:null;}
+const out = argval('--out');
+let data='';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data',c=>data+=c);
+process.stdin.on('end',()=>{
+  if(!out){process.exit(0);}
+  const line=data.replace(/[\r\n]+/g,' ').trim();
+  try{fs.appendFileSync(out,line+'\n','utf8');}catch(_){}
+  process.exit(0);
+});
+"#;
+
 /// PreToolUse hook 的 stdin JSON 载荷（claude 2.1.173 实测协议）。
 ///
 /// 仅声明本修复需要的字段；`#[serde(default)]` + 多余字段忽略，保证 claude 后续
@@ -59,6 +79,19 @@ impl PreToolUseHookEvent {
     /// 其它 hook 事件（Stop/Notification 等）走本通道时据此过滤。
     pub fn is_pre_tool_use(&self) -> bool {
         self.hook_event_name == "PreToolUse" && !self.tool_name.is_empty()
+    }
+
+    /// 是否为 PermissionRequest 事件——**语义正确的"需用户批准"信号**
+    /// （只在 claude 真要弹权限框时触发，不像 PreToolUse 对所有工具触发）。
+    /// 对照实测见 research/hook-spike-2026-06-11/HOOK_SPIKE_RESULT.md「关键语义发现」。
+    pub fn is_permission_request(&self) -> bool {
+        self.hook_event_name == "PermissionRequest"
+    }
+
+    /// 是否为应上浮为"待用户批准"的信号。当前 = PermissionRequest（语义精确）。
+    /// PreToolUse **不**计入（对只读工具也触发，会误报）。
+    pub fn is_approval_signal(&self) -> bool {
+        self.is_permission_request() && self.requires_user_approval()
     }
 
     /// `bypassPermissions` 模式下 agent 不会要人批准（= 启动预设"免权限"），
@@ -120,33 +153,32 @@ impl PreToolUseHookEvent {
 /// matcher="" 匹配所有工具；hook 不输出决策 → claude 走正常 permission 流程（交互态弹
 /// 终端权限框，Conflux approve 复用 PTY 注入）。
 pub fn build_claude_hook_settings_arg(relay_js_path: &str, hook_out_path: &str) -> String {
-    let command = format!(
-        "node \"{}\" --out \"{}\"",
-        relay_js_path, hook_out_path
-    );
+    let command = format!("node \"{}\" --out \"{}\"", relay_js_path, hook_out_path);
+    // 同一 command 同时挂 PreToolUse + PermissionRequest（JSON 里 hook_event_name 自带区分）：
+    // PermissionRequest 是语义正确的"待批准"源（watcher 据此上浮）；PreToolUse 一并落盘
+    // 仅供实机诊断 PermissionRequest 在交互模式是否触发（见 HOOK_SPIKE_RESULT.md）。
+    let handler = serde_json::json!([{
+        "matcher": "",
+        "hooks": [{ "type": "command", "command": command }]
+    }]);
     let settings = serde_json::json!({
         "hooks": {
-            "PreToolUse": [{
-                "matcher": "",
-                "hooks": [{
-                    "type": "command",
-                    "command": command
-                }]
-            }]
+            "PreToolUse": handler,
+            "PermissionRequest": handler
         }
     });
     serde_json::to_string(&settings).expect("hook settings 序列化不应失败")
 }
 
-/// 解析累积的 hook ndjson（每行一条 PreToolUse JSON），跳过空行/坏行，
-/// 仅保留有效 PreToolUse 事件。后端 watcher 读到新行后调用。
-pub fn parse_pretooluse_ndjson(content: &str) -> Vec<PreToolUseHookEvent> {
+/// 解析累积的 hook ndjson（每行一条 hook JSON），跳过空行/坏行，保留所有带工具名的
+/// PreToolUse / PermissionRequest 事件（由调用方按 `is_approval_signal` 等再筛）。
+pub fn parse_hook_ndjson(content: &str) -> Vec<PreToolUseHookEvent> {
     content
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .filter_map(|l| PreToolUseHookEvent::parse(l).ok())
-        .filter(PreToolUseHookEvent::is_pre_tool_use)
+        .filter(|e| e.is_pre_tool_use() || e.is_permission_request())
         .collect()
 }
 
@@ -280,54 +312,57 @@ mod tests {
     }
 
     #[test]
-    fn hook_settings_arg_is_valid_json_with_node_relay_command() {
-        let arg = build_claude_hook_settings_arg(
-            r"C:\app\hook-relay.js",
-            r"C:\app\hooks\inst-1.ndjson",
-        );
+    fn hook_settings_arg_configures_both_hooks_with_node_relay() {
+        let arg =
+            build_claude_hook_settings_arg(r"C:\app\hook-relay.js", r"C:\app\hooks\inst-1.ndjson");
         // 必须是合法 JSON（claude 会解析它）
         let v: serde_json::Value = serde_json::from_str(&arg).expect("settings 应为合法 JSON");
-        let cmd = v["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-            .as_str()
-            .expect("command 字段应存在");
-        // 反斜杠路径完整保留（serde 负责转义/反转义）
-        assert!(cmd.contains(r"C:\app\hook-relay.js"));
-        assert!(cmd.contains(r"C:\app\hooks\inst-1.ndjson"));
-        assert!(cmd.starts_with("node "));
-        assert!(cmd.contains("--out"));
-        assert_eq!(
-            v["hooks"]["PreToolUse"][0]["matcher"].as_str(),
-            Some("")
-        );
-        assert_eq!(
-            v["hooks"]["PreToolUse"][0]["hooks"][0]["type"].as_str(),
-            Some("command")
-        );
+        // PreToolUse 与 PermissionRequest 两个 hook 都配上，指向同一 relay command
+        for event in ["PreToolUse", "PermissionRequest"] {
+            let cmd = v["hooks"][event][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{event} command 字段应存在"));
+            assert!(cmd.contains(r"C:\app\hook-relay.js"), "{event} 含 relay 路径");
+            assert!(cmd.contains(r"C:\app\hooks\inst-1.ndjson"), "{event} 含 out 路径");
+            assert!(cmd.starts_with("node "));
+            assert!(cmd.contains("--out"));
+            assert_eq!(v["hooks"][event][0]["matcher"].as_str(), Some(""));
+        }
     }
 
     #[test]
-    fn parse_ndjson_keeps_valid_skips_blank_and_malformed() {
-        // 模拟真实 relay 落盘：2 条有效 PreToolUse + 1 空行 + 1 坏行 + 1 非 PreToolUse。
+    fn parse_ndjson_keeps_pretooluse_and_permreq_skips_blank_malformed() {
+        // 模拟真实 relay 落盘：PreToolUse + PermissionRequest + 空行 + 坏行 + 非 hook(Stop)。
         let content = concat!(
             r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo one"},"tool_use_id":"t1"}"#,
-            "\n",
-            "\n",
+            "\n\n",
             "garbage not json\n",
             r#"{"hook_event_name":"Stop","tool_name":""}"#,
             "\n",
-            r#"{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"a.rs"},"tool_use_id":"t2"}"#,
+            r#"{"hook_event_name":"PermissionRequest","tool_name":"Write","tool_input":{"file_path":"a.rs"},"tool_use_id":"t2"}"#,
             "\n"
         );
-        let events = parse_pretooluse_ndjson(content);
-        assert_eq!(events.len(), 2, "只保留 2 条有效 PreToolUse");
-        assert_eq!(events[0].tool_use_id, "t1");
-        assert_eq!(events[1].tool_use_id, "t2");
-        assert_eq!(events[1].tool_name, "Write");
+        let events = parse_hook_ndjson(content);
+        assert_eq!(events.len(), 2, "保留 PreToolUse + PermissionRequest");
+        assert!(events[0].is_pre_tool_use());
+        assert!(events[1].is_permission_request());
+        assert!(events[1].is_approval_signal(), "PermissionRequest 是批准信号");
+        assert!(!events[0].is_approval_signal(), "PreToolUse 不是批准信号");
     }
 
     #[test]
     fn parse_ndjson_empty_content_yields_nothing() {
-        assert!(parse_pretooluse_ndjson("").is_empty());
-        assert!(parse_pretooluse_ndjson("\n\n  \n").is_empty());
+        assert!(parse_hook_ndjson("").is_empty());
+        assert!(parse_hook_ndjson("\n\n  \n").is_empty());
+    }
+
+    #[test]
+    fn permission_request_in_bypass_mode_is_not_approval_signal() {
+        let ev = PreToolUseHookEvent::parse(
+            r#"{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"ls"},"permission_mode":"bypassPermissions"}"#,
+        )
+        .unwrap();
+        assert!(ev.is_permission_request());
+        assert!(!ev.is_approval_signal(), "bypass 模式不上浮待批准");
     }
 }

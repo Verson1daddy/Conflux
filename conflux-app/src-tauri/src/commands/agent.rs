@@ -81,6 +81,52 @@ pub async fn get_default_working_dir() -> Result<String, ConfluxError> {
     Ok(default_working_dir())
 }
 
+/// 支持 hook 事件源的 adapter（hook 格式 claude 专属；codex/其它有各自 hook 需另接）。
+const HOOK_CAPABLE_ADAPTER: &str = "claude-code";
+
+/// A.2 修复：为支持的 adapter 注入 Claude Code hook（PermissionRequest → 注意力队列）。
+///
+/// 仅当 `adapter_id == claude-code` + 非隐藏（sandbox 不上浮）+ relay 已落盘时生效。
+/// 写 per-instance settings 文件并把 `--settings <file>` 追加进 `spawn_args`；返回 hook
+/// 路径供调用方启动 watcher。任何 IO 失败降级为"无 hook 感知"（返回 None，不阻塞 spawn）。
+fn maybe_inject_claude_hook(
+    state: &AppState,
+    adapter_id: &str,
+    is_hidden: bool,
+    instance_id: &str,
+    spawn_args: &mut Vec<String>,
+) -> Option<crate::hook_runtime::HookPaths> {
+    if adapter_id != HOOK_CAPABLE_ADAPTER || is_hidden {
+        return None;
+    }
+    let relay_path = state.hook_relay_path.as_ref()?;
+    let paths = crate::hook_runtime::instance_paths(&state.hook_dir, instance_id);
+
+    let (relay_str, out_str, settings_str) = match (
+        relay_path.to_str(),
+        paths.out_file.to_str(),
+        paths.settings_file.to_str(),
+    ) {
+        (Some(r), Some(o), Some(s)) => (r, o, s),
+        _ => {
+            log::warn!("hook 路径含非 UTF-8 字符，跳过 hook 注入（instance={instance_id}）");
+            return None;
+        }
+    };
+
+    let settings_json = crate::core::hook::build_claude_hook_settings_arg(relay_str, out_str);
+    if let Err(e) = crate::hook_runtime::write_instance_settings(&paths, relay_path, &settings_json)
+    {
+        log::warn!("hook settings 落盘失败，跳过 hook 注入（instance={instance_id}）: {e}");
+        return None;
+    }
+
+    spawn_args.push("--settings".to_string());
+    spawn_args.push(settings_str.to_string());
+    log::debug!("已为 instance={instance_id} 注入 Claude Code hook 感知");
+    Some(paths)
+}
+
 /// Create an Agent instance and start its PTY process.
 #[tauri::command]
 pub async fn create_agent_instance(
@@ -149,7 +195,21 @@ pub async fn create_agent_instance(
     // Normalize: treat empty string as None
     let normalized_name = display_name.filter(|s| !s.trim().is_empty());
 
-    let instance_id_str = state.pty_manager.spawn(
+    // A.2 修复：预生成 instance_id（hook 文件路径要先写进 --settings 才能 spawn）。
+    let instance_id_str = uuid::Uuid::new_v4().to_string();
+
+    // 仅对支持 hook 的 adapter（当前 = claude-code，hook 格式 claude 专属）且 relay 落盘
+    // 成功 + 非隐藏实例时注入 hook 感知。其它 adapter / sandbox 维持原样（无 hook）。
+    let hook_paths = maybe_inject_claude_hook(
+        &state,
+        &adapter_id.0,
+        is_hidden,
+        &instance_id_str,
+        &mut spawn_args,
+    );
+
+    let instance_id_str = state.pty_manager.spawn_with_id(
+        instance_id_str,
         &adapter_config.command,
         &spawn_args,
         &work_dir,
@@ -163,6 +223,21 @@ pub async fn create_agent_instance(
     )?;
 
     let instance_id = InstanceId(instance_id_str);
+
+    // 6b. spawn 成功后启动 hook watcher（轮询 ndjson → 上浮 PermissionRequested）。
+    if let Some(paths) = hook_paths {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        state
+            .hook_watchers
+            .write()
+            .insert(instance_id.0.clone(), std::sync::Arc::clone(&stop));
+        crate::hook_runtime::spawn_hook_watcher(
+            app.clone(),
+            instance_id.0.clone(),
+            paths.out_file,
+            stop,
+        );
+    }
 
     // 7. 记录 instance_id -> adapter_id 映射
     {
@@ -263,6 +338,15 @@ pub async fn destroy_agent_instance(
     // 长期运行会无界增长（轻微内存泄漏）。与上面的 map/pinned 清理同语义。
     {
         state.injection_rate_counter.write().remove(&instance_id.0);
+    }
+
+    // 4.6. A.2 hook：停掉 watcher 线程 + 删 per-instance hook 文件（settings/ndjson）。
+    {
+        if let Some(stop) = state.hook_watchers.write().remove(&instance_id.0) {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let paths = crate::hook_runtime::instance_paths(&state.hook_dir, &instance_id.0);
+        crate::hook_runtime::cleanup_instance(&paths);
     }
 
     // 5. 标记 agent_instances 结束时间
