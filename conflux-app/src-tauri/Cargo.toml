@@ -34,11 +34,8 @@ anyhow = "1"
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 
-# mux 机制层（cutover ③：PaneHost/InjectionHook/PaneEventSink）
+# mux 机制层（cutover ③：PaneHost/InjectionHook/PaneEventSink；ConPTY 经 conmux 的 portable-pty 0.9）
 conmux = { path = "../../crates/conmux" }
-
-# PTY (Windows conpty via portable-pty)——旧 PtyManager 路径，cutover ④ 删除后移除
-portable-pty = "0.8"
 
 # Database
 rusqlite = { version = "0.31", features = ["bundled"] }
