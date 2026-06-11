@@ -55,7 +55,10 @@ CREATE TABLE IF NOT EXISTS session_events (
 );
 CREATE INDEX IF NOT EXISTS idx_session_events_instance_ts ON session_events(instance_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_session_events_type ON session_events(event_type);
-CREATE INDEX IF NOT EXISTS idx_session_events_corr ON session_events(correlation_id);
+-- 注意：idx_session_events_corr（correlation_id 列上的索引）不在此创建——
+-- 旧库该列由 migrate_session_events 补齐，索引随迁移在补列后幂等创建；
+-- 在此创建会在旧库上先于迁移执行而崩（X4 实机 2026-06-11 实锤，回归测试
+-- test_init_database_succeeds_on_legacy_db_file）。迁移列上的索引一律只进迁移函数。
 
 -- 控制面语义层 P1（F1 契约 §7.2 + §13.6）：不可变审计事件表（append-only）
 CREATE TABLE IF NOT EXISTS audit_events (
@@ -574,6 +577,73 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM session_events", [], |r| r.get(0))
             .expect("计数应成功");
         assert_eq!(count, 1, "迁移不应丢失旧数据");
+    }
+
+    #[test]
+    fn test_init_database_succeeds_on_legacy_db_file() {
+        // X4 实机 smoke 抓到的启动崩溃回归测试（2026-06-11）：
+        // 旧库 session_events 无 correlation_id 列时，SCHEMA_SQL 内的
+        // idx_session_events_corr 先于 migrate_session_events 执行 →
+        // "no such column: correlation_id" → app 启动 panic（lib.rs:84）。
+        // 修复：该索引从 SCHEMA_SQL 移除，统一由迁移函数在补列后幂等创建。
+        // 用临时文件库（:memory: 无法跨连接预置旧 schema）。
+        let path = std::env::temp_dir().join(format!(
+            "conflux_schema_legacy_test_{}.db",
+            std::process::id()
+        ));
+        let path_str = path.to_str().expect("temp path utf8").to_string();
+        let _ = std::fs::remove_file(&path);
+
+        // 1. 预置旧 schema 库文件（含一行旧数据）
+        {
+            let conn = Connection::open(&path_str).expect("建旧库应成功");
+            conn.execute_batch(
+                r#"
+                CREATE TABLE session_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    instance_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    data TEXT NOT NULL,
+                    timestamp INTEGER NOT NULL
+                );
+                INSERT INTO session_events (instance_id, event_type, data, timestamp)
+                VALUES ('inst-legacy', 'status_changed', '{}', 100);
+                "#,
+            )
+            .expect("旧 schema 建表 + 插入应成功");
+        }
+
+        // 2. 对旧库跑完整 init_database——修复前此处报
+        //    "Schema 初始化失败: no such column: correlation_id"
+        let conn = init_database(&path_str)
+            .expect("旧 schema 库上 init_database 应成功（迁移先于索引创建）");
+
+        // 3. 列补齐 + 索引存在 + 旧数据保留
+        let cols = columns_of(&conn, "session_events");
+        for expected in ["event_id", "source_kind", "correlation_id"] {
+            assert!(
+                cols.iter().any(|c| c == expected),
+                "init 后 session_events 应含列 {}",
+                expected
+            );
+        }
+        let idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_session_events_corr'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("查索引应成功");
+        assert_eq!(idx, 1, "correlation_id 索引应由迁移路径创建");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM session_events", [], |r| r.get(0))
+            .expect("计数应成功");
+        assert_eq!(count, 1, "init_database 不应丢失旧数据");
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{path_str}-wal"));
+        let _ = std::fs::remove_file(format!("{path_str}-shm"));
     }
 
     #[test]
