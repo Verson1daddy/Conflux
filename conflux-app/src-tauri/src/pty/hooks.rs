@@ -229,6 +229,14 @@ impl AuditHook {
             self.flush_pane(&pane_id, now, AuditResult::Ok);
         }
     }
+
+    /// 实例销毁时清理其批缓冲 + seq 计数（红队 C-3 / C8 同类无界增长防护）。
+    /// 先 flush 未落库的待批（destroy 前的击键仍需审计完整），再清 seq 计数——
+    /// 否则 seqs map 随实例销毁单调累积（轻微泄漏）。destroy 路径调用。
+    pub fn forget_pane(&self, pane_id: &str) {
+        self.flush_pane(pane_id, now_millis(), AuditResult::Ok);
+        self.seqs.lock().remove(pane_id);
+    }
 }
 
 impl InjectionHook for AuditHook {
@@ -562,6 +570,38 @@ mod tests {
         let audits = list_audit_events(&db.lock(), None, None).unwrap();
         assert_eq!(audits.len(), 3, "三次注入三条审计（不合批）");
         assert!(audits.iter().all(|a| a.payload.is_none()));
+    }
+
+    /// 红队 C-3：forget_pane 先 flush 未落批（审计完整）再清 seq 计数（无界增长防护）。
+    #[test]
+    fn d3_forget_pane_flushes_pending_and_clears_seq() {
+        let db = mem_db();
+        let hook = AuditHook::new(Arc::clone(&db));
+        let id = PaneId("i1".into());
+        // 留一个未 flush 的待批（无 \r）
+        let ctx = InjectionContext::new(&id, InjectionSource::UserDirect, b"x");
+        hook.before_inject(&ctx).unwrap();
+        assert!(
+            list_audit_events(&db.lock(), None, None).unwrap().is_empty(),
+            "无 \\r：未 flush"
+        );
+
+        hook.forget_pane("i1");
+        let audits = list_audit_events(&db.lock(), None, None).unwrap();
+        assert_eq!(audits.len(), 1, "forget 前的待批应被 flush（审计完整）");
+        assert_eq!(batch_payload(&audits[0])["seq"], 1);
+
+        // seq 计数已清：同 id 再起一批 seq 重新从 1（无残留累积）
+        let ctx2 = InjectionContext::new(&id, InjectionSource::UserDirect, b"y\r");
+        hook.before_inject(&ctx2).unwrap(); // \r 立即 flush
+        let audits2 = list_audit_events(&db.lock(), None, None).unwrap();
+        assert_eq!(audits2.len(), 2);
+        assert!(
+            audits2
+                .iter()
+                .all(|a| batch_payload(a)["seq"].as_u64().unwrap() == 1),
+            "forget 清 seq 计数后两批 seq 均为 1"
+        );
     }
 
     fn now_millis() -> i64 {

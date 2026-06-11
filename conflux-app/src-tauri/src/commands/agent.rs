@@ -284,6 +284,9 @@ pub async fn create_agent_instance(
         if let Err(kill_err) = state.pane_runtime.kill(&instance_id.0) {
             log::warn!("rollback PTY kill failed after DB insert error: {kill_err}");
         }
+        // 回滚也须停 hook watcher + 清 settings（红队 C-4：6b 已启动的 watcher 否则
+        // 成假活跃，会让 hook-first 仲裁错误抑制后续刮屏兜底）。
+        stop_hook_watcher_and_cleanup_settings(&state, &instance_id.0);
         return Err(ConfluxError::DatabaseError {
             message: format!("Failed to persist agent instance: {e}"),
         });
@@ -326,8 +329,16 @@ pub async fn destroy_agent_instance(
         }
     }
 
-    // 2. 终止 PTY 进程（cutover ③：JobObject 整树终结，不留孤儿孙进程）
-    state.pane_runtime.kill(&instance_id.0)?;
+    // 2. 终止 PTY 进程（cutover ③：JobObject 整树终结，不留孤儿孙进程）。
+    // destroy = "清掉这个 instance 的全部痕迹" 语义：kill 失败（含 pane 已不在
+    // PaneHost 表——respawn 失败残留 / 已自退）**不得**阻断后续 map/pinned/counter/
+    // hook/db 清理，否则该 instance 成不可销毁幽灵（红队 MF-B）。降级为 warning 续清。
+    if let Err(e) = state.pane_runtime.kill(&instance_id.0) {
+        log::warn!(
+            "destroy: pane_runtime.kill 失败（继续清理其余痕迹）: instance_id={}, error={e}",
+            instance_id.0
+        );
+    }
 
     // 3. 清理实例映射
     {
@@ -352,6 +363,9 @@ pub async fn destroy_agent_instance(
     // out_file（ndjson）由 watcher 在 stop 退出时自删——watcher 是唯一读者，避免与其
     // 轮询读取在 Windows 上抢文件句柄的竞态（destroy 只碰 watcher 不读的 settings）。
     stop_hook_watcher_and_cleanup_settings(&state, &instance_id.0);
+
+    // 4.7. D3 审计批缓冲 + seq 计数清理（红队 C-3）：flush 未落库的击键批 + 清 seq。
+    state.audit_hook.forget_pane(&instance_id.0);
 
     // 5. 标记 agent_instances 结束时间
     {

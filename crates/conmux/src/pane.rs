@@ -85,6 +85,15 @@ pub(crate) trait PaneSession: Send {
     fn try_exit_code(&mut self) -> Option<i32> {
         None
     }
+
+    /// best-effort 终结已 spawn 的子进程（MF-4 cl.2 / 红队 MF-A）。
+    ///
+    /// 仅在 `PaneHost::spawn` 的 **supervisor.assign 失败** 分支调用——此时进程已 spawn
+    /// 但 JobObject 未接管，drop session 关 ConPTY 不保证杀掉已逃逸的孙进程（spike #4
+    /// 实证孤儿孙进程拖死 ClosePseudoConsole）。无监管进程必须主动杀，否则违反
+    /// 「assign 失败不产生无监管 pane」。默认 no-op（mock / 无 PTY 后端）；
+    /// 成败不可信（portable-pty 0.9 kill 判断写反，spike #5）——纯 best-effort。
+    fn kill_best_effort(&mut self) {}
 }
 
 /// 单个 pane 的运行时状态（`pub(crate)`，私有字段——不导出本体，仅经 `PaneState` 暴露语义）。
@@ -205,12 +214,13 @@ impl PaneHost {
         let mut session = self.backend.open(req.size)?;
         let pid = session.spawn(&req.command)?;
 
-        // 每 pane 一个监管器；assign 失败 = fail-closed（MF-4 cl.2）：返回 Err、不注册。
-        // 真实后端在此处还须 best-effort kill 已 spawn 的 pid（2b WindowsBackend 落地）。
+        // 每 pane 一个监管器；assign 失败 = fail-closed（MF-4 cl.2）：best-effort kill
+        // 已 spawn 的进程（无监管进程不得逃逸为孤儿，红队 MF-A）→ 返回 Err、不注册。
         let supervisor = self.supervisor_factory.create();
         if let Err(e) = supervisor.assign(pid) {
+            session.kill_best_effort();
             return Err(ConmuxError::SupervisorError {
-                message: format!("assign 失败，已 fail-closed 拒绝 pane: {e}"),
+                message: format!("assign 失败，已 fail-closed 拒绝 pane（已尝试终结进程）: {e}"),
             });
         }
 
@@ -502,6 +512,8 @@ mod tests {
         spawn_should_fail: bool,
         /// D-2a：模拟 try_exit_code 返回值（None = 仍在运行）。
         exit_code: Option<i32>,
+        /// 红队 MF-A：记录 kill_best_effort 被调次数（assign 失败应触发）。
+        kill_best_effort_calls: u32,
     }
 
     #[derive(Clone)]
@@ -539,6 +551,9 @@ mod tests {
         }
         fn try_exit_code(&mut self) -> Option<i32> {
             self.state.lock().unwrap().exit_code
+        }
+        fn kill_best_effort(&mut self) {
+            self.state.lock().unwrap().kill_best_effort_calls += 1;
         }
     }
 
@@ -723,6 +738,12 @@ mod tests {
         assert!(
             f.host.list_panes().is_empty(),
             "assign 失败不得产生无监管 pane（MF-4 cl.2）"
+        );
+        // 红队 MF-A：已 spawn 的进程必须被 best-effort kill（不留无监管孤儿）。
+        assert_eq!(
+            f.session_state.lock().unwrap().kill_best_effort_calls,
+            1,
+            "assign 失败必须 best-effort kill 已 spawn 进程"
         );
     }
 

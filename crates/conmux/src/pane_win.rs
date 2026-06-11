@@ -153,6 +153,16 @@ impl PaneSession for WindowsPaneSession {
     fn protocol_writer(&self) -> Option<Arc<Mutex<Box<dyn Write + Send>>>> {
         self.writer.clone()
     }
+
+    /// best-effort 终结子进程（红队 MF-A：assign 失败分支无监管进程必须主动杀）。
+    /// portable-pty 0.9 kill 返回值不可信（spike #5），故不看结果；kill 后 best-effort
+    /// wait 回收。drop session 关 ConPTY 两端是补充清理，但孤儿孙进程靠它不可靠。
+    fn kill_best_effort(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 /// 读线程主循环：持续读 `reader`，内联应答 DSR `ESC[6n`（经 `writer` 直写——机制层
