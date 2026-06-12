@@ -92,53 +92,8 @@ describe("Canvas grid layer", () => {
     renderer.unmount();
   });
 
-  it("keeps a four-level perceptible grid structure in the normal state", async () => {
-    const { resolveGridVisuals } = await import("./Canvas");
-
-    const visible = resolveGridVisuals(1).filter((level) => level.visible);
-
-    expect(visible.map((level) => level.kind)).toEqual([
-      "major",
-      "subMajor",
-      "minor",
-      "micro",
-    ]);
-  });
-
-  it("enters major emphasis gradually instead of snapping at the target size", async () => {
-    const { resolveGridVisuals } = await import("./Canvas");
-
-    const before = resolveGridVisuals(2.7).find((level) => level.kind === "major");
-    const at = resolveGridVisuals(3.0).find((level) => level.kind === "major");
-    const after = resolveGridVisuals(3.3).find((level) => level.kind === "major");
-
-    expect(before?.alpha).toBeLessThan(at?.alpha ?? 0);
-    expect(at?.alpha).toBeLessThan(after?.alpha ?? 1);
-  });
-
-  it("keeps the finest level gray for longer before clamp and hide", async () => {
-    const { resolveGridVisuals } = await import("./Canvas");
-
-    const stillGray = resolveGridVisuals(0.35).find((level) => level.kind === "micro");
-    const clamped = resolveGridVisuals(0.2).find((level) => level.state === "blackClamped");
-    const hidden = resolveGridVisuals(0.1).find((level) => level.state === "hidden");
-
-    expect(stillGray?.state).toBe("weighted");
-    expect(clamped?.state).toBe("blackClamped");
-    expect(hidden?.state).toBe("hidden");
-  });
-
-  it("keeps the same major-family anchor through the 299% to 319% zoom band", async () => {
-    const { resolveGridVisuals } = await import("./Canvas");
-
-    for (const zoom of [2.99, 3.0, 3.1, 3.19]) {
-      const majorFamily = resolveGridVisuals(zoom).filter(
-        (level) => level.visible && (level.kind === "major" || level.kind === "majorCandidate"),
-      );
-
-      expect(majorFamily[0]?.worldSpacing).toBe(40);
-    }
-  });
+  // 旧 resolveGridVisuals（动态主格）用例已随 v5 删除——其语义由
+  // src/lib/grid-model.test.ts 的连续权重 + 无跳变采样断言取代（spec §1.5）。
 
   it("does not trigger a deferred settle redraw while zoom interaction is still active", async () => {
     const { Canvas } = await import("./Canvas");

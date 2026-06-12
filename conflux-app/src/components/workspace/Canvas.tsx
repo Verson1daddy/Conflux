@@ -19,245 +19,21 @@ import { togglePinInstance } from "@/lib/tauri-bridge";
 import { AgentCard } from "./AgentCard";
 import { LayoutManager } from "./LayoutManager";
 import type { AgentStatus, AgentInstanceInfo } from "@/types";
-
-const MIN_ZOOM = 0.25;
-const MAX_ZOOM = 7;
-const ZOOM_SENSITIVITY = 0.0007;
-
-const GRID_BASE_SPACING = 5;
-const GRID_FREQUENCY_MIN_EXP = -3;
-const GRID_FREQUENCY_MAX_EXP = 9;
-const GRID_CROSSFADE_DISTANCE_THRESHOLD = 0.015;
-
-const GRID_VISUAL_CONFIG = {
-  majorTargetPx: 148,
-  majorBlendBandPx: [120, 196] as const,
-  blackClampPx: 5,
-  hideBelowPx: 1.5,
-  majorRampStartPx: 112,
-  majorRampEndPx: 184,
-  lineBudget: 1200,
-};
-
-const GRID_VISUAL_PRESET = {
-  major: { gray: 214, baseAlpha: 0.22, lineWidth: 1.15 },
-  subMajor: { gray: 156, baseAlpha: 0.12, lineWidth: 1 },
-  minor: { gray: 118, baseAlpha: 0.08, lineWidth: 1 },
-  micro: { gray: 88, baseAlpha: 0.04, lineWidth: 1 },
-  blackClamped: { gray: 24, baseAlpha: 0.9, lineWidth: 1 },
-} as const;
-
-type GridVisibleKind = "major" | "subMajor" | "minor" | "micro" | "majorCandidate";
-type GridVisualState = "weighted" | "blackClamped" | "hidden";
-
-type ResolvedGridLevelVisual = {
-  kind: GridVisibleKind;
-  worldSpacing: number;
-  pixelSize: number;
-  distanceToTarget: number;
-  alpha: number;
-  gray: number;
-  lineWidth: number;
-  state: GridVisualState;
-  visible: boolean;
-};
-
-function clampZoom(zoom: number) {
-  return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom));
-}
-
-function getGridPixelSize(spacing: number, zoom: number) {
-  return spacing * zoom;
-}
-
-function getDistanceToTarget(pixelSize: number, targetPx: number) {
-  return Math.abs(Math.log2(pixelSize / targetPx));
-}
-
-function buildCandidateSpacings() {
-  return Array.from(
-    { length: GRID_FREQUENCY_MAX_EXP - GRID_FREQUENCY_MIN_EXP + 1 },
-    (_, index) => GRID_BASE_SPACING * 2 ** (GRID_FREQUENCY_MIN_EXP + index),
-  );
-}
-
-function weightForDistance(distanceToTarget: number) {
-  return Math.max(0, 1 - distanceToTarget / 1.6);
-}
-
-function getMajorRampWeight(pixelSize: number) {
-  const { majorRampStartPx, majorRampEndPx } = GRID_VISUAL_CONFIG;
-  const progress = (pixelSize - majorRampStartPx) / (majorRampEndPx - majorRampStartPx);
-  return Math.max(0, Math.min(1, progress));
-}
-
-function resolveRetirementState(pixelSize: number): GridVisualState {
-  if (pixelSize <= GRID_VISUAL_CONFIG.hideBelowPx) {
-    return "hidden";
-  }
-  if (pixelSize <= GRID_VISUAL_CONFIG.blackClampPx) {
-    return "blackClamped";
-  }
-  return "weighted";
-}
-
-function resolveWeightedStyle(
-  kind: "major" | "subMajor" | "minor" | "micro",
-  weight: number,
-  pixelSize?: number,
-) {
-  const preset = GRID_VISUAL_PRESET[kind];
-  const alpha = preset.baseAlpha * weight;
-
-  if (kind === "major") {
-    const rampWeight = pixelSize ? getMajorRampWeight(pixelSize) : 1;
-    return {
-      gray: preset.gray,
-      alpha: 0.08 + alpha * (0.35 + rampWeight * 0.55),
-      lineWidth: preset.lineWidth,
-    };
-  }
-
-  return {
-    gray: preset.gray,
-    alpha,
-    lineWidth: preset.lineWidth,
-  };
-}
-
-function getAlignedGridStart(screenStart: number) {
-  return Math.round(screenStart) + 0.5;
-}
-
-export function resolveGridVisuals(zoom: number): ResolvedGridLevelVisual[] {
-  const normalizedZoom = clampZoom(zoom);
-  const candidates = buildCandidateSpacings()
-    .map((worldSpacing) => {
-      const pixelSize = getGridPixelSize(worldSpacing, normalizedZoom);
-      return {
-        worldSpacing,
-        pixelSize,
-        distanceToTarget: getDistanceToTarget(pixelSize, GRID_VISUAL_CONFIG.majorTargetPx),
-        state: resolveRetirementState(pixelSize),
-      };
-    })
-    .sort((a, b) => a.distanceToTarget - b.distanceToTarget);
-
-  const primary = candidates[0];
-  const secondary = candidates.find(
-    (candidate) =>
-      candidate !== primary &&
-      candidate.state === "weighted" &&
-      candidate.distanceToTarget - primary.distanceToTarget <= GRID_CROSSFADE_DISTANCE_THRESHOLD,
-  );
-
-  const majorCandidates = [primary, secondary].filter(
-    (candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate),
-  );
-
-  const majorLevels = majorCandidates.map((candidate, _index, all) => {
-    const style = resolveWeightedStyle(
-      all.length === 1 ? "major" : "major",
-      all.length === 1 ? 1 : weightForDistance(candidate.distanceToTarget),
-      candidate.pixelSize,
-    );
-
-    return {
-      kind: all.length === 1 ? "major" : "majorCandidate",
-      worldSpacing: candidate.worldSpacing,
-      pixelSize: candidate.pixelSize,
-      distanceToTarget: candidate.distanceToTarget,
-      alpha: style.alpha,
-      gray: style.gray,
-      lineWidth: style.lineWidth,
-      state: candidate.state,
-      visible: candidate.state !== "hidden" && style.alpha > 0,
-    } satisfies ResolvedGridLevelVisual;
-  });
-
-  const anchorSpacing = primary.worldSpacing;
-  const subMajorSpacing = anchorSpacing / 2;
-  const minorSpacing = anchorSpacing / 4;
-  const microSpacing = anchorSpacing / 8;
-
-  const resolveDetailLevel = (
-    worldSpacing: number,
-    kind: "subMajor" | "minor" | "micro",
-    weight: number,
-    forceHidden = false,
-  ): ResolvedGridLevelVisual => {
-    const pixelSize = getGridPixelSize(worldSpacing, normalizedZoom);
-    const distanceToTarget = getDistanceToTarget(pixelSize, GRID_VISUAL_CONFIG.majorTargetPx);
-    const state = forceHidden ? "hidden" : resolveRetirementState(pixelSize);
-
-    if (state === "hidden") {
-      return {
-        kind,
-        worldSpacing,
-        pixelSize,
-        distanceToTarget,
-        alpha: 0,
-        gray: 0,
-        lineWidth: 0,
-        state: "hidden",
-        visible: false,
-      };
-    }
-
-    if (state === "blackClamped") {
-      return {
-        kind,
-        worldSpacing,
-        pixelSize,
-        distanceToTarget,
-        alpha: GRID_VISUAL_PRESET.blackClamped.baseAlpha,
-        gray: GRID_VISUAL_PRESET.blackClamped.gray,
-        lineWidth: GRID_VISUAL_PRESET.blackClamped.lineWidth,
-        state: "blackClamped",
-        visible: true,
-      };
-    }
-
-    const style = resolveWeightedStyle(kind, weight);
-    return {
-      kind,
-      worldSpacing,
-      pixelSize,
-      distanceToTarget,
-      alpha: style.alpha,
-      gray: style.gray,
-      lineWidth: style.lineWidth,
-      state: "weighted",
-      visible: true,
-    };
-  };
-
-  const detailLevels: ResolvedGridLevelVisual[] = [
-    resolveDetailLevel(subMajorSpacing, "subMajor", 0.78),
-    resolveDetailLevel(minorSpacing, "minor", 0.56),
-    resolveDetailLevel(microSpacing, "micro", 0.32),
-  ];
-
-  const clampedRetirementSpacing = anchorSpacing / 32;
-  const clampedRetirement = {
-    ...resolveDetailLevel(clampedRetirementSpacing, "micro", 0.18),
-    visible: false,
-  } satisfies ResolvedGridLevelVisual;
-  const hiddenRetirementSpacing = anchorSpacing / 64;
-  const hiddenRetirement = resolveDetailLevel(hiddenRetirementSpacing, "micro", 0, true);
-
-  const visibleRuntimeLevels = [...majorLevels, ...detailLevels]
-    .filter((level) => level.visible)
-    .slice(0, 4);
-
-  const retirementLevels: ResolvedGridLevelVisual[] = [];
-  retirementLevels.push(clampedRetirement);
-  if (hiddenRetirement.state === "hidden") {
-    retirementLevels.push(hiddenRetirement);
-  }
-
-  return [...visibleRuntimeLevels, ...retirementLevels];
-}
+import {
+  resolveGridLevels,
+  CROSS_ARM_PX,
+  CROSS_GRAY,
+  DOT_GRAY,
+  LEVEL_INTERSECTION_BUDGET,
+} from "@/lib/grid-model";
+import {
+  approachLog,
+  clampLogZoom,
+  wheelLogDelta,
+  anchorWorldPoint,
+  panForAnchor,
+  type AnchorWorld,
+} from "@/lib/camera-math";
 
 interface CanvasProps {
   agents: Map<string, AgentInstanceInfo>;
@@ -330,6 +106,8 @@ function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
     livePan.current = { x: storePan.x, y: storePan.y };
   }, [storePan.x, storePan.y]);
 
+  // v5 网格渲染（spec §1.3）：连续权重层级，先点后十字；
+  // 无像素对齐——亚像素 + AA（tldraw/Excalidraw 纪律），dpr 物理像素画布。
   const drawGrid = useCallback(() => {
     const canvas = worldGridRef.current;
     const container = containerRef.current;
@@ -352,53 +130,55 @@ function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.scale(dpr, dpr);
 
-    const levels = resolveGridVisuals(liveZoom.current)
-      .filter((level) => level.visible)
-      .filter(
-        (level) =>
-          (width / level.pixelSize) + (height / level.pixelSize) <= GRID_VISUAL_CONFIG.lineBudget,
-      )
-      .sort((a, b) => a.worldSpacing - b.worldSpacing);
+    const zoom = liveZoom.current;
+    const pan = livePan.current;
 
-    for (const level of levels) {
-      const worldSpacing = level.worldSpacing;
-      const worldLeft = -livePan.current.x / liveZoom.current;
-      const worldTop = -livePan.current.y / liveZoom.current;
-      const worldRight = (width - livePan.current.x) / liveZoom.current;
-      const worldBottom = (height - livePan.current.y) / liveZoom.current;
-      const startWorldX = Math.floor(worldLeft / worldSpacing) * worldSpacing;
-      const startWorldY = Math.floor(worldTop / worldSpacing) * worldSpacing;
+    const eachIntersection = (ws: number, cb: (x: number, y: number) => void) => {
+      const worldLeft = -pan.x / zoom;
+      const worldTop = -pan.y / zoom;
+      const worldRight = (width - pan.x) / zoom;
+      const worldBottom = (height - pan.y) / zoom;
+      const startWX = Math.floor(worldLeft / ws) * ws;
+      const startWY = Math.floor(worldTop / ws) * ws;
+      const cols = Math.ceil((worldRight - startWX) / ws) + 2;
+      const rows = Math.ceil((worldBottom - startWY) / ws) + 2;
+      if (cols * rows > LEVEL_INTERSECTION_BUDGET) return;
+      for (let wx = startWX; wx <= worldRight + ws; wx += ws) {
+        const x = pan.x + wx * zoom;
+        for (let wy = startWY; wy <= worldBottom + ws; wy += ws) {
+          cb(x, pan.y + wy * zoom);
+        }
+      }
+    };
 
-      const startScreenX = livePan.current.x + startWorldX * liveZoom.current;
-      const alignedStartX = getAlignedGridStart(startScreenX);
-      const xPhaseOffset = alignedStartX - startScreenX;
-      const startScreenY = livePan.current.y + startWorldY * liveZoom.current;
-      const alignedStartY = getAlignedGridStart(startScreenY);
-      const yPhaseOffset = alignedStartY - startScreenY;
-
+    const levels = resolveGridLevels(zoom);
+    for (const lv of levels) {
+      if (lv.dotAlpha <= 0.004) continue;
+      ctx.fillStyle = `rgba(${DOT_GRAY},${DOT_GRAY},${DOT_GRAY},${lv.dotAlpha})`;
+      const r = lv.dotR;
+      if (r <= 0.75) {
+        const s = r * 2;
+        eachIntersection(lv.worldSpacing, (x, y) => ctx.fillRect(x - r, y - r, s, s));
+      } else {
+        ctx.beginPath();
+        eachIntersection(lv.worldSpacing, (x, y) => {
+          ctx.moveTo(x + r, y);
+          ctx.arc(x, y, r, 0, Math.PI * 2);
+        });
+        ctx.fill();
+      }
+    }
+    for (const lv of levels) {
+      if (lv.crossAlpha <= 0.004) continue;
+      ctx.strokeStyle = `rgba(${CROSS_GRAY},${CROSS_GRAY},${CROSS_GRAY},${lv.crossAlpha})`;
+      ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.strokeStyle = `rgba(${level.gray}, ${level.gray}, ${level.gray}, ${level.alpha})`;
-      ctx.lineWidth = level.lineWidth;
-      ctx.shadowBlur = 0;
-      ctx.shadowColor = "transparent";
-
-      for (let worldX = startWorldX; worldX <= worldRight + worldSpacing; worldX += worldSpacing) {
-        const screenX = livePan.current.x + worldX * liveZoom.current;
-        const alignedX = screenX + xPhaseOffset;
-        ctx.moveTo(alignedX, 0);
-        ctx.lineTo(alignedX, height);
-      }
-
-      for (let worldY = startWorldY; worldY <= worldBottom + worldSpacing; worldY += worldSpacing) {
-        const screenY = livePan.current.y + worldY * liveZoom.current;
-        const alignedY = screenY + yPhaseOffset;
-        ctx.moveTo(0, alignedY);
-        ctx.lineTo(width, alignedY);
-      }
-
-      ctx.globalAlpha = 1;
-      ctx.shadowBlur = 0;
-      ctx.shadowColor = "transparent";
+      eachIntersection(lv.worldSpacing, (x, y) => {
+        ctx.moveTo(x - CROSS_ARM_PX, y);
+        ctx.lineTo(x + CROSS_ARM_PX, y);
+        ctx.moveTo(x, y - CROSS_ARM_PX);
+        ctx.lineTo(x, y + CROSS_ARM_PX);
+      });
       ctx.stroke();
     }
   }, []);
@@ -474,6 +254,47 @@ function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
     }, 100);
   }, [setZoom, setPan]);
 
+  // ===== 滚轮缩放平滑（spec §1.4）=====
+  // log 空间指数趋近（τ=90ms）+ 锚点闭式重算 pan = p − w·zoom + 拖拽打断。
+  const logZoomRef = useRef(Math.log2(storeZoom));
+  const targetLogZoomRef = useRef(Math.log2(storeZoom));
+  const zoomAnchorRef = useRef<{
+    cursor: { x: number; y: number };
+    world: AnchorWorld;
+  } | null>(null);
+  const zoomAnimRef = useRef<number | null>(null);
+  const zoomAnimLastTRef = useRef(0);
+
+  useEffect(() => {
+    // store 提交 / fitAll / 自动 fit 等外部 zoom 变更：log 域状态跟随。
+    logZoomRef.current = Math.log2(storeZoom);
+    targetLogZoomRef.current = logZoomRef.current;
+  }, [storeZoom]);
+
+  const stepZoomAnimation = useCallback(
+    (now: number) => {
+      zoomAnimRef.current = null;
+      const dt = Math.min(64, now - (zoomAnimLastTRef.current || now));
+      zoomAnimLastTRef.current = now;
+      logZoomRef.current = approachLog(logZoomRef.current, targetLogZoomRef.current, dt);
+      liveZoom.current = 2 ** logZoomRef.current;
+      const anchor = zoomAnchorRef.current;
+      if (anchor) {
+        livePan.current = panForAnchor(anchor.cursor, anchor.world, liveZoom.current);
+      }
+      markInteraction();
+      applyTransform();
+      if (logZoomRef.current !== targetLogZoomRef.current) {
+        zoomAnimRef.current = requestAnimationFrame(stepZoomAnimation);
+      } else {
+        zoomAnchorRef.current = null;
+        zoomAnimLastTRef.current = 0;
+        scheduleCommit();
+      }
+    },
+    [applyTransform, markInteraction, scheduleCommit]
+  );
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.code === "Space" && !e.repeat) {
@@ -504,29 +325,24 @@ function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
       if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
       const rect = el.getBoundingClientRect();
-      const cursorX = e.clientX - rect.left;
-      const cursorY = e.clientY - rect.top;
-      const worldX = (cursorX - livePan.current.x) / liveZoom.current;
-      const worldY = (cursorY - livePan.current.y) / liveZoom.current;
-      const delta = -e.deltaY * ZOOM_SENSITIVITY;
-      const newZoom = Math.max(
-        MIN_ZOOM,
-        Math.min(MAX_ZOOM, liveZoom.current * (1 + delta))
-      );
-      liveZoom.current = newZoom;
-      livePan.current = {
-        x: cursorX - worldX * newZoom,
-        y: cursorY - worldY * newZoom,
+      const cursor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      // 锚点跟最新光标（pixi-viewport 行为）；rAF 循环本身就是动画，
+      // 不再触发 CSS zoom transition（两者会打架）。
+      zoomAnchorRef.current = {
+        cursor,
+        world: anchorWorldPoint(cursor, livePan.current, liveZoom.current),
       };
-      markInteraction();
-      enableZoomTransition();
-      applyTransform();
-      scheduleCommit();
+      targetLogZoomRef.current = clampLogZoom(
+        targetLogZoomRef.current + wheelLogDelta(e.deltaY, e.deltaMode)
+      );
+      if (zoomAnimRef.current === null) {
+        zoomAnimRef.current = requestAnimationFrame(stepZoomAnimation);
+      }
     };
 
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [applyTransform, scheduleCommit, enableZoomTransition, markInteraction]);
+  }, [stepZoomAnimation]);
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
@@ -541,6 +357,9 @@ function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
       }
 
       e.preventDefault();
+      // 拖拽打断缩放动画（tldraw 相机行为：用户输入即接管）。
+      targetLogZoomRef.current = logZoomRef.current;
+      zoomAnchorRef.current = null;
       (e.target as HTMLElement).setPointerCapture(e.pointerId);
       containerRef.current?.classList.add("cursor-grabbing");
 
@@ -610,6 +429,10 @@ function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
       if (interactionSettleTimerRef.current) {
         clearTimeout(interactionSettleTimerRef.current);
         interactionSettleTimerRef.current = null;
+      }
+      if (zoomAnimRef.current !== null) {
+        cancelAnimationFrame(zoomAnimRef.current);
+        zoomAnimRef.current = null;
       }
     };
   }, [scheduleGridDraw]);
