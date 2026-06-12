@@ -163,6 +163,13 @@ pub(crate) struct PaneHostConfig {
 }
 
 /// 对外门面。私有持有 pane 表；唯一写入口 `inject_stdin`（MF-1）。
+///
+/// **C-2 锁纪律（库级不变量）**：`panes` 表锁是短临界区领导锁——持有期间**禁止**任何
+/// 可能阻塞的调用：session 锁等待、write_all/resize/try_exit_code（ConPTY 节流 / 系统
+/// 调用可长阻塞）、kill_tree、注入钩子。需要 session 的操作一律「句柄取出」（表锁内
+/// clone Arc 后立即释放）再锁外执行；事后写回 pane 字段须重入表锁并以 `Arc::ptr_eq`
+/// 验证代际（respawn 产生同 id 新 pane，旧代际写回一律作废）。违反此纪律 = 单 pane
+/// 阻塞冻结全表、kill 逃生通道被堵（回归测试见 tests 模块 C-2 节）。
 pub struct PaneHost {
     backend: Box<dyn PaneBackend>,
     supervisor_factory: Box<dyn SupervisorFactory>,
@@ -298,10 +305,23 @@ impl PaneHost {
             created_at: req.created_at,
             scrollback,
         };
-        self.panes
-            .lock()
-            .expect("panes 锁未中毒")
-            .insert(req.pane_id.clone(), pane);
+        {
+            let mut panes = self.panes.lock().expect("panes 锁未中毒");
+            match panes.entry(req.pane_id.clone()) {
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert(pane);
+                }
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    // 并发同 id spawn 双双越过前置查重（TOCTOU）：fail-closed 终结后到者，
+                    // 不覆盖已注册 pane（覆盖会静默 drop 先到者的监管器 = 静默杀树）。
+                    drop(panes);
+                    let _ = pane.supervisor.kill_tree();
+                    return Err(ConmuxError::SpawnFailed {
+                        message: format!("pane_id 已存在: {}", req.pane_id.0),
+                    });
+                }
+            }
+        }
         Ok(req.pane_id)
     }
 
@@ -379,13 +399,15 @@ impl PaneHost {
 
     /// 在同一 pane_id 下重起（先 kill_tree 旧的——若存在——再 spawn）。
     pub fn respawn(&self, pane_id: &PaneId, req: SpawnRequest) -> Result<(), ConmuxError> {
-        // 旧 pane 存在则整树终结（忽略 kill 错误：可能已自退）。
-        if let Some(old) = self
+        // C-2：先 let 绑定再 kill——把 lock() 直接嵌进 if-let 头会让表锁 guard 延寿到
+        // 块尾（临时生命周期延展），kill_tree 慢路径下冻结全表。
+        let old = self
             .panes
             .lock()
             .expect("panes 锁未中毒")
-            .remove(pane_id)
-        {
+            .remove(pane_id);
+        // 旧 pane 存在则整树终结（忽略 kill 错误：可能已自退）。
+        if let Some(old) = old {
             let _ = old.supervisor.kill_tree();
         }
         // req.pane_id 应与 pane_id 一致（调用方保证）。
@@ -393,14 +415,25 @@ impl PaneHost {
     }
 
     pub fn resize(&self, pane_id: &PaneId, size: PaneSize) -> Result<(), ConmuxError> {
+        // C-2 锁纪律：表锁内只取句柄；session 等待/IO 在锁外（同 inject_stdin D-1a）。
+        let session = {
+            let panes = self.panes.lock().expect("panes 锁未中毒");
+            let pane = panes
+                .get(pane_id)
+                .ok_or_else(|| ConmuxError::PaneNotFound {
+                    pane_id: pane_id.0.clone(),
+                })?;
+            Arc::clone(&pane.session)
+        };
+        session.lock().expect("session 锁未中毒").resize(size)?;
+        // 写回 size：重入表锁并以 Arc::ptr_eq 验证代际——句柄取出期间 pane 可能被
+        // respawn（同 id 新 pane），旧代际的写回一律作废。
         let mut panes = self.panes.lock().expect("panes 锁未中毒");
-        let pane = panes
-            .get_mut(pane_id)
-            .ok_or_else(|| ConmuxError::PaneNotFound {
-                pane_id: pane_id.0.clone(),
-            })?;
-        pane.session.lock().expect("session 锁未中毒").resize(size)?;
-        pane.size = size;
+        if let Some(pane) = panes.get_mut(pane_id) {
+            if Arc::ptr_eq(&pane.session, &session) {
+                pane.size = size;
+            }
+        }
         Ok(())
     }
 
@@ -411,25 +444,47 @@ impl PaneHost {
     /// 与 `PaneExited` 事件互补：ConPTY reader 在 child 退出后**可能不返回 EOF**（实测
     /// 已知），事件可能永不到达——消费方（conflux `is_process_exited` 轮询）必须有此兜底。
     pub fn poll_exit(&self, pane_id: &PaneId) -> Result<Option<i32>, ConmuxError> {
+        // C-2 锁纪律：表锁内只读 lifecycle + 取句柄；try_exit_code（可能阻塞于系统调用）
+        // 在锁外执行。
+        let session = {
+            let panes = self.panes.lock().expect("panes 锁未中毒");
+            let pane = panes
+                .get(pane_id)
+                .ok_or_else(|| ConmuxError::PaneNotFound {
+                    pane_id: pane_id.0.clone(),
+                })?;
+            if let PaneLifecycle::Exited(code) = pane.lifecycle {
+                return Ok(Some(code));
+            }
+            Arc::clone(&pane.session)
+        };
+        // try_lock 而非 lock：poll 语义是"本轮探测"，session 忙（如 write_all 阻塞于
+        // ConPTY 节流）时返回"不可判定"让下轮重试——否则顺序轮询多 pane 的消费方会被
+        // 单个忙 pane 卡死整轮（契约 L-1/4.3.1 看门狗要求 poll_exit 自身限时完成）。
+        let code = match session.try_lock() {
+            Ok(mut s) => s.try_exit_code(),
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => panic!("session 锁中毒"),
+        };
+        let Some(c) = code else {
+            return Ok(None);
+        };
+        // 写回：代际验证（与读线程 Weak 守卫同源语义）——句柄取出期间 pane 被
+        // respawn/kill 时，旧代际的迟到退出码不得污染同 id 新 pane。
         let mut panes = self.panes.lock().expect("panes 锁未中毒");
-        let pane = panes
-            .get_mut(pane_id)
-            .ok_or_else(|| ConmuxError::PaneNotFound {
+        match panes.get_mut(pane_id) {
+            Some(pane) if Arc::ptr_eq(&pane.session, &session) => {
+                pane.lifecycle = PaneLifecycle::Exited(c);
+                pane.exit_code = Some(c);
+                Ok(Some(c))
+            }
+            // 新代际运行中：旧结果作废，按当前代际报"未退出"。
+            Some(_) => Ok(None),
+            // pane 已被 kill：与"稍后调用"同语义。
+            None => Err(ConmuxError::PaneNotFound {
                 pane_id: pane_id.0.clone(),
-            })?;
-        if let PaneLifecycle::Exited(code) = pane.lifecycle {
-            return Ok(Some(code));
+            }),
         }
-        let code = pane
-            .session
-            .lock()
-            .expect("session 锁未中毒")
-            .try_exit_code();
-        if let Some(c) = code {
-            pane.lifecycle = PaneLifecycle::Exited(c);
-            pane.exit_code = Some(c);
-        }
-        Ok(code)
     }
 
     /// 对账/死亡检测用。
@@ -532,6 +587,10 @@ mod tests {
         exit_code: Option<i32>,
         /// 红队 MF-A：记录 kill_best_effort 被调次数（assign 失败应触发）。
         kill_best_effort_calls: u32,
+        /// C-2：write_all 进入后停在此 gate（模拟 ConPTY 节流下的长阻塞写）。
+        write_gate: Option<Arc<Gate>>,
+        /// C-2：try_exit_code 进入后停在此 gate（构造代际竞态窗口）。
+        exit_gate: Option<Arc<Gate>>,
     }
 
     #[derive(Clone)]
@@ -564,10 +623,19 @@ mod tests {
             Ok(())
         }
         fn write_all(&mut self, data: &[u8]) -> Result<(), ConmuxError> {
+            // gate 等待在 state 锁外（否则 mock 自身制造无关死锁）。
+            let gate = self.state.lock().unwrap().write_gate.clone();
+            if let Some(g) = gate {
+                g.enter_and_wait();
+            }
             self.state.lock().unwrap().written.push(data.to_vec());
             Ok(())
         }
         fn try_exit_code(&mut self) -> Option<i32> {
+            let gate = self.state.lock().unwrap().exit_gate.clone();
+            if let Some(g) = gate {
+                g.enter_and_wait();
+            }
             self.state.lock().unwrap().exit_code
         }
         fn kill_best_effort(&mut self) {
@@ -596,6 +664,8 @@ mod tests {
         kill_tree_calls: u32,
         assign_should_fail: bool,
         kill_tree_should_fail: bool,
+        /// C-2：kill_tree 进入后停在此 gate（模拟 TerminateJobObject 慢路径）。
+        kill_gate: Option<Arc<Gate>>,
     }
 
     struct MockSupervisor {
@@ -613,6 +683,10 @@ mod tests {
             Ok(())
         }
         fn kill_tree(&self) -> Result<(), ConmuxError> {
+            let gate = self.rec.lock().unwrap().kill_gate.clone();
+            if let Some(g) = gate {
+                g.enter_and_wait();
+            }
             let mut r = self.rec.lock().unwrap();
             r.kill_tree_calls += 1;
             if r.kill_tree_should_fail {
@@ -745,6 +819,247 @@ mod tests {
             f.host.spawn(req("dup")),
             Err(ConmuxError::SpawnFailed { .. })
         ));
+    }
+
+    // ===== C-2 锁纪律：表锁=短临界区，阻塞操作一律句柄取出后锁外执行 =====
+
+    /// 可控阻塞门：mock 在临界路径上 enter_and_wait 停住，测试线程 wait_entered
+    /// 确认到位后做断言，open 放行。
+    #[derive(Default)]
+    struct Gate {
+        inner: StdMutex<GateState>,
+        cv: std::sync::Condvar,
+    }
+    #[derive(Default)]
+    struct GateState {
+        entered: bool,
+        open: bool,
+    }
+    impl Gate {
+        fn enter_and_wait(&self) {
+            let mut g = self.inner.lock().unwrap();
+            g.entered = true;
+            self.cv.notify_all();
+            while !g.open {
+                g = self.cv.wait(g).unwrap();
+            }
+        }
+        fn wait_entered(&self, timeout: std::time::Duration) -> bool {
+            let g = self.inner.lock().unwrap();
+            let (_g, r) = self
+                .cv
+                .wait_timeout_while(g, timeout, |s| !s.entered)
+                .unwrap();
+            !r.timed_out()
+        }
+        fn open(&self) {
+            let mut g = self.inner.lock().unwrap();
+            g.open = true;
+            self.cv.notify_all();
+        }
+    }
+
+    /// 在独立线程跑 op，超时未完成返回 None（探测"被表锁冻结"而不挂死测试进程）。
+    fn completes_within<T: Send + 'static>(
+        timeout: std::time::Duration,
+        op: impl FnOnce() -> T + Send + 'static,
+    ) -> Option<T> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(op());
+        });
+        rx.recv_timeout(timeout).ok()
+    }
+
+    const FREEZE_PROBE: std::time::Duration = std::time::Duration::from_secs(2);
+    const GATE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// C-2 核心场景：某 pane 的 session 写阻塞（ConPTY 节流）时，resize 同 pane 不得
+    /// 持表锁等 session 锁——否则 list/spawn/kill 全部冻结、逃生通道被堵。
+    #[test]
+    fn blocked_write_with_concurrent_resize_does_not_freeze_host() {
+        let Fixture {
+            host,
+            session_state,
+            ..
+        } = fixture_with_pid(1);
+        let host = Arc::new(host);
+        host.spawn(req("a")).unwrap();
+
+        let gate = Arc::new(Gate::default());
+        session_state.lock().unwrap().write_gate = Some(Arc::clone(&gate));
+
+        // T1：inject——mock write_all 持 session 锁停在 gate（模拟长阻塞写）。
+        let h1 = {
+            let host = Arc::clone(&host);
+            std::thread::spawn(move || {
+                let _ = host.inject_stdin(&PaneId("a".into()), b"x", InjectionSource::UserDirect);
+            })
+        };
+        assert!(gate.wait_entered(GATE_WAIT), "T1 未进入 write_all");
+
+        // T2：resize 同 pane——修复后应在表锁外等 session 锁。
+        let h2 = {
+            let host = Arc::clone(&host);
+            std::thread::spawn(move || {
+                let _ = host.resize(&PaneId("a".into()), PaneSize { rows: 30, cols: 100 });
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        {
+            let host = Arc::clone(&host);
+            assert!(
+                completes_within(FREEZE_PROBE, move || host.list_panes()).is_some(),
+                "list_panes 被冻结：resize 在表锁内等 session 锁（C-2）"
+            );
+        }
+        {
+            let host = Arc::clone(&host);
+            assert!(
+                completes_within(FREEZE_PROBE, move || host.spawn(req("b"))).is_some(),
+                "spawn 被冻结（C-2）"
+            );
+        }
+        {
+            let host = Arc::clone(&host);
+            assert!(
+                completes_within(FREEZE_PROBE, move || host.kill(&PaneId("a".into()))).is_some(),
+                "kill 逃生通道被堵（C-2）"
+            );
+        }
+
+        gate.open();
+        h1.join().unwrap();
+        h2.join().unwrap();
+    }
+
+    /// 同场景的 poll_exit 变体：session 忙时 poll_exit 不得冻结表。
+    #[test]
+    fn blocked_write_with_concurrent_poll_exit_does_not_freeze_host() {
+        let Fixture {
+            host,
+            session_state,
+            ..
+        } = fixture_with_pid(1);
+        let host = Arc::new(host);
+        host.spawn(req("a")).unwrap();
+
+        let gate = Arc::new(Gate::default());
+        session_state.lock().unwrap().write_gate = Some(Arc::clone(&gate));
+
+        let h1 = {
+            let host = Arc::clone(&host);
+            std::thread::spawn(move || {
+                let _ = host.inject_stdin(&PaneId("a".into()), b"x", InjectionSource::UserDirect);
+            })
+        };
+        assert!(gate.wait_entered(GATE_WAIT), "T1 未进入 write_all");
+
+        // poll_exit 自身限时完成（契约 4.3.1）：session 忙 ⇒ try_lock 让路，
+        // 返回"本轮不可判定"（Ok(None)），不卡轮询方。
+        {
+            let host = Arc::clone(&host);
+            let polled = completes_within(FREEZE_PROBE, move || {
+                host.poll_exit(&PaneId("a".into()))
+            });
+            assert!(
+                matches!(polled, Some(Ok(None))),
+                "poll_exit 被忙 session 卡住或误报退出：{polled:?}"
+            );
+        }
+        {
+            let host = Arc::clone(&host);
+            assert!(
+                completes_within(FREEZE_PROBE, move || host.list_panes()).is_some(),
+                "list_panes 被冻结：poll_exit 在表锁内等 session 锁（C-2）"
+            );
+        }
+
+        gate.open();
+        h1.join().unwrap();
+    }
+
+    /// 代际守卫（与读线程 weak 守卫同源的语义，poll_exit 路径）：句柄取出后、写回前
+    /// pane 被 respawn——旧代际的迟到退出码不得污染同 id 新 pane。
+    #[test]
+    fn poll_exit_late_result_does_not_pollute_respawned_pane() {
+        let Fixture {
+            host,
+            session_state,
+            ..
+        } = fixture_with_pid(7);
+        let host = Arc::new(host);
+        host.spawn(req("a")).unwrap();
+
+        let gate = Arc::new(Gate::default());
+        {
+            let mut s = session_state.lock().unwrap();
+            s.exit_gate = Some(Arc::clone(&gate));
+            s.exit_code = Some(7);
+        }
+
+        // T1：poll_exit——取出旧代际句柄后停在 try_exit_code。
+        let h1 = {
+            let host = Arc::clone(&host);
+            std::thread::spawn(move || host.poll_exit(&PaneId("a".into())))
+        };
+        assert!(gate.wait_entered(GATE_WAIT), "T1 未进入 try_exit_code");
+
+        // 新代际不需要 gate（mock state 共享，先清掉）。
+        session_state.lock().unwrap().exit_gate = None;
+
+        // 同 id respawn → 新代际。修复前：T1 持表锁停在 try_exit_code ⇒ respawn 冻结。
+        {
+            let host = Arc::clone(&host);
+            assert!(
+                completes_within(FREEZE_PROBE, move || host.respawn(&PaneId("a".into()), req("a")))
+                    .is_some(),
+                "respawn 被冻结：poll_exit 在表锁内等 session（C-2）"
+            );
+        }
+
+        gate.open();
+        let res = h1.join().unwrap();
+        // 迟到结果按当前代际语义返回 None；新 pane 不得被标 Exited。
+        assert_eq!(res.unwrap(), None, "旧代际退出码泄漏给调用方");
+        let st = host.pane_state(&PaneId("a".into())).unwrap();
+        assert_eq!(
+            st.lifecycle,
+            PaneLifecycle::Running,
+            "旧代际退出码污染了 respawn 后的新 pane（C-2 代际守卫）"
+        );
+        assert_eq!(st.exit_code, None);
+    }
+
+    /// respawn 的 kill_tree 必须在表锁外执行（if-let 临时 guard 延寿陷阱）。
+    #[test]
+    fn respawn_kill_tree_runs_outside_table_lock() {
+        let Fixture { host, sup_rec, .. } = fixture_with_pid(1);
+        let host = Arc::new(host);
+        host.spawn(req("a")).unwrap();
+
+        let gate = Arc::new(Gate::default());
+        sup_rec.lock().unwrap().kill_gate = Some(Arc::clone(&gate));
+
+        let h1 = {
+            let host = Arc::clone(&host);
+            std::thread::spawn(move || host.respawn(&PaneId("a".into()), req("a")))
+        };
+        assert!(gate.wait_entered(GATE_WAIT), "T1 未进入 kill_tree");
+
+        {
+            let host = Arc::clone(&host);
+            assert!(
+                completes_within(FREEZE_PROBE, move || host.list_panes()).is_some(),
+                "list_panes 被冻结：respawn 的 kill_tree 在表锁内执行（C-2）"
+            );
+        }
+
+        // 放行前清掉 gate，避免 respawn 内第二次 kill_tree（不存在）或后续清理受扰。
+        sup_rec.lock().unwrap().kill_gate = None;
+        gate.open();
+        h1.join().unwrap().unwrap();
     }
 
     #[test]
