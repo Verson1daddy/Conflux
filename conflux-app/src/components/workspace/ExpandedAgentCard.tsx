@@ -271,12 +271,15 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
   }, [isClosing, setExpanded]);
 
   // ===== ESC to close =====
+  // 批1（审计 P1）：终端内的 ESC 属于 TUI（vim/claude 菜单等），不关面板——
+  // 事件源在 .xterm 内时放行给终端。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        handleClose();
-      }
+      if (e.key !== "Escape") return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.(".xterm")) return;
+      e.stopPropagation();
+      handleClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

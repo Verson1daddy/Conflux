@@ -212,6 +212,33 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
     }
   }, [cardWidth]);
 
+  // 批1 根治：allowPreviewResizeSync 入 ref（每渲染同步），挂载 effect 的闭包
+  // 读 ref 而非快照——prop 变更即时生效，消除"必须重挂载才能换行为"的旧约束
+  //（termRefreshKey 机制的存在原因，已废除）。
+  const allowPreviewResizeSyncRef = useRef(allowPreviewResizeSync);
+  allowPreviewResizeSyncRef.current = allowPreviewResizeSync;
+
+  // PTY 网格单一所有权：展开态（交互终端）独占期间预览停发 resizePty；
+  // 展开态卸载后 allowPreviewResizeSync false→true 翻转 = 归还所有权，
+  // 预览 refit 并把 PTY resize 回自己的网格（展开态曾把它撑到大网格）。
+  const prevAllowSyncRef = useRef(allowPreviewResizeSync);
+  useEffect(() => {
+    const was = prevAllowSyncRef.current;
+    prevAllowSyncRef.current = allowPreviewResizeSync;
+    if (interactive || !subscribeToPty) return;
+    if (was || !allowPreviewResizeSync) return; // 仅 false→true 翻转
+    const term = terminalRef.current;
+    if (!term) return;
+    try {
+      fitAddonRef.current?.fit();
+    } catch {
+      /* container not ready */
+    }
+    resizePty(instanceId, term.cols, term.rows).catch(() => {
+      // 实例可能已销毁——忽略。
+    });
+  }, [allowPreviewResizeSync, interactive, subscribeToPty, instanceId]);
+
   useEffect(() => {
     if (!hostRef.current) return;
 
@@ -298,10 +325,12 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
     // send just one initial resize, but when preview resize sync is enabled
     // they keep updating the PTY so the folded terminal stays aligned after
     // card size/layout changes.
+    // 批1：读 ref 而非闭包快照——展开态挂载时 allowPreviewResizeSync 翻 false
+    // 立即生效（预览让出 PTY 网格所有权），无需重挂载。
     let initialResizeSent = false;
     const notifyBackendResize = (cols: number, rows: number) => {
       if (!subscribeToPty) return;
-      if (!interactive && initialResizeSent && !allowPreviewResizeSync) return;
+      if (!interactive && initialResizeSent && !allowPreviewResizeSyncRef.current) return;
       initialResizeSent = true;
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       resizeDebounceTimer = setTimeout(() => {

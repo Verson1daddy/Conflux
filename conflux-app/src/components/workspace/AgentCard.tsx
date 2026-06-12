@@ -27,6 +27,15 @@ const ExpandedAgentCard = lazy(() =>
   }))
 );
 
+// 批1（审计 P2）：首次翻面时背面是 lazy chunk，Suspense fallback=null 会让
+// 翻转动画进行中背面空白——hover 时预加载一次，翻面即有内容。
+let expandedChunkPreloaded = false;
+function preloadExpandedChunk() {
+  if (expandedChunkPreloaded) return;
+  expandedChunkPreloaded = true;
+  void import("./ExpandedAgentCard");
+}
+
 // ===== C2-A4 Shield permission tier =====
 
 type ShieldTier = "autonomous" | "smart" | "manual";
@@ -392,8 +401,6 @@ function AgentCard({
   // out cleanly; unmount ~660ms after isFlipped becomes false to free the
   // xterm instance.
   const [showBack, setShowBack] = useState(isFlipped);
-  const [termRefreshKey, setTermRefreshKey] = useState(0);
-  const termRefreshTimerRef = useRef<number | null>(null);
   useEffect(() => {
     if (isFlipped) {
       setShowBack(true);
@@ -404,49 +411,11 @@ function AgentCard({
   }, [isFlipped, showBack]);
 
   const isCardExpanded = useAgentStore((s) => s.expandedCardId === card.instance_id);
-  const [replayPreviewHistory, setReplayPreviewHistory] = useState(true);
-  const wasExpandedRef = useRef(isCardExpanded);
-
-  useEffect(() => {
-    if (termRefreshTimerRef.current !== null) {
-      window.clearTimeout(termRefreshTimerRef.current);
-      termRefreshTimerRef.current = null;
-    }
-
-    if (showBack || isCardExpanded) {
-      return;
-    }
-
-    termRefreshTimerRef.current = window.setTimeout(() => {
-      setReplayPreviewHistory(false);
-      setTermRefreshKey((value) => value + 1);
-      termRefreshTimerRef.current = null;
-    }, 120);
-
-    return () => {
-      if (termRefreshTimerRef.current !== null) {
-        window.clearTimeout(termRefreshTimerRef.current);
-        termRefreshTimerRef.current = null;
-      }
-    };
-  }, [card.size.width, card.size.height, layoutMode, isCardExpanded, showBack]);
-
-  // Track whether the overlay ExpandedAgentCard is/was open for this card.
-  useEffect(() => {
-    if (!wasExpandedRef.current || isCardExpanded) {
-      wasExpandedRef.current = isCardExpanded;
-      return;
-    }
-
-    const refreshDelayMs = showBack ? 660 : 0;
-    const timer = window.setTimeout(() => {
-      setReplayPreviewHistory(false);
-      setTermRefreshKey((k) => k + 1);
-    }, refreshDelayMs);
-
-    wasExpandedRef.current = isCardExpanded;
-    return () => window.clearTimeout(timer);
-  }, [isCardExpanded, showBack]);
+  // 批1 根治（审计 P0-1）：termRefreshKey 重挂载机制已废除。
+  // 旧机制在收起时双重重挂载预览终端且 replayHistory=false（必空白），存在原因
+  // 是 allowPreviewResizeSync 被挂载闭包快照——现已改 ref（XtermTerminal 内），
+  // 预览终端跨展开/收起持续存活，scrollback 连续；卡片 resize 由 ResizeObserver
+  // refit，无需重挂载。PTY 网格所有权经 allowPreviewResizeSync 翻转移交/归还。
 
   const cardRef = useRef<HTMLDivElement>(null);
 
@@ -694,6 +663,7 @@ function AgentCard({
       }}
       onPointerDown={handleCardPointerDown}
       onDoubleClick={handleCardDoubleClick}
+      onPointerEnter={preloadExpandedChunk}
     >
       {/* ===== 3D flip stage ===== */}
       <div
@@ -712,8 +682,11 @@ function AgentCard({
           backfaceVisibility: "hidden",
           WebkitBackfaceVisibility: "hidden",
           background: "rgba(255,255,255,0.04)",
-          backdropFilter: "blur(20px)",
-          WebkitBackdropFilter: "blur(20px)",
+          // 批1（审计 P2）：backdrop-filter 是 grouping property，与 preserve-3d
+          // 翻面组合是 Chromium flatten/闪烁雷区——翻面期间临时降级（前脸此时
+          // 大部分时间背向用户，视觉损失可忽略）。
+          backdropFilter: isFlipped || showBack ? "none" : "blur(20px)",
+          WebkitBackdropFilter: isFlipped || showBack ? "none" : "blur(20px)",
           border: isSelected
             ? `1.5px solid ${cardColor}88`
             : `1px solid ${cardColor}30`,
@@ -984,11 +957,11 @@ function AgentCard({
         >
           <Suspense fallback={null}>
             <XtermTerminal
-              key={`${card.instance_id}-${termRefreshKey}`}
+              key={card.instance_id}
               instanceId={card.instance_id}
               content={isDemo ? demoContent : undefined}
               subscribeToPty={!isDemo}
-              replayHistory={isDemo ? true : replayPreviewHistory}
+              replayHistory
               allowPreviewResizeSync={!isDemo && !isCardExpanded && !showBack}
               cardWidth={card.size.width}
             />
