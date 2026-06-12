@@ -3,8 +3,12 @@ name = "conmux"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.77"
-description = "Windows-native terminal multiplexer + agent isolated-runtime access (mechanism layer for Conflux)"
-license = "MIT"
+description = "Windows-native terminal multiplexer: PowerShell, WSL and AI agents in one supervised session (mechanism layer)"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Verson1daddy/Conmux"
+readme = "README.md"
+keywords = ["terminal", "multiplexer", "conpty", "windows", "pty"]
+categories = ["command-line-utilities", "os::windows-apis"]
 
 [lib]
 name = "conmux"
