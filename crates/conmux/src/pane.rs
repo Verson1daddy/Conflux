@@ -117,6 +117,9 @@ pub(crate) struct Pane {
     created_at: i64,
     /// 行索引 scrollback（读线程 feed；capture / jump-back 后端地基）。
     scrollback: Arc<Mutex<LineIndexedBuffer>>,
+    /// VT 私有模式跟踪（读线程 feed；attach/重放前导合成——M2 spike 裁决）。
+    /// 锁纪律：与 scrollback 同类——纯内存短持有、锁内无 I/O 无回调（表锁例外前提）。
+    modes: Arc<Mutex<crate::modes::ModeTracker>>,
 }
 
 impl Pane {
@@ -232,6 +235,7 @@ impl PaneHost {
         }
 
         let scrollback = Arc::new(Mutex::new(LineIndexedBuffer::new(DEFAULT_BUFFER_CAPACITY)));
+        let modes = Arc::new(Mutex::new(crate::modes::ModeTracker::new()));
 
         // D-1a：session 进入 Arc<Mutex>——inject/poll_exit 在表锁外经此句柄操作。
         let session = Arc::new(Mutex::new(session));
@@ -250,6 +254,7 @@ impl PaneHost {
                     Ok(reader) => {
                         let pane_id = req.pane_id.clone();
                         let sb = Arc::clone(&scrollback);
+                        let md = Arc::clone(&modes);
                         // Weak：kill/drop 后读线程不得延长 session 寿命——否则 master 不释放、
                         // reader 永不 EOF、线程泄漏。upgrade 失败（pane 已移除）⇒ exit_code=None。
                         let session_weak = Arc::downgrade(&session);
@@ -257,6 +262,7 @@ impl PaneHost {
                             let mut seq: u64 = 0;
                             crate::pane_win::pump_reader_with_dsr(reader, writer, |chunk| {
                                 sb.lock().expect("scrollback 锁").append(chunk);
+                                md.lock().expect("modes 锁").feed(chunk);
                                 seq += 1;
                                 sink.on_notify(MuxNotify::PaneOutput {
                                     pane_id: pane_id.clone(),
@@ -304,6 +310,7 @@ impl PaneHost {
             size: req.size,
             created_at: req.created_at,
             scrollback,
+            modes,
         };
         {
             let mut panes = self.panes.lock().expect("panes 锁未中毒");
@@ -485,6 +492,25 @@ impl PaneHost {
                 pane_id: pane_id.0.clone(),
             }),
         }
+    }
+
+    /// attach/重放前导（M2 spike 裁决）：当前 pane 非默认 VT 模式位的合成序列
+    /// （alt-screen/光标可见性/鼠标/bracketed paste/DECCKM）。重放协议 =
+    /// **本前导 + capture 字节**——模态状态是 ring 任意起点重放下唯一不自愈的部分
+    /// （文本/光标经 TUI 绝对定位重绘自愈，spike 实证）。空 = 全默认态。
+    pub fn mode_preamble(&self, pane_id: &PaneId) -> Result<Vec<u8>, ConmuxError> {
+        // C-2 锁纪律：表锁内只取句柄；modes 锁为纯内存短持有。
+        let modes = {
+            let panes = self.panes.lock().expect("panes 锁未中毒");
+            let pane = panes
+                .get(pane_id)
+                .ok_or_else(|| ConmuxError::PaneNotFound {
+                    pane_id: pane_id.0.clone(),
+                })?;
+            Arc::clone(&pane.modes)
+        };
+        let preamble = modes.lock().expect("modes 锁未中毒").preamble();
+        Ok(preamble)
     }
 
     /// 对账/死亡检测用。
@@ -1484,6 +1510,59 @@ mod tests {
                 "注入内容应经唯一写链到达 ConPTY 并回显，实际:\n{text}"
             );
             host.kill(&PaneId("w2".into())).unwrap();
+        }
+
+        /// mode_preamble（M2 重放）：真实 ConPTY 进程发 `?1049h?25l` 停在 alt-screen
+        /// → 读线程喂 ModeTracker → 前导含两模式位；kill 后 PaneNotFound。
+        #[test]
+        fn new_windows_mode_preamble_tracks_alt_screen() {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let host = PaneHost::new_windows(
+                vec![],
+                Arc::new(CollectSink {
+                    events: Arc::clone(&events),
+                }),
+            );
+            let req = SpawnRequest {
+                pane_id: PaneId("wm".into()),
+                command: CommandSpec {
+                    program: "powershell.exe".into(),
+                    args: vec![
+                        "-NoProfile".into(),
+                        "-Command".into(),
+                        // 进 alt-screen + 隐藏光标后驻留（模拟 TUI 运行中）
+                        "Write-Host ([char]27+'[?1049h'+[char]27+'[?25l') -NoNewline; Start-Sleep -Seconds 8"
+                            .into(),
+                    ],
+                    cwd: None,
+                    env: vec![],
+                },
+                size: PaneSize { rows: 24, cols: 80 },
+                adapter_id: "shell".into(),
+                display_name: None,
+                created_at: 0,
+            };
+            host.spawn(req).unwrap();
+
+            // 轮询等模式位被跟踪到（ConPTY 改写不影响 DECSET 透传，spike 实证）。
+            let pane_id = PaneId("wm".into());
+            let deadline = std::time::Instant::now() + Duration::from_secs(6);
+            let preamble = loop {
+                let p = host.mode_preamble(&pane_id).expect("pane 应存在");
+                if !p.is_empty() || std::time::Instant::now() > deadline {
+                    break p;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            };
+            let s = String::from_utf8_lossy(&preamble);
+            assert!(s.contains("[?1049h"), "前导应含 alt-screen 位，实际: {s:?}");
+            assert!(s.contains("[?25l"), "前导应含光标隐藏位，实际: {s:?}");
+
+            host.kill(&pane_id).unwrap();
+            assert!(matches!(
+                host.mode_preamble(&pane_id),
+                Err(ConmuxError::PaneNotFound { .. })
+            ));
         }
 
         /// capture：spawn echo → 输出进 scrollback → capture(All, ansi=false) 读回含 marker。

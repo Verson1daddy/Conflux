@@ -46,6 +46,10 @@ pub mod types;
 /// 对外只经 capture / `PaneState.scrollback` 暴露语义化结果，不暴露缓冲本体。
 pub(crate) mod scrollback;
 
+/// VT 私有模式跟踪器（M2 重放架构）。`pub(crate)` 内部——
+/// 对外只经 `PaneHost::mode_preamble` 暴露合成前导。
+pub(crate) mod modes;
+
 /// capture：ANSI 开关捕获 + 等效全量审计判定（契约 §6）。
 pub mod capture;
 

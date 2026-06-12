@@ -483,14 +483,34 @@ impl PaneRuntime {
     /// 走 conmux capture（行索引 scrollback，ansi=true 保留原始）。
     /// 返回完整 `CaptureResult`：命令层据 `effectively_full` 写 CaptureDump read 审计
     /// （§3.4 敏感读，复闸 C2）。`All` 范围必然等效全量。
+    ///
+    /// **重放前导（M2 spike）**：data 前拼接 `mode_preamble`——TUI 的 alt-screen/
+    /// 光标隐藏等模态位若已滚出 ring，重新订阅的 xterm 重放会停在错误模式
+    /// （文本自愈、模态不自愈，spike 实证）；前导恢复模态基底。全默认态前导为空、零开销。
     pub fn capture_history(&self, instance_id: &str) -> Result<conmux::CaptureResult, ConfluxError> {
-        self.host
+        use base64::Engine;
+        let pane_id = PaneId(instance_id.to_string());
+        let preamble = self.host.mode_preamble(&pane_id)?;
+        let mut result = self
+            .host
             .capture(CaptureRequest {
-                pane_id: PaneId(instance_id.to_string()),
+                pane_id,
                 range: CaptureRange::All,
                 ansi: true,
             })
-            .map_err(Into::into)
+            .map_err(ConfluxError::from)?;
+        if !preamble.is_empty() {
+            let engine = base64::engine::general_purpose::STANDARD;
+            let body = engine.decode(result.data_base64.as_bytes()).map_err(|e| {
+                ConfluxError::PtyError {
+                    message: format!("capture base64 解码失败: {e}"),
+                }
+            })?;
+            let mut full = preamble;
+            full.extend_from_slice(&body);
+            result.data_base64 = engine.encode(full);
+        }
+        Ok(result)
     }
 
     /// 进程退出检测（前端 ~2s 轮询）。双重检测与 manager 持平：

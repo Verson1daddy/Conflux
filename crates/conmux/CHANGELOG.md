@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### Added
+- **VT 私有模式跟踪 + 重放前导**（M2 重放架构第一块砖，spike 实证裁决）：读泵增量跟踪
+  DECSET/DECRST 模态位（alt-screen 族 / `?25` 光标可见性 / `?1` DECCKM / 鼠标
+  `?1000/1002/1003/1006` / `?2004` bracketed paste，跨 chunk 撕裂容错）；新增承诺面方法
+  `PaneHost::mode_preamble(pane_id) -> Vec<u8>` 合成 attach 重放前导。重放协议 =
+  前导 + capture 字节；ring 任意起点重放下文本/光标自愈、模态位由前导恢复。
+
 ### Fixed
 - **C-2 锁纪律根治**（契约增补 §4，L-1~L-5）：`resize`/`poll_exit` 改句柄取出模式，表锁内不再等待 session 锁——单 pane 的 ConPTY 阻塞写不再冻结全 PaneHost，kill 逃生通道不再被堵；`respawn` 修 if-let 临时 guard 延寿（kill_tree 原在表锁内执行）；`spawn` 注册改 entry 防 TOCTOU（并发同 id fail-closed 终结后到者）。
 - `poll_exit` 改 try_lock 探测语义：session 忙时返回 `Ok(None)`（本轮不可判定，下轮重试），顺序轮询多 pane 的消费方不被单个忙 pane 卡死。**行为变更说明**：此前 session 忙时会阻塞等待；新语义属 poll 类 API 的修正而非破坏。
