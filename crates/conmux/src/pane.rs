@@ -259,10 +259,20 @@ impl PaneHost {
                             });
                             // pump 返回 = reader EOF（进程退出 / master drop）。
                             // D-2a：自然退出时 pane 仍在表中、session 存活 → try_exit_code 取精确码。
-                            let exit_code = session_weak
-                                .upgrade()
-                                .and_then(|s| s.lock().ok().and_then(|mut g| g.try_exit_code()));
-                            sink.on_notify(MuxNotify::PaneExited { pane_id, exit_code });
+                            //
+                            // 代际守卫（2026-06-12）：weak 升级失败 = session 已被
+                            // kill/respawn 移出表（本读线程属旧代际）→ **作废退出事件**。
+                            // 否则 respawn 后旧线程的迟到 PaneExited 会污染同 id 新 pane
+                            // 的退出态（实测：conflux 退出条在重启后反复复现的根因）。
+                            // 自然退出不受影响——pane 仍注册、session 存活、精确码可取。
+                            match session_weak.upgrade() {
+                                Some(s) => {
+                                    let exit_code =
+                                        s.lock().ok().and_then(|mut g| g.try_exit_code());
+                                    sink.on_notify(MuxNotify::PaneExited { pane_id, exit_code });
+                                }
+                                None => { /* 旧代际：跳过 emit */ }
+                            }
                         });
                     }
                     Err(_e) => {

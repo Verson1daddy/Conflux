@@ -23,6 +23,7 @@ import { useWorkspaceStore } from "./stores/workspaceStore";
 import { onJumpBackRequested } from "./lib/event-listener";
 import { dispatchJumpTarget } from "./lib/jump-back";
 import { scrollTerminalToLine } from "./lib/xterm-registry";
+import { initTerminalThemes } from "./lib/terminal-theme";
 import type { AgentInstanceInfo, AgentStatus, CloseAction } from "./types";
 
 const AddAgentModal = lazy(() =>
@@ -118,6 +119,11 @@ export default function App() {
     },
     [setIslandMode]
   );
+
+  // 终端主题预置（D7，conmux 属主）：启动拉一次，失败兜底蓝墨。
+  useEffect(() => {
+    void initTerminalThemes();
+  }, []);
 
   // jump-back 主窗消费（spec §2.2）：展开/滚动/fallback 通知。
   // 视口聚焦由 Canvas 内自己监听同一事件完成（需要 live refs）。

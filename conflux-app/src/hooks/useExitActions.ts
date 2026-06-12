@@ -17,6 +17,7 @@ import {
   resizePty,
 } from "@/lib/tauri-bridge";
 import { getRegisteredTerminal } from "@/lib/xterm-registry";
+import { clearRespawnMark, markRespawn } from "@/lib/exit-guard";
 
 export type ExitAction = "restart" | "shell" | "close";
 
@@ -49,6 +50,7 @@ export function useExitActions(instanceId: string): {
         }
         removeCardAction(instanceId);
         removeInstanceAction(instanceId);
+        clearRespawnMark(instanceId);
         return;
       }
 
@@ -56,6 +58,9 @@ export function useExitActions(instanceId: string): {
       // 终端（交互优先）的旧内容，并把新 PTY 对齐现网格——否则新进程默认
       // 120×30 与 xterm 网格不一致导致 TUI 错排。
       try {
+        // 先打标再 respawn：旧 pane 的迟到退出事件落在抑制窗内被丢弃，
+        // 否则动作条会在重启后复现（"重启循环"，用户实测）。
+        markRespawn(instanceId);
         const next = await respawnAgentInstance(instanceId, action);
         addInstanceAction(next);
         setExitStateStore(instanceId, null);

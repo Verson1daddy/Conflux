@@ -12,6 +12,7 @@ import { onSubAgentCompleted, onSubAgentSpawned } from "@/lib/event-listener";
 import { getAgentTree } from "@/lib/tauri-bridge";
 import type { AgentStatus } from "@/types";
 import { useExitActions } from "@/hooks/useExitActions";
+import { useTerminalTheme } from "@/hooks/useTerminalTheme";
 import { ExitActionBar } from "./ExitActionBar";
 
 const XtermTerminal = lazy(() =>
@@ -174,6 +175,7 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
   const setTerminalJumpHint = useAgentStore((s) => s.setTerminalJumpHint);
   // 退出态（Q3'）：footer 动作条 + 终端区降透明
   const { exitState, handleExitAction } = useExitActions(instanceId);
+  const paneBackground = useTerminalTheme().background;
 
   useEffect(() => {
     if (!jumpHint || jumpHint.instanceId !== instanceId) return;
@@ -536,7 +538,8 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
             className="relative flex-1 min-w-0 min-h-0 flex overflow-hidden"
             style={{
               padding: "16px 20px",
-              background: COLORS.surfacePrimary,
+              // 跟随终端主题底色（与 pane 无缝，去双重画框）
+              background: paneBackground,
             }}
           >
             {jumpHint && jumpHint.instanceId === instanceId && jumpHint.approximate && (

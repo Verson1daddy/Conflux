@@ -43,6 +43,13 @@ import {
 } from "@/lib/terminal-input";
 import { shouldStopTerminalWheelPropagation } from "@/lib/terminal-wheel";
 import { registerTerminal, unregisterTerminal } from "@/lib/xterm-registry";
+import {
+  getCurrentTerminalTheme,
+  subscribeTerminalTheme,
+  toXtermTheme,
+} from "@/lib/terminal-theme";
+import { isStaleExitSignal } from "@/lib/exit-guard";
+import { useTerminalTheme } from "@/hooks/useTerminalTheme";
 import { useAgentStore } from "@/stores/agentStore";
 
 interface XtermTerminalProps {
@@ -130,6 +137,7 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const [sendFailure, setSendFailure] = useState<string | null>(null);
+  const themeBackground = useTerminalTheme().background;
 
   // Rescale terminal font size when the card is resized.
   useEffect(() => {
@@ -205,6 +213,11 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
       // dark backgrounds without touching individual color tokens.
       smoothScrollDuration: 120,
       minimumContrastRatio: 1.2,
+    });
+    // 当前主题（挂载时取值；后续切换经订阅实时下发，无需重挂载）
+    terminal.options.theme = toXtermTheme(getCurrentTerminalTheme());
+    const unsubTheme = subscribeTerminalTheme(() => {
+      terminal.options.theme = toXtermTheme(getCurrentTerminalTheme());
     });
 
     const fitAddon = new FitAddon();
@@ -397,6 +410,9 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
         // survives XtermTerminal remounts (flip/resize/collapse).
         try {
           const fnExit = await onProcessExitedForInstance(instanceId, (payload) => {
+            // exit-guard：respawn 抑制窗内的迟到退出事件（旧 pane）丢弃，
+            // 否则动作条会在重启后立刻复现（用户实测的"重启循环"）。
+            if (isStaleExitSignal(instanceId)) return;
             useAgentStore.getState().setExitState(instanceId, payload);
           });
           if (cancelled) { fnExit(); return; }
@@ -413,12 +429,12 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
     registerTerminal(instanceId, terminal);
 
     // C2-T1 belt-and-suspenders: poll is_process_exited every 2s as
-    // fallback in case the event-based detection never fires (Windows
-    // ConPTY reader hang). Keep this only for the interactive terminal;
-    // preview cards rely on event delivery so we don't attach N timers
-    // across the whole canvas.
+    // fallback in case the event-based detection never fires.
+    // 2026-06-12 扩展到所有订阅 PTY 的终端（原仅交互终端）：实测 ProcessExited
+    // 事件存在丢失窗口（后端 is_process_exited=true 而前端无感知），预览卡
+    // 必须有轮询兜底。is_process_exited 是廉价锁查，≤10 卡 2s 粒度无压力。
     let exitPollTimer: ReturnType<typeof setInterval> | null = null;
-    if (subscribeToPty && interactive) {
+    if (subscribeToPty) {
       exitPollTimer = setInterval(async () => {
         // If exit already detected, skip this tick but do NOT clearInterval.
         // The interval must stay alive so that after a respawn (which clears
@@ -428,7 +444,7 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
         if (already) return;
         try {
           const done = await isProcessExited(instanceId);
-          if (done) {
+          if (done && !isStaleExitSignal(instanceId)) {
             useAgentStore.getState().setExitState(instanceId, {
               instance_id: instanceId,
               adapter_id: useAgentStore.getState().instances.get(instanceId)?.adapter_id ?? "unknown",
@@ -449,6 +465,7 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
       cancelled = true;
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       if (exitPollTimer) clearInterval(exitPollTimer);
+      unsubTheme();
       unlisten?.();
       unlistenExit?.();
       inputDisposable?.dispose();
@@ -469,8 +486,8 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
       data-testid="xterm-terminal-shell"
       className="relative w-full h-full"
       style={{
-        background: TERMINAL_BG,
-        borderRadius: 8,
+        // 跟随当前主题底色；通铺无圆角（卡片侧已去双重画框，用户反馈）
+        background: themeBackground,
         overflow: "hidden",
       }}
     >

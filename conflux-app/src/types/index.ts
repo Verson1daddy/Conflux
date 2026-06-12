@@ -109,3 +109,6 @@ export type {
   TerminalRange,
   JumpBackTarget,
 } from "./jumpback";
+
+// 终端主题（D7 预置，conmux 属主）
+export type { TerminalTheme, ThemeAppearance } from "./theme";

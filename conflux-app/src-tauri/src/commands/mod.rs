@@ -9,4 +9,5 @@ pub mod jumpback;
 pub mod orchestration;
 pub mod persistence;
 pub mod pty_ops;
+pub mod theme;
 pub mod window;

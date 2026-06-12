@@ -56,6 +56,10 @@ pub mod pane;
 #[cfg(windows)]
 pub mod pane_win;
 
+/// 终端主题预置注册表（契约 D7：多预置 + 背景基调可调）。conmux 是主题数据
+/// 唯一属主，conflux 与未来独立 CLI 共享。
+pub mod theme;
+
 // ===== 公开 API 重导出（顶层可达）=====
 pub use capture::{CaptureRange, CaptureRequest, CaptureResult};
 pub use error::ConmuxError;
@@ -69,4 +73,5 @@ pub use pane_win::WindowsPaneBackend;
 // PaneHost 类型 + 公开入参类型对外可见；构造器 2a 仍 pub(crate)（待 2b Windows 构造器）。
 pub use pane::{CommandSpec, PaneHost, SpawnRequest};
 pub use protocol::{MuxOp, MuxPayload, MuxReply, MuxRequest};
+pub use theme::{builtin_terminal_themes, TerminalTheme, ThemeAppearance, DEFAULT_TERMINAL_THEME_ID};
 pub use types::{InjectionSource, PaneId, PaneLifecycle, PaneSize, PaneState, ScrollbackInfo};

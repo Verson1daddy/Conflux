@@ -7,6 +7,8 @@ import { type FC, useEffect, useMemo, useState } from "react";
 import { useAgentStore } from "@/stores/agentStore";
 import { useIslandStore } from "@/stores/islandStore";
 import { listAdapters, switchIslandMode } from "@/lib/tauri-bridge";
+import { getTerminalThemes, setTerminalTheme } from "@/lib/terminal-theme";
+import { useTerminalTheme } from "@/hooks/useTerminalTheme";
 import {
   buildSettingsAdapterRows,
   resolvePrimaryAdapterName,
@@ -167,6 +169,7 @@ const TECH_STACK = [
 
 const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
   const [activeTab, setActiveTab] = useState<SettingsTab>("frameworks");
+  const terminalTheme = useTerminalTheme();
   const [tier, setTier] = useState<PermissionTier>("smart");
 
   // Appearance state — accent color persisted to localStorage + CSS custom property
@@ -640,6 +643,45 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                           />
                           <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 9, color: sel ? "#F2F2F2" : "#6B7280" }}>
                             {opt.label}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* 终端主题（D7 预置，conmux 属主）——切换实时下发所有已挂载终端 */}
+                <div className="flex flex-col" style={{ gap: 8 }}>
+                  <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 10, fontWeight: 600, letterSpacing: 1.5, color: "#6B7280", textTransform: "uppercase" as const }}>
+                    Terminal Theme
+                  </span>
+                  <div className="flex flex-wrap" style={{ gap: 10 }}>
+                    {getTerminalThemes().map((theme) => {
+                      const sel = terminalTheme.id === theme.id;
+                      return (
+                        <button
+                          key={theme.id}
+                          onClick={() => setTerminalTheme(theme.id)}
+                          className="flex flex-col items-center"
+                          style={{ gap: 4, cursor: "pointer", background: "none", border: "none", padding: 0 }}
+                          title={theme.name}
+                        >
+                          <div
+                            style={{
+                              width: 44, height: 32, borderRadius: 7,
+                              background: theme.background,
+                              border: sel ? "2px solid #F2F2F2" : `1px solid rgba(184,212,227,0.25)`,
+                              display: "flex", alignItems: "center", justifyContent: "center",
+                              gap: 3,
+                              transition: "border-color 0.15s",
+                            }}
+                          >
+                            <span style={{ width: 5, height: 5, borderRadius: 2, background: theme.red }} />
+                            <span style={{ width: 5, height: 5, borderRadius: 2, background: theme.green }} />
+                            <span style={{ width: 5, height: 5, borderRadius: 2, background: theme.blue }} />
+                          </div>
+                          <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 9, color: sel ? "#F2F2F2" : "#6B7280" }}>
+                            {theme.name}
                           </span>
                         </button>
                       );

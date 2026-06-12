@@ -36,6 +36,7 @@ import type {
   AttentionItem,
   ResolveKind,
   JumpBackTarget,
+  TerminalTheme,
 } from "../types";
 
 // ===== Agent 实例管理 =====
@@ -716,4 +717,11 @@ export async function getJumpBackTarget(
   return invoke<JumpBackTarget>("get_jump_back_target", {
     jumpBackTargetId,
   });
+}
+
+// ===== 终端主题（D7 预置，conmux 属主） =====
+
+/** 列出 conmux 内置终端主题预置。对应 Rust: list_terminal_themes */
+export async function listTerminalThemes(): Promise<TerminalTheme[]> {
+  return invoke<TerminalTheme[]>("list_terminal_themes");
 }

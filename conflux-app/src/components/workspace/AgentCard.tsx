@@ -17,6 +17,7 @@ import {
 import { SNAP_GRID_PX } from "@/types/layout";
 import type { CardLayout, AgentStatus, Position, LayoutMode } from "@/types";
 import { useExitActions } from "@/hooks/useExitActions";
+import { useTerminalTheme } from "@/hooks/useTerminalTheme";
 import { ExitActionBar } from "./ExitActionBar";
 const XtermTerminal = lazy(() =>
   import("./XtermTerminal").then((module) => ({
@@ -317,6 +318,8 @@ function AgentCard({
   const isPulsing = useWorkspaceStore((s) => s.pulseCardId === card.instance_id);
   // 退出态（Q3'）：footer 动作条 + pane 降透明
   const { exitState, handleExitAction } = useExitActions(card.instance_id);
+  // pane 容器底色跟随终端主题（切主题实时同步，无缝无框）
+  const paneBackground = useTerminalTheme().background;
   const setExpandedCard = useAgentStore((s) => s.setExpandedCard);
   const removeInstance = useAgentStore((s) => s.removeInstance);
 
@@ -962,12 +965,11 @@ function AgentCard({
         <div
           className="flex-1 min-h-0 overflow-hidden"
           style={{
-            // 质感冻结：conmux pane = 嵌入玻璃的深井（蓝墨底与 xterm 主题同色无缝）
-            margin: "0 9px",
-            borderRadius: 9,
-            background: "#1E2030",
-            border: "1px solid rgba(0,0,0,0.4)",
-            boxShadow: "inset 0 2px 8px rgba(0,0,0,0.35), 0 1px 0 rgba(255,255,255,0.06)",
+            // conmux pane 通铺到卡片边缘：上下各一条发丝缝分隔，无双重画框
+            //（用户反馈"卡片和终端中间有个框框"——嵌入井方案废除）。
+            background: paneBackground,
+            borderTop: "1px solid rgba(184,212,227,0.10)",
+            borderBottom: "1px solid rgba(184,212,227,0.10)",
             padding: "10px 12px",
           }}
         >

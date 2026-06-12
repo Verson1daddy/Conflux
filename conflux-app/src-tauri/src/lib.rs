@@ -400,6 +400,8 @@ pub fn run() {
             commands::interaction::list_pending_interactions,
             // 控制面 P4: 精确回场对象（JumpBackTarget）
             commands::jumpback::get_jump_back_target,
+            // 终端主题（D7 预置，conmux 属主）
+            commands::theme::list_terminal_themes,
             // BE-4: 持久化查询
             commands::persistence::list_sessions,
             commands::persistence::query_session_events,
