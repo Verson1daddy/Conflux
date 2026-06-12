@@ -4,6 +4,7 @@
 
 import { create } from "zustand";
 import { useAgentStore } from "@/stores/agentStore";
+import { GRID_MIN_ZOOM, GRID_MAX_ZOOM } from "@/lib/grid-model";
 import type {
   CardLayout,
   LayoutMode,
@@ -61,9 +62,11 @@ interface WorkspaceState {
 }
 
 // ===== Constants =====
+// zoom 钳制必须与相机/网格同源（grid-model）——否则 setZoom 提交被钳、
+// liveZoom 与 storeZoom 脱钩，>MAX 处网格与卡片层撕裂（审计 P0）。
 
-const MIN_ZOOM = 0.25;
-const MAX_ZOOM = 3;
+const MIN_ZOOM = GRID_MIN_ZOOM;
+const MAX_ZOOM = GRID_MAX_ZOOM;
 
 const DEFAULT_AUTO_PACK_CONFIG: AutoPackConfig = {
   sort_strategy: "by_activity",
