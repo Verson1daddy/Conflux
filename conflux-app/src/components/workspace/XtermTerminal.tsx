@@ -77,33 +77,38 @@ function computeFontSize(cardWidth: number | undefined): number {
 // Opaque Conflux-dark surface for the terminal area. Must be opaque — WebGL
 // renderer refuses transparent backgrounds, and even with DOM renderer a
 // transparent terminal fights with glyph anti-aliasing and looks muddy.
-const TERMINAL_BG = "#0A0F15";
+// 2026-06-12 D7 落地：暖炭④（mux 契约 D7 用户裁决，源数据
+// research/mux-theme-samples/b-backgrounds.html）。
+const TERMINAL_BG = "#1B1A17";
 
 // Theme tuned to match the Conflux palette.
+// D7 主题（mux 契约 D7 用户裁决落地）：B pastel 语义色板 × 暖炭④暗底。
+// 容器层 16 色归此主题；agent truecolor 内容透传不重映射（D8 颜色所有权分层）。
+// 精确值取自用户验收样稿源数据 research/mux-theme-samples/b-backgrounds.html。
 const CONFLUX_THEME = {
   background: TERMINAL_BG,
-  foreground: "#E8E3DF",                 // slightly brighter than before so glyphs pop
-  cursor: "#B8D4E3",                     // accent
-  cursorAccent: "#0A0F15",
-  selectionBackground: "rgba(184,212,227,0.3)",
-  selectionForeground: "#F2F2F2",
-  // ANSI 16-color map → Conflux palette
-  black: "#3A3F4A",
-  brightBlack: "#6B7280",
-  red: "#FF6B6B",
-  brightRed: "#FF3B30",
-  green: "#5FD47F",
-  brightGreen: "#34C759",
-  yellow: "#FFD166",
-  brightYellow: "#FFB800",
-  blue: "#7FC8FF",
-  brightBlue: "#5AC8FA",
-  magenta: "#C8B5E3",
-  brightMagenta: "#B8D4E3",
-  cyan: "#B8D4E3",
-  brightCyan: "#D4E9F0",
-  white: "#E8E3DF",
-  brightWhite: "#F2F2F2",
+  foreground: "#D8D4CC",
+  cursor: "#F4DBD6",
+  cursorAccent: "#1B1A17",
+  selectionBackground: "#322F2A",
+  selectionForeground: "#E8E4DC",
+  // ANSI 16 色 → B pastel（暗版语义前景，固定）+ 暖灰阶槽
+  black: "#322E28",
+  brightBlack: "#4D4840",
+  red: "#ED8796",
+  brightRed: "#F0949F",
+  green: "#A6DA95",
+  brightGreen: "#B0E0A0",
+  yellow: "#EED49F",
+  brightYellow: "#F2DBAA",
+  blue: "#8AADF4",
+  brightBlue: "#97B5F6",
+  magenta: "#C6A0F6",
+  brightMagenta: "#CFADF8",
+  cyan: "#8BD5CA",
+  brightCyan: "#98DBD2",
+  white: "#C9C4BB",
+  brightWhite: "#E8E4DC",
 };
 
 // Base64 decode to Uint8Array, then UTF-8 decode → string for xterm write.
