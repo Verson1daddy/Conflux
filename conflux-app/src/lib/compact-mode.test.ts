@@ -58,6 +58,7 @@ function mockAttentionStore(specs?: PermissionSpec[]) {
     useActivePermissions: () => items,
     useActiveAttentionItems: () => items,
     useActiveAttentionCount: () => items.length,
+    useDeferredAttentionItems: () => [],
   }));
 }
 

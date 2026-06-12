@@ -68,6 +68,7 @@ describe("useIslandMode hydration", () => {
       onIslandModeChanged: listener,
       onPermissionRequested: listener,
       onTaskCompleted: listener,
+      onAttentionExpired: vi.fn().mockResolvedValue(() => undefined),
     }));
     vi.doMock("@/lib/system-notifications", () => ({
       showSystemNotification: vi.fn(),
@@ -152,6 +153,7 @@ describe("useIslandMode hydration", () => {
       onIslandModeChanged: listener,
       onPermissionRequested: listener,
       onTaskCompleted: listener,
+      onAttentionExpired: vi.fn().mockResolvedValue(() => undefined),
     }));
     vi.doMock("@/lib/system-notifications", () => ({
       showSystemNotification: vi.fn(),
@@ -235,6 +237,7 @@ describe("useIslandMode hydration", () => {
       }),
       onPermissionRequested: genericListener,
       onTaskCompleted: genericListener,
+      onAttentionExpired: vi.fn().mockResolvedValue(() => undefined),
     }));
     vi.doMock("@/lib/system-notifications", () => ({
       showSystemNotification: vi.fn(),
@@ -330,6 +333,7 @@ describe("useIslandMode hydration", () => {
         }
       ),
       onTaskCompleted: listener,
+      onAttentionExpired: vi.fn().mockResolvedValue(() => undefined),
     }));
     vi.doMock("@/lib/system-notifications", () => ({
       showSystemNotification,

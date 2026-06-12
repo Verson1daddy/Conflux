@@ -8,27 +8,48 @@
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import type { AttentionItem, InteractionKind } from "@/types/interaction";
-import { listAttentionItems } from "@/lib/tauri-bridge";
+import {
+  listAttentionItems,
+  listDeferredAttentionItems,
+} from "@/lib/tauri-bridge";
 import { onAttentionUpdated } from "@/lib/event-listener";
 
 interface AttentionState {
   /** 后端投影的全量活跃注意力项（快照，后端已按优先级 + 时间排序）。 */
   items: AttentionItem[];
+  /** 已推迟项（resolution=deferred，按 remind_at 升序）——Sidebar 折叠区投影。 */
+  deferredItems: AttentionItem[];
   /** 是否已完成首次重放/快照（区分"空"与"未加载"）。 */
   hydrated: boolean;
   /** 用后端快照整体替换（重放 + attention_updated 的唯一写入口）。 */
   replaceFromBackend: (items: AttentionItem[]) => void;
+  /** deferred 投影整体替换（重放 + 每次 attention_updated 后随手重查）。 */
+  replaceDeferredFromBackend: (items: AttentionItem[]) => void;
   /** 启动：list_attention_items 重放 + 订阅 attention_updated。返回 unlisten。 */
   start: () => Promise<() => void>;
 }
 
 export const useAttentionStore = create<AttentionState>((set) => ({
   items: [],
+  deferredItems: [],
   hydrated: false,
 
   replaceFromBackend: (items) => set({ items, hydrated: true }),
 
+  replaceDeferredFromBackend: (items) => set({ deferredItems: items }),
+
   start: async () => {
+    const refreshDeferred = () => {
+      // defer/复活/超时都会 emit attention_updated，跟着重查即可（无需新事件）。
+      // try/catch：桥接不可用（demo / 无后端 / 部分 mock）时静默退化，与本 store 哲学一致。
+      try {
+        listDeferredAttentionItems()
+          .then((deferred) => set({ deferredItems: deferred }))
+          .catch(() => {});
+      } catch {
+        /* 无桥接 */
+      }
+    };
     // 重放当前快照（与后端 list_active 同序）。后端不可用则退化为 hydrated 空。
     try {
       const items = await listAttentionItems();
@@ -36,11 +57,13 @@ export const useAttentionStore = create<AttentionState>((set) => ({
     } catch {
       set({ hydrated: true });
     }
+    refreshDeferred();
     // 订阅未来快照；事件总线不可用（demo / 无后端）则静默退化。
     let unlisten: (() => void) | null = null;
     try {
       unlisten = await onAttentionUpdated((items) => {
         set({ items, hydrated: true });
+        refreshDeferred();
       });
     } catch {
       /* 无事件总线 */
@@ -81,4 +104,9 @@ export function useActivePermissions(): AttentionItem[] {
 /** 活跃项总数（TopIsland / CompactModeController 的 badge 计数）。 */
 export function useActiveAttentionCount(): number {
   return useAttentionStore((s) => activeItems(s.items).length);
+}
+
+/** 已推迟项（Sidebar 折叠区，spec §4.2）。 */
+export function useDeferredAttentionItems(): AttentionItem[] {
+  return useAttentionStore(useShallow((s) => s.deferredItems));
 }

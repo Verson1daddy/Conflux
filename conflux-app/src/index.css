@@ -2801,3 +2801,42 @@ body {
   white-space: nowrap;
   vertical-align: middle;
 }
+
+/* deferred 折叠区（spec §4.2）：与 attention band 行同语言，无新视觉元素。 */
+.sidebar-deferred-row {
+  appearance: none;
+  width: 100%;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+  margin-top: 6px;
+}
+.sidebar-deferred-row:hover {
+  color: rgba(255, 255, 255, 0.8);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.sidebar-deferred-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.45);
+}
+.sidebar-deferred-item__summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-deferred-item__time {
+  flex-shrink: 0;
+  font-family: "JetBrains Mono Variable", Consolas, monospace;
+  font-size: 10px;
+  color: rgba(184, 212, 227, 0.6);
+}

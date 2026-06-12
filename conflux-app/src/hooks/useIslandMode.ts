@@ -12,6 +12,7 @@ import {
   shouldApplyBackendIslandModeHydration,
 } from "@/lib/island-mode-preference";
 import {
+  onAttentionExpired,
   onErrorOccurred,
   onIslandModeChanged,
   onPermissionRequested,
@@ -217,6 +218,40 @@ export function useIslandMode(options: UseIslandModeOptions = {}) {
       };
 
       publishNotification(addNotification, notification);
+    }).then((fn) => {
+      if (disposed) {
+        fn();
+        return;
+      }
+      unlisten = fn;
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [addNotification]);
+
+  // spec §4.1：权限请求超时（sweep 落定 Expired）→ 通知中心条目。
+  // id 用 attention_item_id 派生（幂等：双窗口/重复 emit 经 upsert 合一）。
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+
+    onAttentionExpired((items) => {
+      for (const item of items) {
+        const notification: NotificationItem = {
+          id: `attention-expired-${item.attention_item_id}`,
+          level: "warning",
+          source_instance_id: item.instance_id,
+          source_adapter_name: resolveAgentName(item.instance_id),
+          content: `权限请求已超时（未处理）：${item.payload_summary}`,
+          actions: [{ label: "Dismiss", action_type: "dismiss" }],
+          created_at: item.resolved_at ?? Date.now(),
+          read: false,
+        };
+        publishNotification(addNotification, notification);
+      }
     }).then((fn) => {
       if (disposed) {
         fn();

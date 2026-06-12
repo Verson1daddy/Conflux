@@ -36,6 +36,7 @@ function mockSharedAttention(items: AttentionItem[]) {
     useActivePermissions: () => items,
     useActiveAttentionItems: () => items,
     useActiveAttentionCount: () => items.length,
+    useDeferredAttentionItems: () => [],
   }));
 }
 

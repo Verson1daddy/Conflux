@@ -1,7 +1,10 @@
 import { type CSSProperties, type FC, useCallback, useMemo, useRef, useState } from "react";
 import { startCurrentWindowDrag } from "@/lib/window-drag";
 import { useIslandStore } from "@/stores/islandStore";
-import { useActivePermissions } from "@/stores/attentionStore";
+import {
+  useActivePermissions,
+  useDeferredAttentionItems,
+} from "@/stores/attentionStore";
 import { useAgentStore, agentDisplayLabel } from "@/stores/agentStore";
 import { focusAgentCard, respondToPermission } from "@/lib/tauri-bridge";
 import { executeJumpBack } from "@/lib/jump-back";
@@ -17,6 +20,15 @@ interface SidebarProps {
   onOpenWorkspace: () => void;
   onUndock?: () => void;
   onDragStart?: () => void;
+}
+
+/** deferred 提醒时刻（HH:MM；异常无 remind_at 显示占位）。 */
+function formatRemindTime(remindAt: number | null): string {
+  if (!remindAt) return "—";
+  return new Date(remindAt).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 const STATUS_DOT_COLORS: Record<AgentStatus, string> = {
@@ -215,6 +227,8 @@ export const Sidebar: FC<SidebarProps> = ({
   const notifications = useIslandStore((s) => s.notifications);
   // 同源（控制面 P5）：待处理权限项从后端 AttentionQueue 投影读取，与 TopIsland 共用 selector。
   const permissions = useActivePermissions();
+  const deferredItems = useDeferredAttentionItems();
+  const [deferredOpen, setDeferredOpen] = useState(false);
   const instances = useAgentStore((s) => s.instances);
   const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
   const pendingRef = useRef<Set<string>>(new Set());
@@ -467,7 +481,7 @@ export const Sidebar: FC<SidebarProps> = ({
                             type="button"
                             className="sidebar-panel__mini-action sidebar-panel__mini-action--approve"
                             onClick={(e) => {
-                              e.stopPropagation();
+                              e?.stopPropagation();
                               void handlePermissionDecision(item, "approve");
                             }}
                             disabled={isPending || !canRespond}
@@ -478,7 +492,7 @@ export const Sidebar: FC<SidebarProps> = ({
                             type="button"
                             className="sidebar-panel__mini-action"
                             onClick={(e) => {
-                              e.stopPropagation();
+                              e?.stopPropagation();
                               void handlePermissionDecision(item, "deny");
                             }}
                             disabled={isPending || !canRespond}
@@ -521,6 +535,34 @@ export const Sidebar: FC<SidebarProps> = ({
                     </div>
                   );
                 })}
+              </>
+            )}
+
+            {deferredItems.length > 0 && (
+              <>
+                <button
+                  type="button"
+                  className="sidebar-deferred-row"
+                  data-testid="sidebar-deferred-row"
+                  onClick={() => setDeferredOpen((v) => !v)}
+                >
+                  已推迟 {deferredItems.length} 项 · 最近提醒{" "}
+                  {formatRemindTime(deferredItems[0].remind_at)}
+                </button>
+                {deferredOpen &&
+                  deferredItems.map((item) => (
+                    <div
+                      key={item.attention_item_id}
+                      className="sidebar-deferred-item"
+                    >
+                      <span className="sidebar-deferred-item__summary">
+                        {item.payload_summary}
+                      </span>
+                      <span className="sidebar-deferred-item__time">
+                        {formatRemindTime(item.remind_at)}
+                      </span>
+                    </div>
+                  ))}
               </>
             )}
           </div>

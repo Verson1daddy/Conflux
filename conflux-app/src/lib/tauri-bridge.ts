@@ -663,6 +663,11 @@ export async function listAttentionItems(): Promise<AttentionItem[]> {
   return invoke<AttentionItem[]>("list_attention_items");
 }
 
+/** 列出已推迟（deferred）的注意力项（按 remind_at 升序）。对应 Rust: list_deferred_attention_items */
+export async function listDeferredAttentionItems(): Promise<AttentionItem[]> {
+  return invoke<AttentionItem[]>("list_deferred_attention_items");
+}
+
 /** 处置一条注意力项（approve / deny / reply）。actor/action 由后端硬编码（MF-6）。 */
 export async function resolveAttentionItem(
   attentionItemId: string,

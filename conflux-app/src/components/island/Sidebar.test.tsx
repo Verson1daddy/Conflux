@@ -612,6 +612,122 @@ describe("SidebarHotzone", () => {
     });
   });
 
+  it("renders the deferred folded row only when deferred items exist", async () => {
+    vi.doMock("@/stores/islandStore", () => ({
+      useIslandStore: (
+        selector: (state: {
+          notifications: [];
+          removePermissionRequest: ReturnType<typeof vi.fn>;
+          clearNotification: ReturnType<typeof vi.fn>;
+        }) => unknown
+      ) =>
+        selector({
+          notifications: [],
+          removePermissionRequest: vi.fn(),
+          clearNotification: vi.fn(),
+        }),
+    }));
+    vi.doMock("@/stores/agentStore", () => ({
+      agentDisplayLabel: (agent: { instance_id: string }) => agent.instance_id,
+      useAgentStore: (selector: (state: { instances: Map<string, unknown> }) => unknown) =>
+        selector({ instances: new Map() }),
+    }));
+    vi.doMock("@/lib/tauri-bridge", () => ({
+      focusAgentCard: vi.fn(),
+      respondToPermission: vi.fn(),
+    }));
+
+    const { useAttentionStore } = await import("@/stores/attentionStore");
+    const { Sidebar } = await import("./Sidebar");
+
+    act(() => {
+      useAttentionStore.setState({
+        hydrated: true,
+        items: [],
+        deferredItems: [
+          {
+            attention_item_id: "attn-d1",
+            instance_id: "agent-d",
+            kind: "permission",
+            priority: "Critical",
+            source_event_id: null,
+            interaction_id: "intr-d",
+            payload_summary: "deferred request",
+            available_actions: ["approve", "deny"],
+            jump_back_target_id: null,
+            created_at: 1000,
+            resolved_at: 2000,
+            resolution: "deferred",
+            audit_event_id: null,
+            permission_context: null,
+            timeout_seconds: null,
+            remind_at: 9_000_000,
+            signal_source: "hook",
+          },
+          {
+            attention_item_id: "attn-d2",
+            instance_id: "agent-d2",
+            kind: "permission",
+            priority: "Critical",
+            source_event_id: null,
+            interaction_id: "intr-d2",
+            payload_summary: "deferred request 2",
+            available_actions: ["approve", "deny"],
+            jump_back_target_id: null,
+            created_at: 1000,
+            resolved_at: 2000,
+            resolution: "deferred",
+            audit_event_id: null,
+            permission_context: null,
+            timeout_seconds: null,
+            remind_at: 9_900_000,
+            signal_source: "hook",
+          },
+        ],
+      });
+    });
+
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        createElement(Sidebar, {
+          expanded: true,
+          onCollapse: () => undefined,
+          onOpenWorkspace: () => undefined,
+          onUndock: vi.fn(),
+        })
+      );
+    });
+
+    const row = renderer.root.findByProps({ "data-testid": "sidebar-deferred-row" });
+    const rowText = row.children.filter((c) => typeof c === "string").join("");
+    expect(rowText).toContain("已推迟");
+    expect(rowText).toContain("2");
+
+    // 展开后列出两条
+    await act(async () => {
+      row.props.onClick();
+    });
+    const items = renderer.root.findAll((node) =>
+      classNameIncludes(node.props.className, "sidebar-deferred-item")
+    );
+    expect(items.length).toBe(2);
+
+    // 清空 → 折叠行消失
+    act(() => {
+      useAttentionStore.setState({ deferredItems: [] });
+    });
+    expect(
+      renderer.root.findAll(
+        (node) => node.props["data-testid"] === "sidebar-deferred-row"
+      ).length
+    ).toBe(0);
+
+    act(() => {
+      useAttentionStore.setState({ items: [], hydrated: false });
+    });
+  });
+
   it("clicking a permission row triggers jump-back with its target id", async () => {
     const executeJumpBack = vi.fn().mockResolvedValue(undefined);
     vi.doMock("@/lib/jump-back", () => ({ executeJumpBack }));

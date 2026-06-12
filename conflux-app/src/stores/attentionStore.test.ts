@@ -3,9 +3,11 @@ import type { AttentionItem } from "@/types/interaction";
 
 // mock IPC + 事件订阅，避免触达真实 Tauri
 const listAttentionItems = vi.fn();
+const listDeferredAttentionItems = vi.fn();
 const onAttentionUpdated = vi.fn();
 vi.mock("@/lib/tauri-bridge", () => ({
   listAttentionItems: (...a: unknown[]) => listAttentionItems(...a),
+  listDeferredAttentionItems: (...a: unknown[]) => listDeferredAttentionItems(...a),
 }));
 vi.mock("@/lib/event-listener", () => ({
   onAttentionUpdated: (...a: unknown[]) => onAttentionUpdated(...a),
@@ -37,8 +39,10 @@ function item(partial: Partial<AttentionItem>): AttentionItem {
 
 beforeEach(() => {
   listAttentionItems.mockReset();
+  listDeferredAttentionItems.mockReset();
+  listDeferredAttentionItems.mockResolvedValue([]);
   onAttentionUpdated.mockReset();
-  useAttentionStore.setState({ items: [], hydrated: false });
+  useAttentionStore.setState({ items: [], deferredItems: [], hydrated: false });
 });
 
 describe("attentionStore selectors", () => {
@@ -100,6 +104,31 @@ describe("attentionStore.start", () => {
 
     stop();
     expect(unlisten).toHaveBeenCalledOnce();
+  });
+
+  it("start 重放 deferred 投影，且每次 attention_updated 后随手重查（spec §4.2）", async () => {
+    const deferred = [
+      item({ attention_item_id: "d1", resolution: "deferred", remind_at: 2_000 }),
+    ];
+    listAttentionItems.mockResolvedValue([]);
+    listDeferredAttentionItems.mockResolvedValue(deferred);
+    let pushed: ((items: AttentionItem[]) => void) | null = null;
+    onAttentionUpdated.mockImplementation(
+      (cb: (items: AttentionItem[]) => void) => {
+        pushed = cb;
+        return Promise.resolve(vi.fn());
+      }
+    );
+
+    await useAttentionStore.getState().start();
+    // 微任务排空（refreshDeferred 是 fire-and-forget promise）
+    await Promise.resolve();
+    expect(useAttentionStore.getState().deferredItems).toEqual(deferred);
+    expect(listDeferredAttentionItems).toHaveBeenCalledTimes(1);
+
+    pushed!([]);
+    await Promise.resolve();
+    expect(listDeferredAttentionItems).toHaveBeenCalledTimes(2);
   });
 
   it("后端 / 事件总线不可用时退化为 hydrated 空，不抛", async () => {
