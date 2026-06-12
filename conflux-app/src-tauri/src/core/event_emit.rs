@@ -34,6 +34,8 @@ pub mod channels {
     pub const PROCESS_EXITED: &str = "conflux://process-exited";
     /// 控制面 P2：注意力队列活跃项变更（前端订阅刷新 attention 列表）
     pub const ATTENTION_UPDATED: &str = "conflux://attention-updated";
+    /// 前端交互线批次1 §4.1：sweep 超时落定的项（前端转通知，expired 不静默消失）
+    pub const ATTENTION_EXPIRED: &str = "conflux://attention-expired";
 }
 
 /// 将 ConfluxEvent 派发到统一通道 + 对应的分类型通道
@@ -303,6 +305,23 @@ pub fn emit_attention_updated(app: &AppHandle) {
 
     if let Err(e) = app.emit(channels::ATTENTION_UPDATED, &payload) {
         log::warn!("emit attention_updated failed: {}", e);
+    }
+}
+
+/// emit 本 tick 过期项给前端（转通知中心条目）。只读投影，emit 失败仅记日志。
+pub fn emit_attention_expired(
+    app: &AppHandle,
+    items: &[crate::orchestration::attention::AttentionItem],
+) {
+    if items.is_empty() {
+        return;
+    }
+    let payload: Vec<serde_json::Value> = items
+        .iter()
+        .map(crate::orchestration::attention::attention_item_to_json)
+        .collect();
+    if let Err(e) = app.emit(channels::ATTENTION_EXPIRED, &payload) {
+        log::warn!("emit attention_expired failed: {}", e);
     }
 }
 

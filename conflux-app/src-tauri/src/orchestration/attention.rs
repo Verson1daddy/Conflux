@@ -503,7 +503,10 @@ impl AttentionQueue {
                 now_ms,
                 None,
             ) {
-                Ok(_) => report.expired += 1,
+                Ok(item) => {
+                    report.expired += 1;
+                    report.expired_items.push(item);
+                }
                 Err(e) => log::warn!("sweep 超时落定失败（下个 tick 重试）: id={id}, {e}"),
             }
         }
@@ -564,12 +567,14 @@ impl AttentionQueue {
 }
 
 /// sweep 结果统计（sweeper 线程据此决定是否 emit attention_updated）。
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SweepReport {
     /// 本 tick 超时落定（Expired）的项数
     pub expired: usize,
     /// 本 tick 提醒复活（Deferred → active）的项数
     pub reminded: usize,
+    /// 本 tick 过期项完整投影（sweeper 据此 emit attention_expired，前端转通知）
+    pub expired_items: Vec<AttentionItem>,
 }
 
 impl SweepReport {
@@ -1360,6 +1365,30 @@ mod tests {
             .iter()
             .any(|a| a.action == AuditAction::Expire
                 && a.actor == crate::core::audit::AuditActor::System));
+    }
+
+    /// spec §4.1：sweep 过期项随 SweepReport 透出完整投影——sweeper 据此
+    /// emit attention_expired，前端转通知（expired 不再静默消失）。
+    #[test]
+    fn test_sweep_carries_expired_items_for_notification() {
+        let conn = init_database(":memory:").unwrap();
+        let mut q = AttentionQueue::new();
+        let item = q
+            .ingest(&conn, &perm_event("inst-a", "req-1", 1_000))
+            .unwrap()
+            .unwrap();
+
+        let report = q.sweep(&conn, 121_000);
+        assert_eq!(report.expired, 1);
+        assert_eq!(report.expired_items.len(), 1);
+        assert_eq!(
+            report.expired_items[0].attention_item_id,
+            item.attention_item_id
+        );
+        assert_eq!(
+            report.expired_items[0].resolution,
+            Some(InteractionResolution::Expired)
+        );
     }
 
     /// 提醒闭环：defer 持久化 remind_at → 到点复活回 active（清 remind_at +

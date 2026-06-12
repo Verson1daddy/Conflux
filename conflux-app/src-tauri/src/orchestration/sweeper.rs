@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
 
-use crate::core::event_emit::emit_attention_updated;
+use crate::core::event_emit::{emit_attention_expired, emit_attention_updated};
 
 /// 基础 tick（D3 审计 flush 检查粒度）。
 const TICK_INTERVAL: Duration = Duration::from_millis(250);
@@ -60,6 +60,8 @@ pub fn spawn_background_ticker(app: AppHandle, stop: Arc<AtomicBool>) {
                         report.reminded
                     );
                     emit_attention_updated(&app);
+                    // spec §4.1：过期项转前端通知（只读投影，不静默消失）。
+                    emit_attention_expired(&app, &report.expired_items);
                 }
             }
         }
