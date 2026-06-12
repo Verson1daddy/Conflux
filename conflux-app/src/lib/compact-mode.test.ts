@@ -46,6 +46,8 @@ function permissionAttentionItem(spec: PermissionSpec): AttentionItem {
     audit_event_id: null,
     permission_context: spec.raw_context ?? null,
     timeout_seconds: spec.timeout_seconds ?? null,
+    remind_at: null,
+    signal_source: null,
   };
 }
 

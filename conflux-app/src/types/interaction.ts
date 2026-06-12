@@ -64,4 +64,8 @@ export interface AttentionItem {
   permission_context: string[] | null;
   /** 权限超时秒数（仅 kind=permission） */
   timeout_seconds: number | null;
+  /** defer 提醒时间（Unix ms；仅 resolution=deferred 有值，到点由后端 sweep 复活） */
+  remind_at: number | null;
+  /** 信号来源（V1-core §4.7："hook"=结构化可靠 / "scrape"=刮屏兜底；旧数据为 null） */
+  signal_source: "hook" | "scrape" | null;
 }

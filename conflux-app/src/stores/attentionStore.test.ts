@@ -30,6 +30,8 @@ function item(partial: Partial<AttentionItem>): AttentionItem {
     audit_event_id: partial.audit_event_id ?? null,
     permission_context: partial.permission_context ?? null,
     timeout_seconds: partial.timeout_seconds ?? null,
+    remind_at: partial.remind_at ?? null,
+    signal_source: partial.signal_source ?? null,
   };
 }
 

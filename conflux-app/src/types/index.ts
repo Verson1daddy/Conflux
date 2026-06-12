@@ -100,3 +100,12 @@ export type {
   ResolveKind,
   AttentionItem,
 } from "./interaction";
+
+// 精确回场对象（控制面 P4 / V1-core 行级 jump-back）
+export type {
+  JumpKind,
+  JumpConfidence,
+  CoordSpace,
+  TerminalRange,
+  JumpBackTarget,
+} from "./jumpback";

@@ -25,6 +25,8 @@ function permissionItem(id: string, summary: string): AttentionItem {
     audit_event_id: null,
     permission_context: null,
     timeout_seconds: 120,
+    remind_at: null,
+    signal_source: null,
   };
 }
 

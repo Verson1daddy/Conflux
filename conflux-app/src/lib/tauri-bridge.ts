@@ -35,6 +35,7 @@ import type {
   PermissionDecision,
   AttentionItem,
   ResolveKind,
+  JumpBackTarget,
 } from "../types";
 
 // ===== Agent 实例管理 =====
@@ -696,4 +697,18 @@ export async function restoreAttentionItem(
   attentionItemId: string
 ): Promise<AttentionItem> {
   return invoke<AttentionItem>("restore_attention_item", { attentionItemId });
+}
+
+/**
+ * 按 id 取回精确回场落点（控制面 P4 / V1-core 降级链）。
+ * 后端保证不抛业务错：未知 id 合成 FallbackContext；BackendAbs 行级落点
+ * 已按 pane 现时窗口降级（死→fallback / 环覆盖→card）。
+ * 对应 Rust: get_jump_back_target(jump_back_target_id)
+ */
+export async function getJumpBackTarget(
+  jumpBackTargetId: string
+): Promise<JumpBackTarget> {
+  return invoke<JumpBackTarget>("get_jump_back_target", {
+    jumpBackTargetId,
+  });
 }
