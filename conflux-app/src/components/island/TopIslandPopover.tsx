@@ -380,6 +380,15 @@ export const TopIslandPopover: FC<TopIslandPopoverProps> = ({
 
       {renderBody()}
 
+      {permissionRequest && permissionRequest.signal_source === "scrape" && (
+        <span
+          className="signal-scrape-badge"
+          title="此请求来自 PTY 刮屏推断（非 agent hook），可能误报，请核实终端后再批"
+        >
+          刮屏推断 · 可能误报
+        </span>
+      )}
+
       {permissionRequest && (
         <div className="top-island-bubble__permission-actions">
           <button

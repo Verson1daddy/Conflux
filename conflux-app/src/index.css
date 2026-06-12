@@ -2787,3 +2787,17 @@ body {
     opacity: 0;
   }
 }
+
+/* scrape 信号源徽章（spec §3）：低饱和文字+细边框，无发光无填充（T8A 禁令）。 */
+.signal-scrape-badge {
+  display: inline-block;
+  font-size: 9.5px;
+  line-height: 1;
+  color: rgba(231, 201, 140, 0.78);
+  border: 1px solid rgba(231, 201, 140, 0.28);
+  border-radius: 5px;
+  padding: 2px 6px;
+  margin-left: 6px;
+  white-space: nowrap;
+  vertical-align: middle;
+}

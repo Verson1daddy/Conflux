@@ -524,6 +524,94 @@ describe("SidebarHotzone", () => {
     expect(onActivate).toHaveBeenCalledTimes(1);
   });
 
+  it("shows the scrape badge only for scrape-sourced permissions", async () => {
+    vi.doMock("@/stores/islandStore", () => ({
+      useIslandStore: (
+        selector: (state: {
+          notifications: [];
+          removePermissionRequest: ReturnType<typeof vi.fn>;
+          clearNotification: ReturnType<typeof vi.fn>;
+        }) => unknown
+      ) =>
+        selector({
+          notifications: [],
+          removePermissionRequest: vi.fn(),
+          clearNotification: vi.fn(),
+        }),
+    }));
+    vi.doMock("@/stores/agentStore", () => ({
+      agentDisplayLabel: (agent: { instance_id: string }) => agent.instance_id,
+      useAgentStore: (selector: (state: { instances: Map<string, unknown> }) => unknown) =>
+        selector({ instances: new Map() }),
+    }));
+    vi.doMock("@/lib/tauri-bridge", () => ({
+      focusAgentCard: vi.fn(),
+      respondToPermission: vi.fn(),
+    }));
+
+    const { useAttentionStore } = await import("@/stores/attentionStore");
+    const { Sidebar } = await import("./Sidebar");
+
+    const baseItem = {
+      kind: "permission" as const,
+      priority: "Critical" as const,
+      source_event_id: null,
+      payload_summary: "Wants to write pane.rs",
+      available_actions: ["approve" as const, "deny" as const],
+      jump_back_target_id: null,
+      created_at: 1000,
+      resolved_at: null,
+      resolution: null,
+      audit_event_id: null,
+      permission_context: null,
+      timeout_seconds: 120,
+      remind_at: null,
+    };
+    act(() => {
+      useAttentionStore.setState({
+        hydrated: true,
+        items: [
+          {
+            ...baseItem,
+            attention_item_id: "attn-scrape",
+            instance_id: "agent-s",
+            interaction_id: "intr-s",
+            signal_source: "scrape",
+          },
+          {
+            ...baseItem,
+            attention_item_id: "attn-hook",
+            instance_id: "agent-h",
+            interaction_id: "intr-h",
+            signal_source: "hook",
+          },
+        ],
+      });
+    });
+
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        createElement(Sidebar, {
+          expanded: true,
+          onCollapse: () => undefined,
+          onOpenWorkspace: () => undefined,
+          onUndock: vi.fn(),
+        })
+      );
+    });
+
+    const badges = renderer.root.findAll((node) =>
+      classNameIncludes(node.props.className, "signal-scrape-badge")
+    );
+    expect(badges.length).toBe(1);
+    expect(nodeContainsText(renderer.root, "刮屏推断 · 可能误报")).toBe(true);
+
+    act(() => {
+      useAttentionStore.setState({ items: [], hydrated: false });
+    });
+  });
+
   it("clicking a permission row triggers jump-back with its target id", async () => {
     const executeJumpBack = vi.fn().mockResolvedValue(undefined);
     vi.doMock("@/lib/jump-back", () => ({ executeJumpBack }));

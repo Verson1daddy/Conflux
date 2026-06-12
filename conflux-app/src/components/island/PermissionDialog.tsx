@@ -130,6 +130,14 @@ const PermissionDialog: FC<PermissionDialogProps> = ({ item, onClose }) => {
             <span className="text-accent">
               {item.instance_id}
             </span>
+            {item.signal_source === "scrape" && (
+              <span
+                className="signal-scrape-badge"
+                title="此请求来自 PTY 刮屏推断（非 agent hook），可能误报，请核实终端后再批"
+              >
+                刮屏推断 · 可能误报
+              </span>
+            )}
           </p>
         </div>
 

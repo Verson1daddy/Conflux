@@ -452,6 +452,14 @@ export const Sidebar: FC<SidebarProps> = ({
 
                         <p className="sidebar-panel__notification-body">
                           {item.payload_summary}
+                          {item.signal_source === "scrape" && (
+                            <span
+                              className="signal-scrape-badge"
+                              title="此请求来自 PTY 刮屏推断（非 agent hook），可能误报，请核实终端后再批"
+                            >
+                              刮屏推断 · 可能误报
+                            </span>
+                          )}
                         </p>
 
                         <div className="sidebar-panel__permission-actions">
