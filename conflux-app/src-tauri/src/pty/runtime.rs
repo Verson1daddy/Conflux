@@ -481,13 +481,16 @@ impl PaneRuntime {
 
     /// PTY 历史（base64 原始字节含 ANSI）——替代 manager.get_buffer 路径，
     /// 走 conmux capture（行索引 scrollback，ansi=true 保留原始）。
-    pub fn get_history_base64(&self, instance_id: &str) -> Result<String, ConfluxError> {
-        let result = self.host.capture(CaptureRequest {
-            pane_id: PaneId(instance_id.to_string()),
-            range: CaptureRange::All,
-            ansi: true,
-        })?;
-        Ok(result.data_base64)
+    /// 返回完整 `CaptureResult`：命令层据 `effectively_full` 写 CaptureDump read 审计
+    /// （§3.4 敏感读，复闸 C2）。`All` 范围必然等效全量。
+    pub fn capture_history(&self, instance_id: &str) -> Result<conmux::CaptureResult, ConfluxError> {
+        self.host
+            .capture(CaptureRequest {
+                pane_id: PaneId(instance_id.to_string()),
+                range: CaptureRange::All,
+                ansi: true,
+            })
+            .map_err(Into::into)
     }
 
     /// 进程退出检测（前端 ~2s 轮询）。双重检测与 manager 持平：
@@ -637,7 +640,7 @@ mod characterization_tests {
             Err(ConfluxError::InstanceNotFound { .. })
         ));
         assert!(matches!(
-            rt.get_history_base64(unknown),
+            rt.capture_history(unknown),
             Err(ConfluxError::InstanceNotFound { .. })
         ));
         assert!(matches!(
@@ -740,7 +743,7 @@ mod characterization_tests {
 
     #[test]
     fn reader_thread_captures_output_into_history() {
-        // 锁住核心行为：读线程把 PTY 输出写进 scrollback，get_history_base64 可读回
+        // 锁住核心行为：读线程把 PTY 输出写进 scrollback，capture_history 可读回
         //（原 manager 测试断言 OutputBuffer；语义同——历史可回放）。
         use base64::Engine;
         let rt = runtime();
@@ -748,9 +751,10 @@ mod characterization_tests {
         rt.inject_stdin(&id, "echo CHARTEST_MARKER\r\n", InjectionSource::UserDirect)
             .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(2500));
-        let history = rt.get_history_base64(&id).expect("history 应可读");
+        let result = rt.capture_history(&id).expect("history 应可读");
+        assert!(result.effectively_full, "All 范围等效全量（触发 read 审计）");
         let bytes = base64::engine::general_purpose::STANDARD
-            .decode(history.as_bytes())
+            .decode(result.data_base64.as_bytes())
             .expect("base64 应可解");
         let text = String::from_utf8_lossy(&bytes);
         assert!(

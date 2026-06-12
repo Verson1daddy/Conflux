@@ -191,6 +191,7 @@ mod tests {
                     first_abs_line: 0,
                     last_abs_line: 1,
                     truncated: false,
+                    effectively_full: true,
                 }),
             },
             MuxReply::Ok {

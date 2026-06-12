@@ -877,12 +877,82 @@ pub async fn get_pty_history(
 ) -> Result<String, ConfluxError> {
     // cutover ③：走 conmux capture（行索引 scrollback，ansi=true 保留原始字节），
     // conmux 已 base64 编码——语义与原 OutputBuffer.read_all + encode 等价。
-    state.pane_runtime.get_history_base64(&instance_id.0)
+    let result = state.pane_runtime.capture_history(&instance_id.0)?;
+
+    // C-1（契约 §3.4 / 复闸 C2 敏感读）：等效全量 dump 写一条 CaptureDump read 审计
+    // ——scrollback 可能含 secrets，全量 blob 可落盘/转发，须留"谁何时 dump 了 pane"。
+    // best-effort：读无副作用，审计写失败仅记日志、不阻断读（fail-closed 是给注入的，
+    // 强 fail-closed 读会让 DB 故障时卡片看不到历史，UX 代价不当）。
+    if result.effectively_full {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let audit = capture_dump_audit_event(&instance_id, now_ms);
+        let conn = state.db.lock();
+        if let Err(e) = crate::persistence::audit::insert_audit_event(&conn, &audit) {
+            log::warn!("CaptureDump read 审计写入失败（best-effort，不阻断读）: {e}");
+        }
+    }
+
+    Ok(result.data_base64)
+}
+
+/// C-1：等效全量 capture 的 read 审计事件（契约 §3.4 / 复闸 C2）。
+/// actor=User：get_pty_history 仅由 UI 命令触发；read 审计无注入语义，
+/// injection_source/interaction_id 恒 None。
+fn capture_dump_audit_event(
+    instance_id: &InstanceId,
+    now_ms: i64,
+) -> crate::core::audit::AuditEvent {
+    crate::core::audit::AuditEvent {
+        audit_event_id: crate::core::audit::AuditEvent::new_id(),
+        actor: crate::core::audit::AuditActor::User,
+        action: crate::core::audit::AuditAction::CaptureDump,
+        instance_id: Some(instance_id.clone()),
+        source_event_id: None,
+        interaction_id: None,
+        injection_source: None,
+        result: crate::core::audit::AuditResult::Ok,
+        created_at: now_ms,
+        rationale_ref: None,
+        payload: None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_working_dir_from;
+    use super::{capture_dump_audit_event, resolve_working_dir_from};
+
+    #[test]
+    fn capture_dump_audit_event_roundtrips_through_persistence() {
+        // C-1 收口断言：CaptureDump read 审计事件可落库并按原语义读回
+        //（含新增 action 变体 "capture_dump" 的双向字符串映射）。
+        use crate::core::audit::{AuditAction, AuditActor, AuditResult};
+        use crate::core::InstanceId;
+        use crate::persistence::audit::{insert_audit_event, list_audit_events};
+        use crate::persistence::schema::init_database;
+
+        let conn = init_database(":memory:").expect("数据库初始化应成功");
+        let ev = capture_dump_audit_event(&InstanceId("inst-cap".to_string()), 42_000);
+
+        insert_audit_event(&conn, &ev).expect("CaptureDump 审计插入应成功");
+
+        let listed = list_audit_events(&conn, None, None).expect("审计查询应成功");
+        assert_eq!(listed.len(), 1);
+        let got = &listed[0];
+        assert_eq!(got.action, AuditAction::CaptureDump);
+        assert_eq!(got.actor, AuditActor::User);
+        assert_eq!(got.result, AuditResult::Ok);
+        assert_eq!(
+            got.instance_id.as_ref().map(|i| i.0.as_str()),
+            Some("inst-cap")
+        );
+        assert_eq!(got.created_at, 42_000);
+        // read 审计无注入语义：注入相关字段恒空。
+        assert_eq!(got.injection_source, None);
+        assert_eq!(got.interaction_id, None);
+    }
 
     #[test]
     fn blank_create_working_dir_prefers_user_profile_over_process_cwd() {

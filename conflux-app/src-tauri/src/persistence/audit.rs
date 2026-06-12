@@ -148,6 +148,7 @@ fn action_to_str(action: &AuditAction) -> &'static str {
         AuditAction::Restore => "restore",
         AuditAction::Expire => "expire",
         AuditAction::Remind => "remind",
+        AuditAction::CaptureDump => "capture_dump",
     }
 }
 
@@ -166,6 +167,7 @@ fn action_from_str(s: &str) -> AuditAction {
         "restore" => AuditAction::Restore,
         "expire" => AuditAction::Expire,
         "remind" => AuditAction::Remind,
+        "capture_dump" => AuditAction::CaptureDump,
         // 未知值降级为 Interrupt 是不安全的语义；落库值由后端硬编码控制，
         // 此处理论上不可达；保守降级为 Ignore（不产生新副作用）。
         _ => AuditAction::Ignore,

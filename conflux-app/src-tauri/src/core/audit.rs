@@ -59,6 +59,8 @@ pub enum AuditAction {
     Expire,
     /// 提醒回归（V1-core sweep：deferred 项到 remind_at 复活回 active，actor=System）
     Remind,
+    /// 等效全量 capture（敏感读，§3.4 / 复闸 C2：scrollback 全量 dump 写 read 审计）
+    CaptureDump,
 }
 
 /// 审计动作结果（§7.1）

@@ -5,7 +5,8 @@
 //! - **等效全量触发 read 审计（复闸 C2）**：按**有效覆盖判定、不按枚举变体**——
 //!   `All` / `LastBytes(n ≥ 有效字节)` / `LineRange` 覆盖 ≥ 可读行窗 80% 都算"等效全量"，
 //!   杜绝换 range 变体规避审计。判定函数 [`is_effectively_full`] 纯函数、可测；
-//!   实际 read 审计钩子触发在 `PaneHost::capture`（后续增量接线）。
+//!   `PaneHost::capture` 把判定结果放进 `CaptureResult.effectively_full`，
+//!   read 审计的写入归 conflux 策略层（审计存储不在机制层）。
 //!
 //! 完整的 `capture_from_buffer`（读字节 + base64 组装 `CaptureResult`）在 PaneHost
 //! 增量接 `LineIndexedBuffer` 时落地；本增量先冻结类型 + 两条纯逻辑。
@@ -42,6 +43,9 @@ pub struct CaptureResult {
     pub last_abs_line: u64,
     /// ring 覆盖导致请求范围部分不可得。
     pub truncated: bool,
+    /// 等效全量 dump（复闸 C2，[`is_effectively_full`] 按有效覆盖判定）。
+    /// 机制层只判定不存储；conflux 据此写 `CaptureDump` read 审计。
+    pub effectively_full: bool,
 }
 
 /// 等效全量判定（复闸 C2，冻结）——按**有效覆盖**而非枚举变体判定。

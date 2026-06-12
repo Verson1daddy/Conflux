@@ -443,9 +443,8 @@ impl PaneHost {
     /// 捕获 pane scrollback（契约 §3.4 / §6）。ANSI 开关：`ansi=false` 剥离 VT 序列
     /// （喂 LLM / 搜索）；`true` 保留原始。替代现状 manager.get_buffer 的历史读取。
     ///
-    /// **读审计（C2）现状**：本子步只实现数据路径。等效全量请求的 read 审计触发是 conflux
-    /// 策略关注点（需 read-hook 抽象），后置——V0 cutover 替代的 get_buffer 本无审计，故无回归。
-    /// `capture::is_effectively_full` 纯函数已就绪，供 conflux 决定何时审计。
+    /// **读审计（C2）**：`CaptureResult.effectively_full` 由 `is_effectively_full` 算出
+    /// （机制层判定），conflux 据此写 `CaptureDump` read 审计（审计存储属 conflux 策略）。
     pub fn capture(
         &self,
         req: crate::capture::CaptureRequest,
@@ -483,11 +482,20 @@ impl PaneHost {
         };
         let data_base64 = base64_encode(&data);
 
+        // 等效全量判定（复闸 C2）：按有效覆盖而非枚举变体，杜绝换 range 规避审计。
+        let effectively_full = crate::capture::is_effectively_full(
+            &req.range,
+            sb.total_bytes() as usize,
+            first,
+            last,
+        );
+
         Ok(crate::capture::CaptureResult {
             data_base64,
             first_abs_line: first,
             last_abs_line: last,
             truncated,
+            effectively_full,
         })
     }
 }
@@ -1185,6 +1193,7 @@ mod tests {
                 "capture 应读回 scrollback 内容，实际:\n{text}"
             );
             assert!(!result.truncated, "All 范围不应 truncated");
+            assert!(result.effectively_full, "All 范围等效全量（触发 read 审计）");
 
             // 未知 pane → PaneNotFound。
             assert!(matches!(
