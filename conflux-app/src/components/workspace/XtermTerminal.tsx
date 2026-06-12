@@ -260,7 +260,11 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
       allowTransparency: false,
       drawBoldTextInBrightColors: true,
       scrollback: 5000,
-      scrollOnEraseInDisplay: true,
+      // false（2026-06-12 批1 修正）：ConPTY 每次 resize 都以 ED2 清屏开头重绘，
+      // true 会把每帧旧屏推进 scrollback —— 展开/收起一次就多一份 banner（用户
+      // 实测截图复现）。TUI 型 CLI（claude 等）本就高频重绘，true 只会让
+      // scrollback 充满重绘垃圾帧。
+      scrollOnEraseInDisplay: false,
       scrollOnUserInput: true,
       scrollSensitivity: 1.4,
       theme: CONFLUX_THEME,
