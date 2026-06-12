@@ -13,9 +13,9 @@
 use async_trait::async_trait;
 use regex::Regex;
 
-use crate::adapter::traits::{AgentAdapter, AgentInstance};
+use crate::adapter::traits::AgentAdapter;
 use crate::core::{
-    AdapterCapabilities, AdapterConfig, AgentStatus, ConfluxError, ConfluxEvent, InstanceId,
+    AdapterCapabilities, AdapterConfig, AgentStatus, ConfluxEvent, InstanceId,
     PermissionRequest, PermissionStatus, StatusPatterns, SubAgentInfo,
 };
 
@@ -131,16 +131,6 @@ impl AgentAdapter for ClaudeCodeAdapter {
 
     fn capabilities(&self) -> &AdapterCapabilities {
         &self.capabilities
-    }
-
-    async fn spawn(
-        &self,
-        _working_dir: &str,
-        _args: &[String],
-    ) -> Result<Box<dyn AgentInstance>, ConfluxError> {
-        Err(ConfluxError::InvalidConfig {
-            message: "ClaudeCodeAdapter::spawn is not a runnable path; use create_agent_instance/PtyManager::spawn".to_string(),
-        })
     }
 
     async fn detect_auth(&self) -> Result<(), String> {

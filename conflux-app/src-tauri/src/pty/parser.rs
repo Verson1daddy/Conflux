@@ -523,15 +523,6 @@ mod tests {
             &self.capabilities
         }
 
-        async fn spawn(
-            &self,
-            _working_dir: &str,
-            _args: &[String],
-        ) -> Result<Box<dyn crate::adapter::traits::AgentInstance>, crate::core::ConfluxError>
-        {
-            unreachable!("MockAdapter::spawn 不应在解析器测试中被调用")
-        }
-
         fn parse_output(&self, raw_line: &str) -> Option<ConfluxEvent> {
             let placeholder_id = InstanceId("unknown".to_string());
             let now = 1000;

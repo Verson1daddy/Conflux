@@ -231,16 +231,6 @@ impl AgentAdapter for GenericTomlAdapter {
         &self.capabilities
     }
 
-    async fn spawn(
-        &self,
-        _working_dir: &str,
-        _args: &[String],
-    ) -> Result<Box<dyn crate::adapter::traits::AgentInstance>, ConfluxError> {
-        Err(ConfluxError::InvalidConfig {
-            message: "GenericTomlAdapter::spawn is not a runnable path; use create_agent_instance/PtyManager::spawn".to_string(),
-        })
-    }
-
     fn parse_output(&self, raw_line: &str) -> Option<ConfluxEvent> {
         // 使用占位 instance_id——实际运行时由调用方提供
         let placeholder_id = InstanceId("unknown".to_string());

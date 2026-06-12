@@ -4,9 +4,9 @@
 use async_trait::async_trait;
 use regex::Regex;
 
-use crate::adapter::traits::{AgentAdapter, AgentInstance};
+use crate::adapter::traits::AgentAdapter;
 use crate::core::{
-    AdapterCapabilities, AdapterConfig, AgentStatus, ConfluxError, ConfluxEvent, InstanceId,
+    AdapterCapabilities, AdapterConfig, AgentStatus, ConfluxEvent, InstanceId,
     StatusPatterns,
 };
 
@@ -93,16 +93,6 @@ impl AgentAdapter for OpenCodeAdapter {
 
     fn capabilities(&self) -> &AdapterCapabilities {
         &self.capabilities
-    }
-
-    async fn spawn(
-        &self,
-        _working_dir: &str,
-        _args: &[String],
-    ) -> Result<Box<dyn AgentInstance>, ConfluxError> {
-        Err(ConfluxError::InvalidConfig {
-            message: "OpenCodeAdapter::spawn is not a runnable path; use create_agent_instance/PtyManager::spawn".to_string(),
-        })
     }
 
     fn parse_output(&self, raw_line: &str) -> Option<ConfluxEvent> {
