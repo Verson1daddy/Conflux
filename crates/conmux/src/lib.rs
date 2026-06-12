@@ -20,6 +20,20 @@
 //! ## 安全不变量（契约 §13 / Red Team MF-1..6）
 //! 唯一注入路径（writer 私有，无旁路）、InjectionSource 不过 wire（按信道身份赋值）、
 //! per-instance 限速、JobObject fail-closed、审计钩子先于字节抵达 PTY。
+//!
+//! ## Stability（M1 契约增补 §1，两档承诺）
+//!
+//! - **承诺面（committed）**：0.x 期间变更需 **minor bump + CHANGELOG 条目**，patch 不得破坏。
+//!   清单：protocol wire 类型（`MuxRequest`/`MuxOp`/`MuxPayload`/`MuxReply`/`MuxNotify`）及其
+//!   wire 携带类型闭包（`SpawnRequest`/`CommandSpec`/`Capture*`/`PaneId`/`PaneSize`/`PaneState`/
+//!   `PaneLifecycle`/`ScrollbackInfo`/`ConmuxError`）、`PaneHost` 门面全部 pub 方法、事件面
+//!   （`PaneEventSink`）、注入扩展点（`InjectionHook`/`InjectionContext`/`InjectionSource`）、
+//!   主题面（`TerminalTheme`/`ThemeAppearance`/`builtin_terminal_themes`/`DEFAULT_TERMINAL_THEME_ID`，
+//!   附加语义：预置 id 永不复用改义、默认 id 变更 = minor）。
+//!   行为语义随附冻结：唯一写链（MF-1）、钩子顺序（MF-6）、wire 拒收 source（MF-2）、
+//!   `PaneOutput.seq` per-pane 从 1 起严格单调、kill 失败仍清表（MF-4 cl.4）、等效全量判定。
+//! - **unstable 面**：标注 "Stability: unstable" 的项（`job` 模块四项等）may change without
+//!   notice，patch 内可变。承诺面以 **crate 根 re-export 路径**为准，模块内路径不承诺。
 
 // ===== V0 模块（按 conmux_api_contract.md 实现）=====
 
@@ -53,8 +67,10 @@ pub mod job;
 pub mod pane;
 
 /// Windows ConPTY 后端（cutover 2b-2，portable-pty 0.9 + DSR 应答）。仅 cfg(windows)。
+/// `pub(crate)`（M1 契约 §1.3-②收紧）：消费方一律经 `PaneHost::new_windows` 装配，
+/// 不直接触达 backend 类型。
 #[cfg(windows)]
-pub mod pane_win;
+pub(crate) mod pane_win;
 
 /// 终端主题预置注册表（契约 D7：多预置 + 背景基调可调）。conmux 是主题数据
 /// 唯一属主，conflux 与未来独立 CLI 共享。
@@ -68,8 +84,6 @@ pub use inject::{InjectionContext, InjectionHook};
 pub use job::{ProcessSupervisor, SupervisorFactory};
 #[cfg(windows)]
 pub use job::{JobObjectSupervisor, JobObjectSupervisorFactory};
-#[cfg(windows)]
-pub use pane_win::WindowsPaneBackend;
 // PaneHost 类型 + 公开入参类型对外可见；构造器 2a 仍 pub(crate)（待 2b Windows 构造器）。
 pub use pane::{CommandSpec, PaneHost, SpawnRequest};
 pub use protocol::{MuxOp, MuxPayload, MuxReply, MuxRequest};

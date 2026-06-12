@@ -103,6 +103,9 @@ impl PaneEventSink for MuxEventBridge {
             MuxNotify::PaneExited { pane_id, exit_code } => {
                 exit_events(&self.meta, &pane_id.0, exit_code, now_ms)
             }
+            // MuxNotify 为 #[non_exhaustive]：conmux 新增的事件变体在桥接层显式忽略，
+            // 接入与否是策略决策（新变体随 conmux minor 发布说明评估）。
+            _ => Vec::new(),
         };
         for event in &events {
             emit_conflux_event(&self.app, event);

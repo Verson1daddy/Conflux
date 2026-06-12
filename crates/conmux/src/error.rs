@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// conmux 机制层统一错误（`MuxReply::Err` 携带它，故需 serde 可序列化）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[non_exhaustive] // M1 契约 §1.3-④：未来加变体不破坏调用方（变体新增仍走 minor+changelog）
 pub enum ConmuxError {
     /// 目标 pane 不存在（对应现状 `ConfluxError::InstanceNotFound`）。
     #[error("pane 不存在: {pane_id}")]

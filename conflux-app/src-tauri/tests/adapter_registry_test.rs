@@ -5,10 +5,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use conflux_lib::adapter::registry::AdapterRegistry;
-use conflux_lib::adapter::traits::{AgentAdapter, AgentInstance};
-use conflux_lib::core::{
-    AdapterCapabilities, AdapterConfig, ConfluxError, ConfluxEvent, StatusPatterns,
-};
+use conflux_lib::adapter::traits::AgentAdapter;
+use conflux_lib::core::{AdapterCapabilities, AdapterConfig, ConfluxError, ConfluxEvent, StatusPatterns};
 
 /// 测试用 mock 适配器
 struct MockAdapter {
@@ -38,16 +36,6 @@ impl AgentAdapter for MockAdapter {
 
     fn capabilities(&self) -> &AdapterCapabilities {
         &self.caps
-    }
-
-    async fn spawn(
-        &self,
-        _working_dir: &str,
-        _args: &[String],
-    ) -> Result<Box<dyn AgentInstance>, ConfluxError> {
-        Err(ConfluxError::PtyError {
-            message: "mock adapter does not support spawn".to_string(),
-        })
     }
 
     fn parse_output(&self, _raw_line: &str) -> Option<ConfluxEvent> {

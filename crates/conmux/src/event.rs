@@ -15,6 +15,7 @@ use crate::types::PaneId;
 
 /// conmux 向消费方推送的 per-pane 异步事件。
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive] // M1 契约 §1.3-④
 pub enum MuxNotify {
     /// pane 原始输出（`seq` 为 per-pane 单调序号，供重放对账；data 为原始字节）。
     PaneOutput {

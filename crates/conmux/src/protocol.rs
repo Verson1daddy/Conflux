@@ -82,6 +82,7 @@ impl MuxReply {
 
 /// 成功应答载荷（按 op 对应）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive] // M1 契约 §1.3-④
 pub enum MuxPayload {
     /// Spawn → 已注册的 pane_id
     Spawned(PaneId),
