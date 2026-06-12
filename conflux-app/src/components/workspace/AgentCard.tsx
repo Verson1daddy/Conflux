@@ -16,6 +16,8 @@ import {
 } from "@/lib/agent-visuals";
 import { SNAP_GRID_PX } from "@/types/layout";
 import type { CardLayout, AgentStatus, Position, LayoutMode } from "@/types";
+import { useExitActions } from "@/hooks/useExitActions";
+import { ExitActionBar } from "./ExitActionBar";
 const XtermTerminal = lazy(() =>
   import("./XtermTerminal").then((module) => ({
     default: module.XtermTerminal,
@@ -191,7 +193,8 @@ interface AgentCardProps {
 
 // ===== Layout breakpoints =====
 
-const HEADER_H = 42;
+// 2026-06-12 质感冻结（用户调参，spec 2026-06-12-cool-craft-direction-design.md §1）
+const HEADER_H = 38;
 const FOOTER_H = 32;
 const MIN_TERM_H = 40;
 
@@ -312,6 +315,8 @@ function AgentCard({
   const bringToFront = useWorkspaceStore((s) => s.bringToFront);
   const removeCard = useWorkspaceStore((s) => s.removeCard);
   const isPulsing = useWorkspaceStore((s) => s.pulseCardId === card.instance_id);
+  // 退出态（Q3'）：footer 动作条 + pane 降透明
+  const { exitState, handleExitAction } = useExitActions(card.instance_id);
   const setExpandedCard = useAgentStore((s) => s.setExpandedCard);
   const removeInstance = useAgentStore((s) => s.removeInstance);
 
@@ -681,19 +686,21 @@ function AgentCard({
         style={{
           backfaceVisibility: "hidden",
           WebkitBackfaceVisibility: "hidden",
-          background: "rgba(255,255,255,0.04)",
+          // 质感冻结参数：通透玻璃 0.10 + 淡蓝白顶光渐变
+          background:
+            "linear-gradient(180deg, rgba(173,196,214,0.022), rgba(20,26,36,0.10) 38%, rgba(13,17,25,0.10))",
           // 批1（审计 P2）：backdrop-filter 是 grouping property，与 preserve-3d
           // 翻面组合是 Chromium flatten/闪烁雷区——翻面期间临时降级（前脸此时
           // 大部分时间背向用户，视觉损失可忽略）。
-          backdropFilter: isFlipped || showBack ? "none" : "blur(20px)",
-          WebkitBackdropFilter: isFlipped || showBack ? "none" : "blur(20px)",
+          backdropFilter: isFlipped || showBack ? "none" : "blur(5px) saturate(110%)",
+          WebkitBackdropFilter: isFlipped || showBack ? "none" : "blur(5px) saturate(110%)",
           border: isSelected
             ? `1.5px solid ${cardColor}88`
             : `1px solid ${cardColor}30`,
-          borderRadius: 12,
-          boxShadow: isSelected
-            ? `0 8px 32px rgba(0,0,0,0.19), 0 0 24px ${cardColor}20`
-            : "0 8px 32px rgba(0,0,0,0.19)",
+          borderRadius: 14,
+          // 无彩色外发光（T8A）：选中只靠边框，阴影统一为内顶光+深投影
+          boxShadow:
+            "inset 0 1px 0 rgba(255,255,255,0.14), 0 24px 60px rgba(0,0,0,0.5)",
         }}
       >
       {/* ===== Header (42px) ===== */}
@@ -772,7 +779,7 @@ function AgentCard({
         ) : (
           <span
             className="truncate"
-            style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 14, fontWeight: 600, color: "#F2F2F2", cursor: "default" }}
+            style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 12.5, fontWeight: 600, color: "rgba(255,255,255,0.94)", letterSpacing: "0.01em", cursor: "default" }}
             data-no-expand
             onDoubleClick={(e) => { e.stopPropagation(); handleStartRename(); }}
             title="Double-click to rename"
@@ -803,9 +810,10 @@ function AgentCard({
           <span
             className="shrink-0"
             style={{
-              fontFamily: "'Geist Sans',sans-serif", fontSize: 10, fontWeight: 500,
-              letterSpacing: 0.4, color: "#B8D4E3",
-              background: "rgba(184,212,227,0.15)", borderRadius: 9999, padding: "2px 8px",
+              // 质感冻结：去 pill 底，小字距全大写署名
+              fontFamily: "'Geist Sans',sans-serif", fontSize: 8.5, fontWeight: 500,
+              letterSpacing: "0.18em", textTransform: "uppercase",
+              color: "rgba(184,212,227,0.7)",
             }}
           >
             {vendorBadge}
@@ -953,24 +961,56 @@ function AgentCard({
       {showTerminal && (
         <div
           className="flex-1 min-h-0 overflow-hidden"
-          style={{ padding: "10px 14px 6px 14px" }}
+          style={{
+            // 质感冻结：conmux pane = 嵌入玻璃的深井（蓝墨底与 xterm 主题同色无缝）
+            margin: "0 9px",
+            borderRadius: 9,
+            background: "#1E2030",
+            border: "1px solid rgba(0,0,0,0.4)",
+            boxShadow: "inset 0 2px 8px rgba(0,0,0,0.35), 0 1px 0 rgba(255,255,255,0.06)",
+            padding: "10px 12px",
+          }}
         >
-          <Suspense fallback={null}>
-            <XtermTerminal
-              key={card.instance_id}
-              instanceId={card.instance_id}
-              content={isDemo ? demoContent : undefined}
-              subscribeToPty={!isDemo}
-              replayHistory
-              allowPreviewResizeSync={!isDemo && !isCardExpanded && !showBack}
-              cardWidth={card.size.width}
-            />
-          </Suspense>
+          <div
+            className="w-full h-full"
+            style={{
+              // 退出态：pane 内容降透明度（footer 动作条 Q3' 的配套视觉）
+              opacity: exitState && !isDemo ? 0.45 : 1,
+              transition: "opacity 0.3s ease",
+            }}
+          >
+            <Suspense fallback={null}>
+              <XtermTerminal
+                key={card.instance_id}
+                instanceId={card.instance_id}
+                content={isDemo ? demoContent : undefined}
+                subscribeToPty={!isDemo}
+                replayHistory
+                allowPreviewResizeSync={!isDemo && !isCardExpanded && !showBack}
+                cardWidth={card.size.width}
+              />
+            </Suspense>
+          </div>
         </div>
       )}
 
-      {/* ===== Footer (32px) ===== */}
-      {showFooter && (
+      {/* ===== Footer (32px)：常态=计时+状态；退出态=升起动作条（Q3'） ===== */}
+      {showFooter && exitState && !isDemo ? (
+        <div
+          className="flex items-center shrink-0"
+          style={{
+            height: FOOTER_H, padding: "0 12px",
+            background: "rgba(237,135,150,0.06)",
+            borderTop: "1px solid rgba(237,135,150,0.3)",
+          }}
+        >
+          <ExitActionBar
+            payload={exitState}
+            onAction={(a) => void handleExitAction(a)}
+            compact
+          />
+        </div>
+      ) : showFooter && (
         <div
           className="flex items-center shrink-0"
           style={{

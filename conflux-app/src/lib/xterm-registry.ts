@@ -15,6 +15,11 @@ export function unregisterTerminal(instanceId: string, term: Terminal): void {
   if (registry.get(instanceId) === term) registry.delete(instanceId);
 }
 
+/** 取当前注册的终端（交互终端优先——后注册覆盖）。退出动作 clear/reset 用。 */
+export function getRegisteredTerminal(instanceId: string): Terminal | undefined {
+  return registry.get(instanceId);
+}
+
 /**
  * 滚动到目标行（clamp 到 buffer 实际范围）。返回是否成功（实例未挂载 → false）。
  * backend_abs 行号与 xterm buffer 行存在坐标差，调用方负责"约第 N 行"标注。

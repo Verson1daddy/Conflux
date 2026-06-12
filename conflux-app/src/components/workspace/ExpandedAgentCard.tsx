@@ -11,6 +11,8 @@ import { useAgentStore } from "@/stores/agentStore";
 import { onSubAgentCompleted, onSubAgentSpawned } from "@/lib/event-listener";
 import { getAgentTree } from "@/lib/tauri-bridge";
 import type { AgentStatus } from "@/types";
+import { useExitActions } from "@/hooks/useExitActions";
+import { ExitActionBar } from "./ExitActionBar";
 
 const XtermTerminal = lazy(() =>
   import("./XtermTerminal").then((module) => ({
@@ -170,6 +172,8 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
   // jump-back 近似滚动标注（backend_abs 行号 → "约第 N 行"，4s 自动清除）
   const jumpHint = useAgentStore((s) => s.terminalJumpHint);
   const setTerminalJumpHint = useAgentStore((s) => s.setTerminalJumpHint);
+  // 退出态（Q3'）：footer 动作条 + 终端区降透明
+  const { exitState, handleExitAction } = useExitActions(instanceId);
 
   useEffect(() => {
     if (!jumpHint || jumpHint.instanceId !== instanceId) return;
@@ -540,7 +544,13 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
                 约第 {jumpHint.startLine}–{jumpHint.endLine} 行 · 后端行号
               </span>
             )}
-            <div className="min-h-0 flex-1">
+            <div
+              className="min-h-0 flex-1"
+              style={{
+                opacity: exitState && !isDemo ? 0.45 : 1,
+                transition: "opacity 0.3s ease",
+              }}
+            >
               <Suspense fallback={null}>
                 <XtermTerminal
                   key={instanceId}
@@ -555,7 +565,20 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
           </div>
         </div>
 
-        {/* ===== Footer (36) ===== */}
+        {/* ===== Footer (36)\uff1a\u5e38\u6001=\u8ba1\u65f6+Discussion\uff1b\u9000\u51fa\u6001=\u52a8\u4f5c\u6761\uff08Q3'\uff09 ===== */}
+        {exitState && !isDemo ? (
+          <div
+            className="flex items-center shrink-0"
+            style={{
+              height: 36,
+              padding: "0 16px",
+              background: "rgba(237,135,150,0.06)",
+              borderTop: "1px solid rgba(237,135,150,0.3)",
+            }}
+          >
+            <ExitActionBar payload={exitState} onAction={(a) => void handleExitAction(a)} />
+          </div>
+        ) : (
         <div
           className="flex items-center shrink-0"
           style={{
@@ -599,6 +622,7 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
             </span>
           </button>
         </div>
+        )}
     </>
   );
 

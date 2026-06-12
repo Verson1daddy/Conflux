@@ -23,7 +23,7 @@
 //   conflux://pty-output events for instanceId and write base64-decoded
 //   bytes to the terminal as they arrive.
 
-import { useCallback, useEffect, useRef, useState, type FC } from "react";
+import { useEffect, useRef, useState, type FC } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -32,12 +32,10 @@ import {
   onPtyOutputForInstance,
 } from "@/lib/event-listener";
 import {
-  destroyAgentInstance,
   getPtyHistory,
   injectStdin,
   isProcessExited,
   resizePty,
-  respawnAgentInstance,
 } from "@/lib/tauri-bridge";
 import {
   copyTextToClipboard,
@@ -46,8 +44,6 @@ import {
 import { shouldStopTerminalWheelPropagation } from "@/lib/terminal-wheel";
 import { registerTerminal, unregisterTerminal } from "@/lib/xterm-registry";
 import { useAgentStore } from "@/stores/agentStore";
-import { useWorkspaceStore } from "@/stores/workspaceStore";
-import { ExitOverlay } from "./ExitOverlay";
 
 interface XtermTerminalProps {
   instanceId: string;
@@ -77,24 +73,25 @@ function computeFontSize(cardWidth: number | undefined): number {
 // Opaque Conflux-dark surface for the terminal area. Must be opaque — WebGL
 // renderer refuses transparent backgrounds, and even with DOM renderer a
 // transparent terminal fights with glyph anti-aliasing and looks muddy.
-// 2026-06-12 D7 落地：暖炭④（mux 契约 D7 用户裁决，源数据
-// research/mux-theme-samples/b-backgrounds.html）。
-const TERMINAL_BG = "#1B1A17";
+// 2026-06-12 默认预置 = D7 体系①蓝墨（用户实机裁决：暖炭在冷蓝壳内不搭，
+// 降为可选预置；多预置注册表归 conmux 侧，见 Q4b'）。
+const TERMINAL_BG = "#1E2030";
 
 // Theme tuned to match the Conflux palette.
-// D7 主题（mux 契约 D7 用户裁决落地）：B pastel 语义色板 × 暖炭④暗底。
+// D7 主题体系（mux 契约 D7）默认预置：B pastel 语义色板 × ①蓝墨暗底。
 // 容器层 16 色归此主题；agent truecolor 内容透传不重映射（D8 颜色所有权分层）。
 // 精确值取自用户验收样稿源数据 research/mux-theme-samples/b-backgrounds.html。
+// Q4b'（conmux base24 预置注册表 + Settings 选择器）落地后此硬编码退役。
 const CONFLUX_THEME = {
   background: TERMINAL_BG,
-  foreground: "#D8D4CC",
+  foreground: "#CAD3F5",
   cursor: "#F4DBD6",
-  cursorAccent: "#1B1A17",
-  selectionBackground: "#322F2A",
-  selectionForeground: "#E8E4DC",
-  // ANSI 16 色 → B pastel（暗版语义前景，固定）+ 暖灰阶槽
-  black: "#322E28",
-  brightBlack: "#4D4840",
+  cursorAccent: "#1E2030",
+  selectionBackground: "#363A4F",
+  selectionForeground: "#CAD3F5",
+  // ANSI 16 色 → B pastel（暗版语义前景，固定）+ 蓝墨灰阶槽
+  black: "#363A4F",
+  brightBlack: "#494D64",
   red: "#ED8796",
   brightRed: "#F0949F",
   green: "#A6DA95",
@@ -107,8 +104,8 @@ const CONFLUX_THEME = {
   brightMagenta: "#CFADF8",
   cyan: "#8BD5CA",
   brightCyan: "#98DBD2",
-  white: "#C9C4BB",
-  brightWhite: "#E8E4DC",
+  white: "#B8C0E0",
+  brightWhite: "#CAD3F5",
 };
 
 // Base64 decode to Uint8Array, then UTF-8 decode → string for xterm write.
@@ -133,78 +130,6 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const [sendFailure, setSendFailure] = useState<string | null>(null);
-
-  // C2-T1 Exit Overlay · read exit state from agentStore (NOT local state)
-  // so that resize/flip/expand toggles that unmount this component don't
-  // lose the "process is dead" signal. The store survives remounts, so
-  // when the xterm comes back the overlay instantly reappears.
-  const exitState = useAgentStore(
-    (s) => s.exitStates.get(instanceId) ?? null
-  );
-  const setExitStateStore = useAgentStore((s) => s.setExitState);
-
-  const instanceLookup = useAgentStore((s) => s.instances);
-  const addInstanceAction = useAgentStore((s) => s.addInstance);
-  const removeInstanceAction = useAgentStore((s) => s.removeInstance);
-  const removeCardAction = useWorkspaceStore((s) => s.removeCard);
-
-  // Adapter display name for the overlay title. Falls back to the raw
-  // adapter_id from the exit payload (e.g. "Claude Code" vs "claude-code").
-  const inst = instanceLookup.get(instanceId);
-  const adapterName = inst
-    ? (inst.display_name ? `${inst.adapter_name} · ${inst.display_name}` : inst.adapter_name)
-    : (exitState?.adapter_id ?? "Agent");
-
-  const handleExitAction = useCallback(
-    async (action: "restart" | "shell" | "close") => {
-      if (action === "close") {
-        // Destroy backend process (best-effort) + drop from stores so the
-        // card disappears from the canvas.
-        try {
-          await destroyAgentInstance(instanceId);
-        } catch (err) {
-          // Backend may already have gc'd the entry — ignore and still
-          // clear the frontend state so the user isn't stuck.
-          console.error("[XtermTerminal] destroy on close failed:", err);
-        }
-        removeCardAction(instanceId);
-        removeInstanceAction(instanceId);
-        return;
-      }
-
-      // Restart / Shell: hit the respawn command. On success, replace the
-      // instance metadata and clear the overlay so the xterm resumes
-      // receiving new PTY chunks (they'll arrive on the same channel).
-      try {
-        const next = await respawnAgentInstance(instanceId, action);
-        addInstanceAction(next);
-        setExitStateStore(instanceId, null);
-        // Clear the terminal visually so the new session starts on a
-        // blank slate — the history buffer is the old (exited) process.
-        terminalRef.current?.clear();
-        terminalRef.current?.reset();
-        // Force refit + notify the new PTY of the current terminal
-        // dimensions. Without this the new PTY defaults to 120×30 while
-        // the xterm grid is much smaller → TUI layout corruption.
-        try { fitAddonRef.current?.fit(); } catch { /* ignore */ }
-        const cols = terminalRef.current?.cols;
-        const rows = terminalRef.current?.rows;
-        if (cols && rows) {
-          resizePty(instanceId, cols, rows).catch(() => {});
-        }
-      } catch (err) {
-        console.error("[XtermTerminal] respawn failed:", err);
-        // Leave the overlay in place; user can still close the card.
-      }
-    },
-    [
-      instanceId,
-      addInstanceAction,
-      removeCardAction,
-      removeInstanceAction,
-      setExitStateStore,
-    ]
-  );
 
   // Rescale terminal font size when the card is resized.
   useEffect(() => {
@@ -562,13 +487,8 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
           {sendFailure}
         </div>
       )}
-      {exitState && (
-        <ExitOverlay
-          payload={exitState}
-          adapterName={adapterName}
-          onAction={handleExitAction}
-        />
-      )}
+      {/* 退出态 UI 已迁出至卡片 footer 动作条（ExitActionBar，质感批 Q3'）；
+          本组件只负责退出检测（事件 + 轮询）写入 agentStore。 */}
     </div>
   );
 };
