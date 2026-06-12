@@ -2,13 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   CTRL_C,
-  INTERRUPT_ARM_WINDOW_MS,
   createTerminalInputController,
   isTerminalFocusedElement,
 } from "./terminal-input";
 
 function createHarness() {
-  let now = 10_000;
   let selection = "";
   const sent: string[] = [];
   const echoed: string[] = [];
@@ -28,7 +26,6 @@ function createHarness() {
     copyText,
     sendData,
     echoLocal,
-    now: () => now,
   });
 
   return {
@@ -41,9 +38,6 @@ function createHarness() {
     copyText,
     setSelection: (next: string) => {
       selection = next;
-    },
-    advance: (ms: number) => {
-      now += ms;
     },
   };
 }
@@ -68,32 +62,36 @@ describe("terminal input controller", () => {
     expect(h.sent).toEqual([]);
   });
 
-  it("arms interrupt on the first Ctrl+C without sending it", () => {
+  // 2026-06-13 武装窗废除（用户实报"Ctrl+C 退不出 agent CLI"）：无选区时
+  // \x03 立即透传——防误退由 CLI 自身二次确认承担（claude "Press Ctrl-C again
+  // to exit"，ctrlc_probe 实证 ^C×2 → exit 0）。
+  it("sends Ctrl+C immediately when there is no selection", () => {
     const h = createHarness();
 
-    h.controller.handleData(CTRL_C);
-
-    expect(h.sent).toEqual([]);
-  });
-
-  it("sends Ctrl+C on the second press within the interrupt window", () => {
-    const h = createHarness();
-
-    h.controller.handleData(CTRL_C);
-    h.advance(INTERRUPT_ARM_WINDOW_MS - 1);
     h.controller.handleData(CTRL_C);
 
     expect(h.sent).toEqual([CTRL_C]);
+    expect(h.copied).toEqual([]);
   });
 
-  it("does not send Ctrl+C when the second press is outside the interrupt window", () => {
+  it("forwards each Ctrl+C press so the CLI's own double-press exit works", () => {
     const h = createHarness();
 
     h.controller.handleData(CTRL_C);
-    h.advance(INTERRUPT_ARM_WINDOW_MS + 1);
     h.controller.handleData(CTRL_C);
 
+    expect(h.sent).toEqual([CTRL_C, CTRL_C]);
+  });
+
+  it("copy-on-selection still applies, and the next plain Ctrl+C is forwarded", () => {
+    const h = createHarness();
+    h.setSelection("text");
+    h.controller.handleData(CTRL_C);
     expect(h.sent).toEqual([]);
+
+    h.setSelection("");
+    h.controller.handleData(CTRL_C);
+    expect(h.sent).toEqual([CTRL_C]);
   });
 
   it("does not locally echo ordinary input when real PTY send fails and fallback is disabled", async () => {

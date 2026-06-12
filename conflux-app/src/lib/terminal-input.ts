@@ -1,5 +1,4 @@
 export const CTRL_C = "\x03";
-export const INTERRUPT_ARM_WINDOW_MS = 1400;
 
 type MaybePromise = void | Promise<void>;
 
@@ -12,12 +11,10 @@ interface TerminalInputControllerOptions {
   allowEchoFallback?: boolean;
   onSendFailure?: (data: string, error?: unknown) => void;
   onSendSuccess?: () => void;
-  now?: () => number;
 }
 
 interface TerminalInputController {
   handleData: (data: string) => void;
-  resetInterruptArm: () => void;
 }
 
 function runWithFallback(
@@ -43,9 +40,6 @@ function runWithFallback(
 export function createTerminalInputController(
   options: TerminalInputControllerOptions,
 ): TerminalInputController {
-  let interruptArmedUntil = 0;
-  const now = options.now ?? (() => Date.now());
-
   const sendData = (data: string) => {
     runWithFallback(() => options.sendData(data), {
       onSuccess: () => options.onSendSuccess?.(),
@@ -60,33 +54,20 @@ export function createTerminalInputController(
 
   return {
     handleData(data: string) {
-      if (data === CTRL_C) {
-        if (options.hasSelection()) {
-          interruptArmedUntil = 0;
-          const selectedText = options.getSelection();
-          if (selectedText.length > 0) {
-            runWithFallback(() => options.copyText(selectedText));
-          }
-          return;
+      // Ctrl+C：有选区 = 复制（Windows Terminal 同款行为）；无选区 = 立即透传
+      // \x03（标准终端语义）。2026-06-13 移除原"双击武装窗"——它吞掉第一次按键，
+      // 叠加 claude 自身的二次确认（"Press Ctrl-C again to exit"）后用户需 4 次
+      // 精确节奏按键才能退出，实际不可用（用户实报）。防误退由 CLI 自身的二次
+      // 确认承担；\x03 注入可退出 claude 已经 ctrlc_probe 实证（^C×2 → exit 0）。
+      if (data === CTRL_C && options.hasSelection()) {
+        const selectedText = options.getSelection();
+        if (selectedText.length > 0) {
+          runWithFallback(() => options.copyText(selectedText));
         }
-
-        const currentTime = now();
-        if (currentTime <= interruptArmedUntil) {
-          interruptArmedUntil = 0;
-          sendData(CTRL_C);
-          return;
-        }
-
-        interruptArmedUntil = currentTime + INTERRUPT_ARM_WINDOW_MS;
         return;
       }
 
-      interruptArmedUntil = 0;
       sendData(data);
-    },
-
-    resetInterruptArm() {
-      interruptArmedUntil = 0;
     },
   };
 }
