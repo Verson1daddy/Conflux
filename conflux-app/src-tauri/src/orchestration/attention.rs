@@ -237,6 +237,19 @@ impl AttentionQueue {
         active
     }
 
+    /// 已推迟项（resolution=Deferred），按 remind_at 升序——Sidebar 折叠区只读投影
+    /// （spec §4.2）。无 remind_at 的异常项排最后。
+    pub fn list_deferred(&self) -> Vec<AttentionItem> {
+        let mut deferred: Vec<AttentionItem> = self
+            .items
+            .iter()
+            .filter(|i| i.resolution == Some(InteractionResolution::Deferred))
+            .cloned()
+            .collect();
+        deferred.sort_by_key(|i| i.remind_at.unwrap_or(i64::MAX));
+        deferred
+    }
+
     /// 列出被忽略项（持久保留，可 restore），按 created_at 升序。
     pub fn list_ignored(&self) -> Vec<AttentionItem> {
         let mut ignored: Vec<AttentionItem> = self
@@ -1365,6 +1378,38 @@ mod tests {
             .iter()
             .any(|a| a.action == AuditAction::Expire
                 && a.actor == crate::core::audit::AuditActor::System));
+    }
+
+    /// spec §4.2：list_deferred 只返回 deferred 项、按 remind_at 升序——
+    /// Sidebar 折叠区只读投影。
+    #[test]
+    fn test_list_deferred_returns_only_deferred_sorted_by_remind_at() {
+        let conn = init_database(":memory:").unwrap();
+        let mut q = AttentionQueue::new();
+        let active = q
+            .ingest(&conn, &perm_event("inst-a", "req-1", 1_000))
+            .unwrap()
+            .unwrap();
+        let d1 = q
+            .ingest(&conn, &perm_event("inst-b", "req-2", 1_000))
+            .unwrap()
+            .unwrap();
+        let d2 = q
+            .ingest(&conn, &perm_event("inst-c", "req-3", 1_000))
+            .unwrap()
+            .unwrap();
+        q.defer(&conn, &d1.attention_item_id, Some(5_000), 2_000)
+            .unwrap();
+        q.defer(&conn, &d2.attention_item_id, Some(2_000), 2_000)
+            .unwrap();
+
+        let deferred = q.list_deferred();
+        assert_eq!(deferred.len(), 2);
+        assert_eq!(deferred[0].remind_at, Some(2_000));
+        assert_eq!(deferred[1].remind_at, Some(5_000));
+        assert!(deferred
+            .iter()
+            .all(|i| i.attention_item_id != active.attention_item_id));
     }
 
     /// spec §4.1：sweep 过期项随 SweepReport 透出完整投影——sweeper 据此

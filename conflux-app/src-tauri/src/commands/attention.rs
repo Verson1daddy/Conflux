@@ -56,6 +56,16 @@ pub async fn list_attention_items(
     Ok(queue.list_active())
 }
 
+/// 列出已推迟（deferred）的注意力项（按 remind_at 升序）。
+/// 只读投影、无审计副作用——Sidebar 折叠区消费（spec §4.2）。
+#[tauri::command]
+pub async fn list_deferred_attention_items(
+    state: State<'_, AppState>,
+) -> Result<Vec<AttentionItem>, ConfluxError> {
+    let queue = state.attention_queue.read();
+    Ok(queue.list_deferred())
+}
+
 /// 处置一条注意力项（approve / deny / reply）。
 ///
 /// resolution + 审计原子落库（MF-8）；成功后 emit attention_updated。

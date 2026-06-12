@@ -391,6 +391,7 @@ pub fn run() {
             commands::orchestration::get_pinned_instances,
             // 控制面 P2: 注意力队列
             commands::attention::list_attention_items,
+            commands::attention::list_deferred_attention_items,
             commands::attention::resolve_attention_item,
             commands::attention::defer_attention_item,
             commands::attention::ignore_attention_item,
