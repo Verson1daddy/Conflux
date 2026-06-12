@@ -12,10 +12,12 @@ import {
 } from "@/hooks/useWorkspaceLayout";
 import {
   fitCardsIntoViewport,
+  focusCardViewport,
   shouldDisablePinnedFilter,
   shouldFitCardsIntoViewport,
 } from "@/lib/canvas-viewport";
 import { togglePinInstance } from "@/lib/tauri-bridge";
+import { onJumpBackRequested } from "@/lib/event-listener";
 import { AgentCard } from "./AgentCard";
 import { LayoutManager } from "./LayoutManager";
 import type { AgentStatus, AgentInstanceInfo } from "@/types";
@@ -394,6 +396,51 @@ function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
     },
     [selectCard, setPan, applyTransform, markInteraction]
   );
+
+  // jump-back 视口聚焦（spec §2.2）：监听跨窗口事件，把目标卡聚焦到视口中心
+  // 并触发一次性高亮脉冲。离散跳变走 CSS zoom transition（与 fitAll 同路径）。
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    let pulseTimer: ReturnType<typeof setTimeout> | null = null;
+    onJumpBackRequested((target) => {
+      const instanceId = target.instance_id;
+      if (!instanceId || target.target_kind === "fallback_context") return;
+      const el = containerRef.current;
+      if (!el) return;
+      const card = useWorkspaceStore
+        .getState()
+        .cards.find((c) => c.instance_id === instanceId);
+      if (!card) return;
+      const rect = el.getBoundingClientRect();
+      const next = focusCardViewport(card, rect.width, rect.height);
+      if (!next) return;
+      liveZoom.current = next.zoom;
+      livePan.current = next.pan;
+      logZoomRef.current = Math.log2(next.zoom);
+      targetLogZoomRef.current = logZoomRef.current;
+      setZoom(next.zoom);
+      setPan(next.pan);
+      enableZoomTransition();
+      applyTransform();
+      useWorkspaceStore.getState().setPulseCard(instanceId);
+      if (pulseTimer) clearTimeout(pulseTimer);
+      pulseTimer = setTimeout(() => {
+        useWorkspaceStore.getState().setPulseCard(null);
+      }, 700);
+    }).then((fn) => {
+      if (disposed) {
+        fn();
+        return;
+      }
+      unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      if (pulseTimer) clearTimeout(pulseTimer);
+      unlisten?.();
+    };
+  }, [applyTransform, enableZoomTransition, setPan, setZoom]);
 
   const handleFitAll = useCallback(() => {
     const el = containerRef.current;

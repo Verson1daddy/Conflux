@@ -302,6 +302,7 @@ function AgentCard({
   const selectCard = useWorkspaceStore((s) => s.selectCard);
   const bringToFront = useWorkspaceStore((s) => s.bringToFront);
   const removeCard = useWorkspaceStore((s) => s.removeCard);
+  const isPulsing = useWorkspaceStore((s) => s.pulseCardId === card.instance_id);
   const setExpandedCard = useAgentStore((s) => s.setExpandedCard);
   const removeInstance = useAgentStore((s) => s.removeInstance);
 
@@ -675,7 +676,9 @@ function AgentCard({
   return (
     <div
       ref={cardRef}
-      className="absolute card-appear agent-card-container"
+      className={`absolute card-appear agent-card-container${
+        isPulsing ? " agent-card-pulse" : ""
+      }`}
       style={{
         left: card.position.x,
         top: card.position.y,

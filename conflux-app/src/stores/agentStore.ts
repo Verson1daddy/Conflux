@@ -163,6 +163,13 @@ interface AgentStoreState {
   primaryAdapter: string | null;
   /** Currently expanded card instance_id, or null when no card is expanded */
   expandedCardId: string | null;
+  /** jump-back 近似滚动标注（ExpandedAgentCard 渲染 chip，数秒后自动清除） */
+  terminalJumpHint: {
+    instanceId: string;
+    startLine: number;
+    endLine: number;
+    approximate: boolean;
+  } | null;
   /** Guards one-shot backend list glitches without making real empty state sticky. */
   ignoredEmptyInstanceSnapshot: boolean;
   /** Discussion wizard state (multi-step + runtime chatroom) */
@@ -188,6 +195,7 @@ interface AgentStoreState {
   updateStatus: (instanceId: string, status: AgentStatus, lastActivityAt?: number) => void;
   updateTree: (instanceId: string, tree: AgentTree) => void;
   setExpandedCard: (id: string | null) => void;
+  setTerminalJumpHint: (hint: AgentStoreState["terminalJumpHint"]) => void;
   /** Toggle pin for an instance (multi-select). Updates local state + backend. */
   togglePin: (instanceId: string) => void;
   /** Hydrate pin state from backend on startup */
@@ -330,6 +338,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   favoriteAdapters: loadFavorites(),
   primaryAdapter: loadPrimaryAdapter(),
   expandedCardId: null,
+  terminalJumpHint: null,
   ignoredEmptyInstanceSnapshot: false,
   discussion: { ...EMPTY_WIZARD, participantIds: new Set() },
 
@@ -468,6 +477,8 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
     }),
 
   setExpandedCard: (id) => set({ expandedCardId: id }),
+
+  setTerminalJumpHint: (hint) => set({ terminalJumpHint: hint }),
 
   togglePin: (instanceId) =>
     set((state) => {

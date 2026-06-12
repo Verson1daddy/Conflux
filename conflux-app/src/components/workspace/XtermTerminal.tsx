@@ -44,6 +44,7 @@ import {
   createTerminalInputController,
 } from "@/lib/terminal-input";
 import { shouldStopTerminalWheelPropagation } from "@/lib/terminal-wheel";
+import { registerTerminal, unregisterTerminal } from "@/lib/xterm-registry";
 import { useAgentStore } from "@/stores/agentStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { ExitOverlay } from "./ExitOverlay";
@@ -445,6 +446,8 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
+    // jump-back 滚动用注册表（交互终端后挂载覆盖预览，恰是滚动目标）。
+    registerTerminal(instanceId, terminal);
 
     // C2-T1 belt-and-suspenders: poll is_process_exited every 2s as
     // fallback in case the event-based detection never fires (Windows
@@ -489,6 +492,7 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
       resizeObserver.disconnect();
       host.removeEventListener("wheel", stopWheelPropagation);
       webglAddon?.dispose();
+      unregisterTerminal(instanceId, terminal);
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;

@@ -2745,3 +2745,45 @@ body {
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.16);
 }
+
+/* ===== jump-back（前端交互线批次1 spec §2.2）===== */
+/* 聚焦高亮脉冲：仅描边淡出，无彩色外发光（T8A 视觉禁令）。 */
+.agent-card-pulse {
+  animation: card-focus-pulse 0.6s ease-out 1;
+}
+@keyframes card-focus-pulse {
+  0% {
+    outline: 2px solid rgba(184, 212, 227, 0.55);
+    outline-offset: 2px;
+  }
+  100% {
+    outline: 2px solid rgba(184, 212, 227, 0);
+    outline-offset: 6px;
+  }
+}
+
+/* backend_abs 近似滚动标注 chip（数秒淡出，由 store 清除收尾）。 */
+.terminal-jump-hint {
+  position: absolute;
+  top: 22px;
+  right: 28px;
+  z-index: 5;
+  font-family: "JetBrains Mono Variable", Consolas, monospace;
+  font-size: 10px;
+  color: rgba(184, 212, 227, 0.75);
+  background: rgba(14, 15, 19, 0.85);
+  border: 1px solid rgba(184, 212, 227, 0.25);
+  border-radius: 6px;
+  padding: 3px 8px;
+  pointer-events: none;
+  animation: jump-hint-fade 4s ease-out 1 forwards;
+}
+@keyframes jump-hint-fade {
+  0%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}

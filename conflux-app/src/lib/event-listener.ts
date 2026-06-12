@@ -19,6 +19,7 @@ import type {
   ProcessExitedPayload,
   IslandMode,
   AttentionItem,
+  JumpBackTarget,
 } from "../types";
 
 // ===== Tauri 事件名常量 =====
@@ -76,6 +77,18 @@ export async function onAttentionUpdated(
   callback: (items: AttentionItem[]) => void
 ): Promise<UnlistenFn> {
   return listen<AttentionItem[]>(ATTENTION_UPDATED_EVENT, (tauriEvent) => {
+    callback(tauriEvent.payload);
+  });
+}
+
+// ===== jump-back 跨窗口请求 =====
+/** lib/jump-back.ts JUMP_BACK_EVENT 广播（岛窗 fetch 落点后发出），主窗消费执行。 */
+const JUMP_BACK_REQUEST_EVENT = "conflux://jump-back-target";
+
+export async function onJumpBackRequested(
+  callback: (target: JumpBackTarget) => void
+): Promise<UnlistenFn> {
+  return listen<JumpBackTarget>(JUMP_BACK_REQUEST_EVENT, (tauriEvent) => {
     callback(tauriEvent.payload);
   });
 }

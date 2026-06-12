@@ -167,6 +167,15 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
   const instance = useAgentStore((s) => s.instances.get(instanceId));
   const tree = useAgentStore((s) => s.trees.get(instanceId));
   const updateTree = useAgentStore((s) => s.updateTree);
+  // jump-back 近似滚动标注（backend_abs 行号 → "约第 N 行"，4s 自动清除）
+  const jumpHint = useAgentStore((s) => s.terminalJumpHint);
+  const setTerminalJumpHint = useAgentStore((s) => s.setTerminalJumpHint);
+
+  useEffect(() => {
+    if (!jumpHint || jumpHint.instanceId !== instanceId) return;
+    const timer = setTimeout(() => setTerminalJumpHint(null), 4000);
+    return () => clearTimeout(timer);
+  }, [jumpHint, instanceId, setTerminalJumpHint]);
 
   // C2-A4 Shield — shared with AgentCard via store
   const shieldTier = (useAgentStore(
@@ -517,12 +526,17 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
           {/* ----- Terminal area (interactive xterm) ----- */}
           <div
             data-testid="expanded-terminal-region"
-            className="flex-1 min-w-0 min-h-0 flex overflow-hidden"
+            className="relative flex-1 min-w-0 min-h-0 flex overflow-hidden"
             style={{
               padding: "16px 20px",
               background: COLORS.surfacePrimary,
             }}
           >
+            {jumpHint && jumpHint.instanceId === instanceId && jumpHint.approximate && (
+              <span className="terminal-jump-hint" data-testid="terminal-jump-hint">
+                约第 {jumpHint.startLine}–{jumpHint.endLine} 行 · 后端行号
+              </span>
+            )}
             <div className="min-h-0 flex-1">
               <Suspense fallback={null}>
                 <XtermTerminal

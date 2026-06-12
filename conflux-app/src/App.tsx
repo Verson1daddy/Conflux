@@ -19,6 +19,10 @@ import { useIslandMode } from "./hooks/useIslandMode";
 import { useIsFullscreen } from "./hooks/useIsFullscreen";
 import { useAgentStore } from "./stores/agentStore";
 import { useIslandStore } from "./stores/islandStore";
+import { useWorkspaceStore } from "./stores/workspaceStore";
+import { onJumpBackRequested } from "./lib/event-listener";
+import { dispatchJumpTarget } from "./lib/jump-back";
+import { scrollTerminalToLine } from "./lib/xterm-registry";
 import type { AgentInstanceInfo, AgentStatus, CloseAction } from "./types";
 
 const AddAgentModal = lazy(() =>
@@ -114,6 +118,62 @@ export default function App() {
     },
     [setIslandMode]
   );
+
+  // jump-back 主窗消费（spec §2.2）：展开/滚动/fallback 通知。
+  // 视口聚焦由 Canvas 内自己监听同一事件完成（需要 live refs）。
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    onJumpBackRequested((target) => {
+      dispatchJumpTarget(target, {
+        showFallback: (summary) => {
+          useIslandStore.getState().addNotification({
+            id: `jumpback-${target.jump_back_target_id}`,
+            level: "info",
+            source_instance_id: target.instance_id ?? "",
+            source_adapter_name: "jump-back",
+            content: summary,
+            actions: [{ label: "Dismiss", action_type: "dismiss" }],
+            created_at: Date.now(),
+            read: false,
+          });
+        },
+        focusCard: (instanceId) => {
+          // Canvas 监听同一事件做视口动画；这里只负责选中态。
+          useWorkspaceStore.getState().selectCard(instanceId);
+        },
+        expandCard: (instanceId) => {
+          useAgentStore.getState().setExpandedCard(instanceId);
+        },
+        scrollTerminal: (instanceId, range, approximate) => {
+          useAgentStore.getState().setTerminalJumpHint({
+            instanceId,
+            startLine: range.start_line,
+            endLine: range.end_line,
+            approximate,
+          });
+          // 展开刚触发时交互终端可能尚未挂载（lazy + mount），重试几拍。
+          let attempts = 0;
+          const tryScroll = () => {
+            if (scrollTerminalToLine(instanceId, range.start_line) || attempts >= 10) return;
+            attempts += 1;
+            setTimeout(tryScroll, 150);
+          };
+          tryScroll();
+        },
+      });
+    }).then((fn) => {
+      if (disposed) {
+        fn();
+        return;
+      }
+      unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     const onKey = async (e: KeyboardEvent) => {

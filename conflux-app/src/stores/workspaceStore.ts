@@ -59,6 +59,9 @@ interface WorkspaceState {
   fitAll: (viewportWidth: number, viewportHeight: number) => void;
   /** Auto-arrange all cards into a compact grid with consistent gap */
   autoArrange: () => void;
+  /** jump-back 聚焦高亮脉冲的目标卡（一次性，动画后清空） */
+  pulseCardId: string | null;
+  setPulseCard: (id: string | null) => void;
 }
 
 // ===== Constants =====
@@ -125,6 +128,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   setPan: (pan: { x: number; y: number }) => set({ pan }),
 
   selectCard: (id: string | null) => set({ selectedCardId: id }),
+
+  pulseCardId: null,
+  setPulseCard: (id: string | null) => set({ pulseCardId: id }),
 
   bringToFront: (instanceId) =>
     set((state: WorkspaceState) => {
