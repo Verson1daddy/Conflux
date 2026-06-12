@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   fitCardsIntoViewport,
+  focusCardViewport,
   hasVisibleCardsInViewport,
   shouldDisablePinnedFilter,
   shouldFitCardsIntoViewport,
@@ -18,6 +19,50 @@ function card(
     z_index: 1,
   };
 }
+
+describe("focusCardViewport（jump-back 聚焦）", () => {
+  it("大卡片：居中且约占视口 60%", () => {
+    const target: CardLayout = {
+      instance_id: "a",
+      position: { x: 100, y: 200 },
+      size: { width: 800, height: 500 },
+      z_index: 1,
+    };
+    const result = focusCardViewport(target, 1440, 900);
+    expect(result).not.toBeNull();
+    const { zoom, pan } = result!;
+    // 卡片中心映射到视口中心
+    expect((100 + 400) * zoom + pan.x).toBeCloseTo(720, 6);
+    expect((200 + 250) * zoom + pan.y).toBeCloseTo(450, 6);
+    // 覆盖率：缩放后的卡片约占视口 60%（800/1440 与 500/900 同比，1.08 未触 clamp）
+    expect(zoom).toBeCloseTo(1.08, 2);
+  });
+
+  it("小卡片：zoom 被 2 上限钳住（不过度放大），仍居中", () => {
+    const target: CardLayout = {
+      instance_id: "a",
+      position: { x: 100, y: 200 },
+      size: { width: 320, height: 200 },
+      z_index: 1,
+    };
+    const result = focusCardViewport(target, 1440, 900);
+    expect(result).not.toBeNull();
+    const { zoom, pan } = result!;
+    expect(zoom).toBe(2);
+    expect((100 + 160) * zoom + pan.x).toBeCloseTo(720, 6);
+    expect((200 + 100) * zoom + pan.y).toBeCloseTo(450, 6);
+  });
+
+  it("非法卡片返回 null", () => {
+    const broken: CardLayout = {
+      instance_id: "a",
+      position: { x: Number.NaN, y: 0 },
+      size: { width: 0, height: 0 },
+      z_index: 1,
+    };
+    expect(focusCardViewport(broken, 1440, 900)).toBeNull();
+  });
+});
 
 describe("canvas viewport recovery", () => {
   it("detects cards that intersect the current viewport", () => {

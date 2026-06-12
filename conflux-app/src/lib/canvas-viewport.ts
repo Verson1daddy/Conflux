@@ -91,6 +91,32 @@ export function shouldDisablePinnedFilter(input: PinnedFilterInput): boolean {
   );
 }
 
+/** jump-back 聚焦：单卡居中、约占视口短边 60%（zoom clamp 到 [0.25, 2]）。 */
+export function focusCardViewport(
+  card: CardLayout,
+  viewportWidth: number,
+  viewportHeight: number,
+): FitCardsIntoViewportResult | null {
+  if (!isFiniteCard(card)) return null;
+  const coverage = 0.6;
+  const zoom = Math.max(
+    0.25,
+    Math.min(
+      2,
+      Math.min(
+        (viewportWidth * coverage) / card.size.width,
+        (viewportHeight * coverage) / card.size.height,
+      ),
+    ),
+  );
+  const cx = card.position.x + card.size.width / 2;
+  const cy = card.position.y + card.size.height / 2;
+  return {
+    zoom,
+    pan: { x: viewportWidth / 2 - cx * zoom, y: viewportHeight / 2 - cy * zoom },
+  };
+}
+
 export function fitCardsIntoViewport(
   input: FitCardsIntoViewportInput,
 ): FitCardsIntoViewportResult | null {
