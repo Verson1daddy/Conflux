@@ -13,6 +13,7 @@
 
 import { type FC, useState, useEffect, useCallback, useRef } from "react";
 import { respondToPermission } from "@/lib/tauri-bridge";
+import { executeJumpBack } from "@/lib/jump-back";
 import type { AttentionItem } from "@/types/interaction";
 import type { PermissionDecision } from "@/types";
 
@@ -177,6 +178,18 @@ const PermissionDialog: FC<PermissionDialogProps> = ({ item, onClose }) => {
 
         {/* 操作按钮 */}
         <div className="flex gap-3 px-5 pb-5">
+          {item.jump_back_target_id && (
+            <button
+              className="px-4 py-2.5 rounded-xl text-sm font-body font-medium
+                bg-white/5 text-white/70 border border-white/10
+                hover:bg-white/10 hover:border-white/20
+                transition-colors duration-200"
+              onClick={() => void executeJumpBack(item.jump_back_target_id!).catch(() => {})}
+              aria-label="Jump back to terminal context"
+            >
+              Jump
+            </button>
+          )}
           <button
             className="flex-1 px-4 py-2.5 rounded-xl text-sm font-body font-medium
               bg-red-500/15 text-red-400 border border-red-500/20

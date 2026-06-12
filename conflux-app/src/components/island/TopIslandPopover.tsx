@@ -15,6 +15,7 @@ import {
 } from "@/lib/compact-window-metrics";
 import { getLiveAgentInstances } from "@/lib/workspace-status";
 import { respondToPermission, setTopIslandPopoverHeight } from "@/lib/tauri-bridge";
+import { executeJumpBack } from "@/lib/jump-back";
 import { useIslandStore } from "@/stores/islandStore";
 import { useActivePermissions } from "@/stores/attentionStore";
 import { useAgentStore } from "@/stores/agentStore";
@@ -397,6 +398,18 @@ export const TopIslandPopover: FC<TopIslandPopoverProps> = ({
           >
             Deny
           </button>
+          {permissionRequest.jump_back_target_id && (
+            <button
+              type="button"
+              onClick={() => {
+                void executeJumpBack(permissionRequest.jump_back_target_id!).catch(() => {});
+                void onRestoreWorkspace();
+              }}
+              className="top-island-popover__button top-island-bubble__button top-island-popover__button--secondary top-island-bubble__button--secondary"
+            >
+              Jump
+            </button>
+          )}
         </div>
       )}
 

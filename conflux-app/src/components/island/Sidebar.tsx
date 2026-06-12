@@ -4,6 +4,7 @@ import { useIslandStore } from "@/stores/islandStore";
 import { useActivePermissions } from "@/stores/attentionStore";
 import { useAgentStore, agentDisplayLabel } from "@/stores/agentStore";
 import { focusAgentCard, respondToPermission } from "@/lib/tauri-bridge";
+import { executeJumpBack } from "@/lib/jump-back";
 import { COMPACT_WINDOW_METRICS, px } from "@/lib/compact-window-metrics";
 import { getLiveAgentInstances } from "@/lib/workspace-status";
 import type { AgentStatus, NotificationItem, PermissionDecision } from "@/types";
@@ -250,6 +251,20 @@ export const Sidebar: FC<SidebarProps> = ({
     }
   }, []);
 
+  // jump-back（spec §2.2）：点击权限行 → 取落点广播主窗执行；
+  // 旧数据无落点 → 退化为既有 focusAgentCard 聚焦。
+  const handleJumpBack = useCallback(async (item: AttentionItem) => {
+    try {
+      if (item.jump_back_target_id) {
+        await executeJumpBack(item.jump_back_target_id);
+      } else {
+        await focusAgentCard(item.instance_id);
+      }
+    } catch {
+      // 主窗未就绪等场景静默；用户可重试。
+    }
+  }, []);
+
   const handlePermissionDecision = useCallback(
     async (item: AttentionItem, decision: PermissionDecision) => {
       if (!item.interaction_id) return;
@@ -410,7 +425,13 @@ export const Sidebar: FC<SidebarProps> = ({
                   const canRespond = Boolean(item.interaction_id);
 
                   return (
-                    <div key={item.attention_item_id} className="sidebar-panel__notification">
+                    <div
+                      key={item.attention_item_id}
+                      className="sidebar-panel__notification sidebar-panel__notification--jumpable"
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => void handleJumpBack(item)}
+                    >
                       <div
                         className="sidebar-panel__notification-icon"
                         data-level="warning"
@@ -437,7 +458,10 @@ export const Sidebar: FC<SidebarProps> = ({
                           <button
                             type="button"
                             className="sidebar-panel__mini-action sidebar-panel__mini-action--approve"
-                            onClick={() => void handlePermissionDecision(item, "approve")}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handlePermissionDecision(item, "approve");
+                            }}
                             disabled={isPending || !canRespond}
                           >
                             Allow
@@ -445,7 +469,10 @@ export const Sidebar: FC<SidebarProps> = ({
                           <button
                             type="button"
                             className="sidebar-panel__mini-action"
-                            onClick={() => void handlePermissionDecision(item, "deny")}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handlePermissionDecision(item, "deny");
+                            }}
                             disabled={isPending || !canRespond}
                           >
                             Deny
