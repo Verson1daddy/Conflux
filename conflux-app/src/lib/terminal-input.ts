@@ -91,6 +91,24 @@ export function createTerminalInputController(
   };
 }
 
+// ===== 批3 §8：Ctrl+K 与终端输入隔离 =====
+// 判断当前焦点是否落在 xterm 输入面（helper textarea 或任意 .xterm 内元素）。
+// 结构化接口而非 DOM 类型：测试跑在 node 环境，生产侧传 document.activeElement
+//（Element 结构兼容）。
+
+interface FocusTargetLike {
+  classList?: { contains(token: string): boolean };
+  closest?: (selector: string) => unknown;
+}
+
+export function isTerminalFocusedElement(
+  el: FocusTargetLike | null | undefined
+): boolean {
+  if (!el) return false;
+  if (el.classList?.contains("xterm-helper-textarea")) return true;
+  return Boolean(el.closest?.(".xterm"));
+}
+
 export async function copyTextToClipboard(text: string): Promise<void> {
   if (globalThis.navigator?.clipboard?.writeText) {
     await globalThis.navigator.clipboard.writeText(text);

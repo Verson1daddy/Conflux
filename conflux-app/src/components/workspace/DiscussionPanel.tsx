@@ -6,8 +6,9 @@
 // underneath doesn't collapse. ESC on step 1-3 closes the wizard; on step 4
 // (chatroom) closes only after End Discussion confirmation.
 
-import { type FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type FC, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getLiveAgentInstances } from "@/lib/workspace-status";
+import { isScrolledNearBottom } from "@/lib/scroll-position";
 import {
   buildDiscussionReviewSnapshot,
   saveDiscussionReviewSnapshot,
@@ -996,66 +997,99 @@ const ChatroomHeader: FC<{
   );
 };
 
+// 批3 §6：消息行抽组件 + memo（审计：讨论消息无 memo P2）。
+// 消息对象除 optimistic→confirmed 替换外身份稳定（store 按 id map 保留未变行
+// 引用），默认浅比较即可——面板因输入框/暂停态等重渲染时旧行整体短路。
+// 已知微差：行内 relativeTime 标签只在该行 props 变化时刷新（原先无定时
+// 刷新机制，时效本就不保证）。
+const MessageRow: FC<{ msg: DiscussionMessage }> = memo(({ msg }) => {
+  const isUser = msg.authorInstanceId === "user";
+  const headerColor = isUser || msg.interject ? COLORS.accent : COLORS.textPrimary;
+  return (
+    <div className="flex items-start" style={{ gap: 10 }}>
+      <div
+        className="shrink-0 flex items-center justify-center"
+        style={{
+          width: 32, height: 32, borderRadius: 9999,
+          background: msg.avatarBg,
+        }}
+      >
+        <span style={{
+          fontFamily: "'Geist Sans', sans-serif",
+          fontSize: isUser ? 12 : 11, fontWeight: 700, color: "#FFFFFF",
+        }}>
+          {msg.initials}
+        </span>
+      </div>
+      <div className="flex flex-col flex-1 min-w-0" style={{ gap: 4 }}>
+        <span style={{
+          fontFamily: "'Geist Sans', sans-serif",
+          fontSize: 11, fontWeight: 600, color: headerColor,
+        }}>
+          {msg.authorName} - {msg.interject ? `Interjected during Round ${msg.round}` : `Round ${msg.round}`} - {relativeTime(msg.time)}
+        </span>
+        {deliveryLabel(msg) && (
+          <span
+            style={{
+              fontFamily: "'Geist Sans', sans-serif",
+              fontSize: 10,
+              fontWeight: 500,
+              color:
+                msg.deliveryState === "failed"
+                  ? COLORS.dangerText
+                  : msg.deliveryState === "pending"
+                    ? COLORS.warningText
+                    : COLORS.textMuted,
+            }}
+          >
+            {deliveryLabel(msg)}
+          </span>
+        )}
+        <MessageRenderer body={msg.body} codeBlocks={msg.codeBlocks} />
+      </div>
+    </div>
+  );
+});
+MessageRow.displayName = "MessageRow";
+
+// 批3 §7：sticky-bottom（审计：scroll 劫持 P2）。仅当用户贴底（±48px 松弛带）
+// 时新消息才自动滚底；上翻阅读历史不被强拽回来。
+const STICKY_BOTTOM_SLACK_PX = 48;
+
 const ChatroomBody: FC<{ messages: DiscussionMessage[] }> = ({ messages }) => {
+  const scrollRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true); // 初始挂载即在底部
+
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickToBottomRef.current = isScrolledNearBottom(
+      {
+        scrollTop: el.scrollTop,
+        clientHeight: el.clientHeight,
+        scrollHeight: el.scrollHeight,
+      },
+      STICKY_BOTTOM_SLACK_PX
+    );
+  }, []);
+
   useEffect(() => {
+    if (!stickToBottomRef.current) return;
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages.length]);
 
   return (
     <div
+      ref={scrollRef}
+      onScroll={handleScroll}
       className="flex-1 min-h-0 overflow-y-auto"
       style={{ padding: 20, background: COLORS.surfacePanel }}
     >
       <div className="flex flex-col" style={{ gap: 18 }}>
-        {messages.map((msg) => {
-          const isUser = msg.authorInstanceId === "user";
-          const headerColor = isUser || msg.interject ? COLORS.accent : COLORS.textPrimary;
-          return (
-            <div key={msg.id} className="flex items-start" style={{ gap: 10 }}>
-              <div
-                className="shrink-0 flex items-center justify-center"
-                style={{
-                  width: 32, height: 32, borderRadius: 9999,
-                  background: msg.avatarBg,
-                }}
-              >
-                <span style={{
-                  fontFamily: "'Geist Sans', sans-serif",
-                  fontSize: isUser ? 12 : 11, fontWeight: 700, color: "#FFFFFF",
-                }}>
-                  {msg.initials}
-                </span>
-              </div>
-              <div className="flex flex-col flex-1 min-w-0" style={{ gap: 4 }}>
-                <span style={{
-                  fontFamily: "'Geist Sans', sans-serif",
-                  fontSize: 11, fontWeight: 600, color: headerColor,
-                }}>
-                  {msg.authorName} - {msg.interject ? `Interjected during Round ${msg.round}` : `Round ${msg.round}`} - {relativeTime(msg.time)}
-                </span>
-                {deliveryLabel(msg) && (
-                  <span
-                    style={{
-                      fontFamily: "'Geist Sans', sans-serif",
-                      fontSize: 10,
-                      fontWeight: 500,
-                      color:
-                        msg.deliveryState === "failed"
-                          ? COLORS.dangerText
-                          : msg.deliveryState === "pending"
-                            ? COLORS.warningText
-                            : COLORS.textMuted,
-                    }}
-                  >
-                    {deliveryLabel(msg)}
-                  </span>
-                )}
-                <MessageRenderer body={msg.body} codeBlocks={msg.codeBlocks} />
-              </div>
-            </div>
-          );
-        })}
+        {messages.map((msg) => (
+          <MessageRow key={msg.id} msg={msg} />
+        ))}
         <div ref={endRef} />
       </div>
     </div>
@@ -1185,14 +1219,12 @@ const DiscussionPanel: FC = () => {
   const step = useAgentStore((s) => s.discussion.step);
   const direction = useAgentStore((s) => s.discussion.direction);
   const rules = useAgentStore((s) => s.discussion.rules);
-  const participantIds = useAgentStore((s) => s.discussion.participantIds);
   const backendState = useAgentStore((s) => s.discussion.backendState);
   const backendError = useAgentStore((s) => s.discussion.backendError);
   const messages = useAgentStore((s) => s.discussion.messages);
   const artifacts = useAgentStore((s) => s.discussion.artifacts);
   const currentRound = useAgentStore((s) => s.discussion.currentRound);
   const paused = useAgentStore((s) => s.discussion.paused);
-  const instances = useAgentStore((s) => s.instances);
   const setStep = useAgentStore((s) => s.setDiscussionStep);
   const close = useAgentStore((s) => s.closeDiscussionWizard);
   const start = useAgentStore((s) => s.startDiscussion);
@@ -1232,23 +1264,26 @@ const DiscussionPanel: FC = () => {
     return () => window.removeEventListener("keydown", onKey, true);
   }, [open, step, close]);
 
-  const primaryInstance = useMemo(() => {
-    const liveInstances = getLiveAgentInstances(instances);
-    for (const info of liveInstances) {
-      if (info.is_pinned) return info;
-    }
-    return liveInstances[0] ?? null;
-  }, [instances]);
-  const primaryName = primaryInstance
-    ? (primaryInstance.display_name ? `${primaryInstance.adapter_name} - ${primaryInstance.display_name}` : primaryInstance.adapter_name)
-    : "Primary agent";
+  // 批3 §3：主组件不再订阅整张 instances Map——讨论开着时每条 status 事件
+  // 会重渲染整个面板。改为 primitive selector（string/number，Object.is 去抖），
+  // 仅派生值真正变化时重渲染。StepParticipants 保留整 Map（要渲染全列表）。
+  const primaryName = useAgentStore((s) => {
+    const liveInstances = getLiveAgentInstances(s.instances);
+    const primary =
+      liveInstances.find((info) => info.is_pinned) ?? liveInstances[0] ?? null;
+    if (!primary) return "Primary agent";
+    return primary.display_name
+      ? `${primary.adapter_name} - ${primary.display_name}`
+      : primary.adapter_name;
+  });
 
   const directionFilled = direction.trim().length > 0;
-  const participantCount = useMemo(() => {
-    return getLiveAgentInstances(instances).filter((info) =>
-      participantIds.has(info.instance_id)
+  const participantCount = useAgentStore((s) => {
+    const ids = s.discussion.participantIds;
+    return getLiveAgentInstances(s.instances).filter((info) =>
+      ids.has(info.instance_id)
     ).length;
-  }, [instances, participantIds]);
+  });
   const pinnedArtifacts = useMemo(
     () => artifacts.filter((artifact) => artifact.status === "pinned"),
     [artifacts]

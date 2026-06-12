@@ -1,4 +1,4 @@
-import { type FC, useMemo } from "react";
+import { type FC } from "react";
 import { buildStatusSummary } from "@/lib/workspace-status";
 import { useAgentStore } from "@/stores/agentStore";
 
@@ -7,9 +7,9 @@ interface StatusBarProps {
 }
 
 const StatusBar: FC<StatusBarProps> = ({ onOpenSession }) => {
-  const instances = useAgentStore((s) => s.instances);
-
-  const statusSummary = useMemo(() => buildStatusSummary(instances), [instances]);
+  // 批3 §3：摘要是 string——selector 直接派生 primitive，仅文案变化时重渲染，
+  // 不再订阅整张 instances Map。
+  const statusSummary = useAgentStore((s) => buildStatusSummary(s.instances));
 
   return (
     <footer

@@ -1,4 +1,4 @@
-import { type FC, type MouseEvent, useMemo, useRef, useState } from "react";
+import { type FC, type MouseEvent, useRef, useState } from "react";
 import { getLiveAgentInstances } from "@/lib/workspace-status";
 import { useAgentStore } from "@/stores/agentStore";
 
@@ -25,20 +25,22 @@ const TopBar: FC<TopBarProps> = ({
   onToggleFullscreen,
   onClose,
 }) => {
-  const instances = useAgentStore((s) => s.instances);
+  // 批3 §3：不订阅整张 instances Map（任意实例字段变化都重渲染顶栏）——
+  // 胶囊只消费两个计数，selector 直接派生 primitive（Object.is 去抖）。
+  const instanceCount = useAgentStore(
+    (s) => getLiveAgentInstances(s.instances).length
+  );
+  const activeCount = useAgentStore(
+    (s) =>
+      getLiveAgentInstances(s.instances).filter(
+        (agent) =>
+          agent.status === "thinking" ||
+          agent.status === "coding" ||
+          agent.status === "waiting_permission"
+      ).length
+  );
   const [capsuleHovered, setCapsuleHovered] = useState(false);
   const lastCompactShortcutAtRef = useRef(0);
-
-  const liveAgents = useMemo(
-    () => getLiveAgentInstances(instances),
-    [instances]
-  );
-  const instanceCount = liveAgents.length;
-  const activeCount = useMemo(() => {
-    return liveAgents.filter((agent) =>
-      agent.status === "thinking" || agent.status === "coding" || agent.status === "waiting_permission"
-    ).length;
-  }, [liveAgents]);
 
   const capsuleText =
     activeCount > 0

@@ -14,17 +14,18 @@ import { CloseConfirmModal } from "./components/workspace/CloseConfirmModal";
 import { Canvas } from "./components/workspace/Canvas";
 import { TopBar } from "./components/workspace/TopBar";
 import { StatusBar } from "./components/workspace/StatusBar";
-import { useAgentInstances } from "./hooks/useAgentInstances";
+import { useAgentInstancesSync } from "./hooks/useAgentInstances";
 import { useIslandMode } from "./hooks/useIslandMode";
 import { useIsFullscreen } from "./hooks/useIsFullscreen";
 import { useAgentStore } from "./stores/agentStore";
 import { useIslandStore } from "./stores/islandStore";
 import { useWorkspaceStore } from "./stores/workspaceStore";
 import { onJumpBackRequested } from "./lib/event-listener";
+import { isTerminalFocusedElement } from "./lib/terminal-input";
 import { dispatchJumpTarget } from "./lib/jump-back";
 import { scrollTerminalToLine } from "./lib/xterm-registry";
 import { initTerminalThemes } from "./lib/terminal-theme";
-import type { AgentInstanceInfo, AgentStatus, CloseAction } from "./types";
+import type { CloseAction } from "./types";
 
 const AddAgentModal = lazy(() =>
   import("./components/workspace/AddAgentModal").then((module) => ({
@@ -68,7 +69,10 @@ const SessionPlayback = lazy(() =>
 );
 
 export default function App() {
-  const { instances, statuses } = useAgentInstances({ hydrateTrees: false });
+  // 批3 §1：App 只挂副作用（首拉 + 事件桥接），不再订阅 instances/statuses/
+  // trees 三张整 Map——原扇出：任意实例变更 → App 重渲染 → 全树级联。
+  // 数据消费下放：Canvas/TopBar/StatusBar 各自按粒度订阅 agentStore。
+  useAgentInstancesSync({ hydrateTrees: false });
   useIslandMode();
   const setIslandMode = useIslandStore((s) => s.setMode);
   const isFullscreen = useIsFullscreen();
@@ -194,6 +198,9 @@ export default function App() {
         }
       }
       if (e.key === "k" && (e.ctrlKey || e.metaKey)) {
+        // 批3 §8：交互终端聚焦时 Ctrl+K 归终端（xterm 自行转发 PTY），
+        // 不抢按键、不开搜索面板（审计：Ctrl+K 与终端冲突 P2）。
+        if (isTerminalFocusedElement(document.activeElement)) return;
         e.preventDefault();
         setSearchOpen((visible) => !visible);
       }
@@ -272,12 +279,6 @@ export default function App() {
     setDiscussionReviewVisible(true);
   }, []);
 
-  const agentMap = new Map<string, AgentInstanceInfo>();
-  instances.forEach((info, id) => agentMap.set(id, info));
-
-  const statusMap = new Map<string, AgentStatus>();
-  statuses.forEach((status, id) => statusMap.set(id, status));
-
   return (
     <div className="flex flex-col w-screen h-screen overflow-hidden canvas-gradient">
       <TopBar
@@ -293,11 +294,7 @@ export default function App() {
       />
 
       <div className="flex-1 min-h-0 relative">
-        <Canvas
-          agents={agentMap}
-          agentStatuses={statusMap}
-          isFullscreen={isFullscreen}
-        />
+        <Canvas isFullscreen={isFullscreen} />
         <Suspense fallback={null}>
           {expandedCardId && !isFullscreen && (
             <ExpandedAgentCard key={expandedCardId} instanceId={expandedCardId} />

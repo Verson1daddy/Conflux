@@ -116,14 +116,14 @@ export function useWorkspaceLayout() {
     () => selectWorkspaceLiveInstances(instanceMap),
     [instanceMap]
   );
-  const {
-    cards,
-    layoutMode,
-    autoPackConfig,
-    setCards,
-    setLayoutMode,
-    setAutoPackConfig,
-  } = useWorkspaceStore();
+  // 批3 §3：整 store 解构（挂在 Canvas 内）会把 selectedCardId/pulseCardId 等
+  // 无关变更也放大成 Canvas 重渲染——改细粒度 selector（action 引用稳定）。
+  const cards = useWorkspaceStore((s) => s.cards);
+  const layoutMode = useWorkspaceStore((s) => s.layoutMode);
+  const autoPackConfig = useWorkspaceStore((s) => s.autoPackConfig);
+  const setCards = useWorkspaceStore((s) => s.setCards);
+  const setLayoutMode = useWorkspaceStore((s) => s.setLayoutMode);
+  const setAutoPackConfig = useWorkspaceStore((s) => s.setAutoPackConfig);
 
   const initializedRef = useRef(false);
   const savedCardsRef = useRef(new Map<string, CardLayout>());

@@ -54,8 +54,10 @@ describe("App event bridge", () => {
         setFullscreen,
       }),
     }));
+    // 批3 §1：App 改用副作用层 useAgentInstancesSync（不再订阅数据 Map），
+    // mock 形状跟随重构（断言行为不变）。
     vi.doMock("./hooks/useAgentInstances", () => ({
-      useAgentInstances: () => ({ instances: new Map(), statuses: new Map() }),
+      useAgentInstancesSync: () => ({ refresh: vi.fn() }),
     }));
     vi.doMock("./hooks/useIslandMode", () => ({ useIslandMode }));
     vi.doMock("./hooks/useIsFullscreen", () => ({
@@ -131,8 +133,10 @@ describe("App event bridge", () => {
         setFullscreen,
       }),
     }));
+    // 批3 §1：App 改用副作用层 useAgentInstancesSync（不再订阅数据 Map），
+    // mock 形状跟随重构（断言行为不变）。
     vi.doMock("./hooks/useAgentInstances", () => ({
-      useAgentInstances: () => ({ instances: new Map(), statuses: new Map() }),
+      useAgentInstancesSync: () => ({ refresh: vi.fn() }),
     }));
     vi.doMock("./hooks/useIslandMode", () => ({ useIslandMode }));
     vi.doMock("./hooks/useIsFullscreen", () => ({
@@ -214,8 +218,10 @@ describe("App event bridge", () => {
         setFullscreen,
       }),
     }));
+    // 批3 §1：App 改用副作用层 useAgentInstancesSync（不再订阅数据 Map），
+    // mock 形状跟随重构（断言行为不变）。
     vi.doMock("./hooks/useAgentInstances", () => ({
-      useAgentInstances: () => ({ instances: new Map(), statuses: new Map() }),
+      useAgentInstancesSync: () => ({ refresh: vi.fn() }),
     }));
     vi.doMock("./hooks/useIslandMode", () => ({ useIslandMode }));
     vi.doMock("./hooks/useIsFullscreen", () => ({

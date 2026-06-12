@@ -52,12 +52,12 @@ interface LayoutManagerProps {
  * AutoPack configuration. Positioned in the top-right corner of the canvas.
  */
 function LayoutManager({ onAutoPack }: LayoutManagerProps) {
-  const {
-    layoutMode,
-    autoPackConfig,
-    setLayoutMode,
-    setAutoPackConfig,
-  } = useWorkspaceStore();
+  // 批3 §3：整 store 解构会让任意 workspace 变更（zoom/pan 提交、selectCard、
+  // pulseCard…）都重渲染工具条——改细粒度 selector（action 引用稳定）。
+  const layoutMode = useWorkspaceStore((s) => s.layoutMode);
+  const autoPackConfig = useWorkspaceStore((s) => s.autoPackConfig);
+  const setLayoutMode = useWorkspaceStore((s) => s.setLayoutMode);
+  const setAutoPackConfig = useWorkspaceStore((s) => s.setAutoPackConfig);
 
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);

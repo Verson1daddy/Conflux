@@ -4,14 +4,18 @@
 // Free resize via corner handle, no min size constraint for manual operations.
 // Content adapts to card dimensions.
 
-import { Suspense, lazy, useCallback, useRef, useLayoutEffect, useMemo, useState, useEffect } from "react";
+import { Suspense, lazy, memo, useCallback, useRef, useLayoutEffect, useMemo, useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useAgentStore } from "@/stores/agentStore";
-import { destroyAgentInstance, renameAgentInstance } from "@/lib/tauri-bridge";
+import {
+  destroyAgentInstance,
+  renameAgentInstance,
+  togglePinInstance,
+} from "@/lib/tauri-bridge";
 import {
   CARD_COLOR_PRESETS,
-  resolveCardAccentColor,
+  DEFAULT_CARD_ACCENT_COLOR,
   resolveCardStatusMeta,
 } from "@/lib/agent-visuals";
 import { SNAP_GRID_PX } from "@/types/layout";
@@ -189,7 +193,6 @@ interface AgentCardProps {
    *  in fullscreen flip mode — the card fades out of the way so attention
    *  collapses onto the flipped card. */
   isDimmed?: boolean;
-  onTogglePin?: () => void;
 }
 
 // ===== Layout breakpoints =====
@@ -294,7 +297,7 @@ function resetSnapState() {
 }
 
 
-function AgentCard({
+function AgentCardImpl({
   card,
   agentName,
   adapterBadge,
@@ -307,7 +310,6 @@ function AgentCard({
   lastActivity,
   isFlipped = false,
   isDimmed = false,
-  onTogglePin,
 }: AgentCardProps) {
   const updateCardPosition = useWorkspaceStore((s) => s.updateCardPosition);
   const updateCardSize = useWorkspaceStore((s) => s.updateCardSize);
@@ -332,10 +334,13 @@ function AgentCard({
   const shieldRef = useRef<HTMLDivElement>(null);
   const shieldPopoverRef = useRef<HTMLDivElement>(null);
 
-  // C2-A4b Card color — read from store, fallback to adapter default color
-  const cardColors = useAgentStore((s) => s.cardColors);
+  // C2-A4b Card color — read from store, fallback to adapter default color.
+  // 批3 §3：细粒度 selector（只订本卡颜色 string）——原整 Map 订阅会让
+  // 任一卡换色全卡重渲染。
+  const cardColor = useAgentStore(
+    (s) => s.cardColors.get(card.instance_id) ?? DEFAULT_CARD_ACCENT_COLOR
+  );
   const agentInfo = useAgentStore((s) => s.instances.get(card.instance_id));
-  const cardColor = resolveCardAccentColor(card.instance_id, cardColors);
   const statusMeta = resolveCardStatusMeta(_status);
   const setCardColorStore = useAgentStore((s) => s.setCardColor);
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
@@ -439,19 +444,18 @@ function AgentCard({
     () => (isDemo ? (DEMO_TERMINAL_ANSI[adapterBadge] ?? "") : ""),
     [adapterBadge, isDemo]
   );
-  const [footerNow, setFooterNow] = useState(() => Date.now());
-  const footerInfo = useMemo(
-    () =>
-      resolveCardFooterInfo({
-        isDemo,
-        adapterBadge,
-        status: _status,
-        fileCount,
-        lastActivity,
-        now: footerNow,
-      }),
-    [adapterBadge, fileCount, footerNow, isDemo, lastActivity, _status]
-  );
+  // 批3 §4：footer 计时去 state 化（审计：每秒 setState 整卡重渲染 P2）。
+  // 渲染时直接取当前时刻（无 memo——memo 会把旧时刻钉死在无关重渲染里）；
+  // 秒级刷新由下方 interval 对 span 做 textContent 直写，绕过 React。
+  const footerInfo = resolveCardFooterInfo({
+    isDemo,
+    adapterBadge,
+    status: _status,
+    fileCount,
+    lastActivity,
+    now: Date.now(),
+  });
+  const footerTimeRef = useRef<HTMLSpanElement>(null);
 
   // Content adaptation based on card size
   const h = card.size.height;
@@ -485,11 +489,21 @@ function AgentCard({
     }
 
     const timer = window.setInterval(() => {
-      setFooterNow(Date.now());
+      // ref 直写：退出态分支不渲染计时 span（ref 为 null）→ 空操作。
+      const el = footerTimeRef.current;
+      if (!el) return;
+      el.textContent = formatCardElapsed(lastActivity, Date.now());
     }, 1000);
 
     return () => window.clearInterval(timer);
   }, [isDemo, lastActivity, showFooter]);
+
+  // 批3 §2：pin 切换内化（原 Canvas 内联闭包 prop 每渲染新身份，使 memo 失效）。
+  // 与原 Canvas 闭包逐字等价：本地乐观翻转 + 后端持久化（失败静默）。
+  const handleTogglePin = useCallback(() => {
+    useAgentStore.getState().togglePin(card.instance_id);
+    togglePinInstance(card.instance_id).catch(() => {});
+  }, [card.instance_id]);
 
   // ===== Card click: select + bring to front =====
 
@@ -801,7 +815,7 @@ function AgentCard({
             transition: "opacity 0.15s",
           }}
           onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); onTogglePin?.(); }}
+          onClick={(e) => { e.stopPropagation(); handleTogglePin(); }}
           title={isPinned ? "Pinned (click to unpin)" : "Pin"}
         >
           <svg width="11" height="11" viewBox="0 0 24 24" fill={isPinned ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1022,7 +1036,10 @@ function AgentCard({
           }}
         >
           {footerInfo.time && (
-            <span style={{ fontFamily: "'JetBrains Mono Variable',monospace", fontSize: 10, color: "#6B7280" }}>
+            <span
+              ref={footerTimeRef}
+              style={{ fontFamily: "'JetBrains Mono Variable',monospace", fontSize: 10, color: "#6B7280" }}
+            >
               {footerInfo.time}
             </span>
           )}
@@ -1100,6 +1117,11 @@ function AgentCard({
     </div>
   );
 }
+
+// 批3 §2：memo（审计：AgentCard 无 memo P2）。props 全部为 primitive 或
+// 身份稳定对象（card：workspaceStore 各 map 更新均保留未变卡引用），默认
+// 浅比较即可——Canvas 因 Map 变更重渲染时，props 未变的卡整体短路。
+const AgentCard = memo(AgentCardImpl);
 
 export { AgentCard };
 export type { AgentCardProps };

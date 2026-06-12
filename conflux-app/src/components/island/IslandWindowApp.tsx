@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { IslandBar } from "./IslandBar";
-import { useAgentInstances } from "@/hooks/useAgentInstances";
+import { useAgentInstancesSync } from "@/hooks/useAgentInstances";
 import { useIslandMode } from "@/hooks/useIslandMode";
 import { markIslandWindowReady } from "@/lib/tauri-bridge";
 import { useIslandStore } from "@/stores/islandStore";
@@ -11,7 +11,9 @@ function windowBackground(_mode: IslandMode): string {
 }
 
 export function IslandWindowApp() {
-  useAgentInstances({ hydrateTrees: false });
+  // 批3 §1：岛窗只需副作用（首拉 + 事件桥接），不订阅数据 Map——
+  // 原 useAgentInstances 返回值本就未消费，纯多余扇出。
+  useAgentInstancesSync({ hydrateTrees: false });
   const { isHydrated } = useIslandMode({ preferBackendMode: true });
   const mode = useIslandStore((s) => s.mode) as IslandMode;
   const [isReady, setIsReady] = useState(false);

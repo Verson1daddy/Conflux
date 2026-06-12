@@ -4,6 +4,7 @@ import {
   CTRL_C,
   INTERRUPT_ARM_WINDOW_MS,
   createTerminalInputController,
+  isTerminalFocusedElement,
 } from "./terminal-input";
 
 function createHarness() {
@@ -156,5 +157,41 @@ describe("terminal input controller", () => {
     await Promise.resolve();
 
     expect(h.echoed).toEqual(["a"]);
+  });
+});
+
+// ===== 批3 §8：Ctrl+K 与终端输入隔离 =====
+// 全局快捷键在 xterm 聚焦时必须放行给终端（node 环境，结构化伪元素即可）。
+
+function fakeElement(options: {
+  classes?: string[];
+  insideXterm?: boolean;
+}): { classList: { contains(token: string): boolean }; closest: (selector: string) => unknown } {
+  const classes = new Set(options.classes ?? []);
+  return {
+    classList: { contains: (token: string) => classes.has(token) },
+    closest: (selector: string) =>
+      selector === ".xterm" && options.insideXterm ? {} : null,
+  };
+}
+
+describe("isTerminalFocusedElement", () => {
+  it("returns false for a missing focus target", () => {
+    expect(isTerminalFocusedElement(null)).toBe(false);
+    expect(isTerminalFocusedElement(undefined)).toBe(false);
+  });
+
+  it("returns false for ordinary focused elements", () => {
+    expect(isTerminalFocusedElement(fakeElement({ classes: ["search-input"] }))).toBe(false);
+  });
+
+  it("detects the xterm helper textarea by class", () => {
+    expect(
+      isTerminalFocusedElement(fakeElement({ classes: ["xterm-helper-textarea"] }))
+    ).toBe(true);
+  });
+
+  it("detects any element nested inside an .xterm host", () => {
+    expect(isTerminalFocusedElement(fakeElement({ insideXterm: true }))).toBe(true);
   });
 });

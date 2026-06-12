@@ -2,7 +2,7 @@
 // The main workspace canvas container.
 // Performance: zoom/pan use ref + direct DOM transform; store commits only on idle.
 
-import { useCallback, useMemo, useRef, useEffect, useState } from "react";
+import { memo, useCallback, useMemo, useRef, useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useAgentStore } from "@/stores/agentStore";
@@ -16,11 +16,9 @@ import {
   shouldDisablePinnedFilter,
   shouldFitCardsIntoViewport,
 } from "@/lib/canvas-viewport";
-import { togglePinInstance } from "@/lib/tauri-bridge";
 import { onJumpBackRequested } from "@/lib/event-listener";
 import { AgentCard } from "./AgentCard";
 import { LayoutManager } from "./LayoutManager";
-import type { AgentStatus, AgentInstanceInfo } from "@/types";
 import {
   resolveGridLevels,
   CROSS_ARM_PX,
@@ -38,15 +36,18 @@ import {
 } from "@/lib/camera-math";
 
 interface CanvasProps {
-  agents: Map<string, AgentInstanceInfo>;
-  agentStatuses: Map<string, AgentStatus>;
   /** When true, the expanded card is rendered in-place via AgentCard's 3D
    *  flip rather than as an overlay. App.tsx decides based on window
    *  fullscreen state. */
   isFullscreen: boolean;
 }
 
-function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
+function CanvasImpl({ isFullscreen }: CanvasProps) {
+  // 批3 §1：agent 数据源内化（原经 App 重建 Map 透传 props——App 因此订阅
+  // 整 store 且每渲染产新 Map 身份，任意变更全树级联）。store 直读同两张
+  // Map，数据与时序等价；卡片级短路交给 AgentCard memo。
+  const agents = useAgentStore((s) => s.instances);
+  const agentStatuses = useAgentStore((s) => s.statuses);
   const expandedCardId = useAgentStore((s) => s.expandedCardId);
   const cards = useWorkspaceStore((s) => s.cards);
   const layoutMode = useWorkspaceStore((s) => s.layoutMode);
@@ -592,10 +593,6 @@ function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
               lastActivity={agentInfo?.last_activity_at ?? 0}
               isFlipped={isFlipped}
               isDimmed={isDimmed}
-              onTogglePin={() => {
-                useAgentStore.getState().togglePin(card.instance_id);
-                togglePinInstance(card.instance_id).catch(() => {});
-              }}
             />
           );
         })}
@@ -687,6 +684,10 @@ function Canvas({ agents, agentStatuses, isFullscreen }: CanvasProps) {
     </div>
   );
 }
+
+// 批3 §1：memo——App 因本地弹层态重渲染时（isFullscreen 未变）Canvas 整体
+// 短路，0 卡重渲染。
+const Canvas = memo(CanvasImpl);
 
 export { Canvas };
 export type { CanvasProps };

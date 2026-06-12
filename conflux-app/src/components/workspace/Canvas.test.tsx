@@ -32,9 +32,15 @@ vi.mock("@/stores/workspaceStore", () => ({
     }),
 }));
 
+// 批3 §1：Canvas 数据源内化后从 agentStore selector 取 instances/statuses，
+// mock state 形状跟随补齐（断言行为不变）。
 vi.mock("@/stores/agentStore", () => ({
   useAgentStore: (selector: (state: any) => unknown) =>
-    selector({ expandedCardId: null }),
+    selector({
+      expandedCardId: null,
+      instances: new Map(),
+      statuses: new Map(),
+    }),
 }));
 
 vi.mock("@/hooks/useWorkspaceLayout", () => ({
@@ -77,8 +83,6 @@ describe("Canvas grid layer", () => {
     const { Canvas } = await import("./Canvas");
     const renderer = TestRenderer.create(
       createElement(Canvas, {
-        agents: new Map(),
-        agentStatuses: new Map(),
         isFullscreen: false,
       }),
     );
@@ -99,8 +103,6 @@ describe("Canvas grid layer", () => {
     const { Canvas } = await import("./Canvas");
     TestRenderer.create(
       createElement(Canvas, {
-        agents: new Map(),
-        agentStatuses: new Map(),
         isFullscreen: false,
       }),
     );
@@ -112,8 +114,6 @@ describe("Canvas grid layer", () => {
     const { Canvas } = await import("./Canvas");
     const renderer = TestRenderer.create(
       createElement(Canvas, {
-        agents: new Map(),
-        agentStatuses: new Map(),
         isFullscreen: false,
       }),
     );
@@ -130,8 +130,6 @@ describe("Canvas grid layer", () => {
     const { Canvas } = await import("./Canvas");
     TestRenderer.create(
       createElement(Canvas, {
-        agents: new Map(),
-        agentStatuses: new Map(),
         isFullscreen: false,
       }),
     );

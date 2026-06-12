@@ -13,6 +13,23 @@
 
 import { type FC, useState, useEffect, useCallback, useRef } from "react";
 import { respondToPermission } from "@/lib/tauri-bridge";
+
+// 批3 §5：倒计时格式与样式（ref 直写共用，渲染与 interval 两路保持一致）
+function formatCountdown(remaining: number): string {
+  const minutes = Math.floor(remaining / 60);
+  const seconds = remaining % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function countdownTimeClassName(remaining: number): string {
+  return `text-xs font-mono ${remaining < 30 ? "text-red-400" : "text-white/50"}`;
+}
+
+function countdownBarClassName(remaining: number): string {
+  return `h-full rounded-full transition-all duration-1000 ease-linear ${
+    remaining < 30 ? "bg-red-500" : "bg-accent"
+  }`;
+}
 import { executeJumpBack } from "@/lib/jump-back";
 import type { AttentionItem } from "@/types/interaction";
 import type { PermissionDecision } from "@/types";
@@ -34,14 +51,19 @@ interface PermissionDialogProps {
  * - 超时自动关闭（后端负责到期处置，前端仅收起弹窗）
  */
 const PermissionDialog: FC<PermissionDialogProps> = ({ item, onClose }) => {
-  // 倒计时状态
+  // 倒计时状态。
+  // 批3 §5：去 setState 化（审计：每秒 setState 整 dialog 重渲染 P2）——
+  // remaining 入 ref，秒级刷新对时间文案/进度条三处 DOM ref 直写，绕过
+  // React；归零路径不变（clearInterval + onClose，队列态由后端到期处置）。
   const timeoutSeconds = item.timeout_seconds || 120;
   const elapsedAtMount = Math.max(
     0,
     Math.floor((Date.now() - item.created_at) / 1000)
   );
   const initialRemaining = Math.max(0, timeoutSeconds - elapsedAtMount);
-  const [remaining, setRemaining] = useState(initialRemaining);
+  const remainingRef = useRef(initialRemaining);
+  const timeTextRef = useRef<HTMLSpanElement>(null);
+  const progressBarRef = useRef<HTMLDivElement>(null);
 
   // 防止重复提交
   const [submitting, setSubmitting] = useState(false);
@@ -51,18 +73,33 @@ const PermissionDialog: FC<PermissionDialogProps> = ({ item, onClose }) => {
 
   // 倒计时 effect
   useEffect(() => {
+    const applyCountdown = (remaining: number) => {
+      const timeEl = timeTextRef.current;
+      if (timeEl) {
+        timeEl.textContent = formatCountdown(remaining);
+        timeEl.className = countdownTimeClassName(remaining);
+      }
+      const barEl = progressBarRef.current;
+      if (barEl) {
+        barEl.style.width = `${(remaining / timeoutSeconds) * 100}%`;
+        barEl.className = countdownBarClassName(remaining);
+      }
+    };
+
     intervalRef.current = setInterval(() => {
-      setRemaining((prev) => {
-        if (prev <= 1) {
-          // 超时 → 自动关闭（队列态由后端到期逻辑处置）
-          if (intervalRef.current !== null) {
-            clearInterval(intervalRef.current);
-          }
-          onClose();
-          return 0;
+      const prev = remainingRef.current;
+      if (prev <= 1) {
+        // 超时 → 自动关闭（队列态由后端到期逻辑处置）
+        remainingRef.current = 0;
+        applyCountdown(0);
+        if (intervalRef.current !== null) {
+          clearInterval(intervalRef.current);
         }
-        return prev - 1;
-      });
+        onClose();
+        return;
+      }
+      remainingRef.current = prev - 1;
+      applyCountdown(prev - 1);
     }, 1000);
 
     return () => {
@@ -70,7 +107,7 @@ const PermissionDialog: FC<PermissionDialogProps> = ({ item, onClose }) => {
         clearInterval(intervalRef.current);
       }
     };
-  }, [item.attention_item_id, onClose]);
+  }, [item.attention_item_id, onClose, timeoutSeconds]);
 
   // 处理决定（Approve 或 Deny）
   const handleDecision = useCallback(
@@ -88,13 +125,8 @@ const PermissionDialog: FC<PermissionDialogProps> = ({ item, onClose }) => {
     [item.instance_id, item.interaction_id, submitting, onClose]
   );
 
-  // 格式化倒计时 mm:ss
-  const minutes = Math.floor(remaining / 60);
-  const seconds = remaining % 60;
-  const timeDisplay = `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-
-  // 倒计时颜色：< 30s 变红
-  const timeColor = remaining < 30 ? "text-red-400" : "text-white/50";
+  // 渲染时取 ref 当前值（提交态等少量重渲染也显示新鲜值，与 interval 一致）
+  const renderedRemaining = remainingRef.current;
 
   return (
     <div
@@ -119,8 +151,11 @@ const PermissionDialog: FC<PermissionDialogProps> = ({ item, onClose }) => {
             <h2 className="text-sm font-display font-semibold text-white">
               Permission Request
             </h2>
-            <span className={`text-xs font-mono ${timeColor}`}>
-              {timeDisplay}
+            <span
+              ref={timeTextRef}
+              className={countdownTimeClassName(renderedRemaining)}
+            >
+              {formatCountdown(renderedRemaining)}
             </span>
           </div>
 
@@ -174,11 +209,10 @@ const PermissionDialog: FC<PermissionDialogProps> = ({ item, onClose }) => {
         <div className="px-5 pb-3">
           <div className="h-1 rounded-full bg-white/5 overflow-hidden">
             <div
-              className={`h-full rounded-full transition-all duration-1000 ease-linear ${
-                remaining < 30 ? "bg-red-500" : "bg-accent"
-              }`}
+              ref={progressBarRef}
+              className={countdownBarClassName(renderedRemaining)}
               style={{
-                width: `${(remaining / timeoutSeconds) * 100}%`,
+                width: `${(renderedRemaining / timeoutSeconds) * 100}%`,
               }}
             />
           </div>
