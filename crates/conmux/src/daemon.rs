@@ -403,10 +403,20 @@ fn build_reply(req: MuxRequest, shared: &Arc<DaemonShared>, conn: &ConnHandle) -
         }
         // D-6 attach（限速 + 并发=1，D-7）：见 attach_with_limits。
         MuxOp::Attach { pane_id } => attach_with_limits(shared, conn, pane_id),
-        // M2c：主题热切换需向订阅者广播 ThemeChanged（依赖广播面）。
-        MuxOp::SetTheme { .. } => Err(ConmuxError::Unsupported {
-            message: "SetTheme 在 M2c 落地（主题广播）".into(),
-        }),
+        // M2c：主题热切换——校验 id → 向**全部连接**广播 ThemeChanged（全局，daemon 不持久化）。
+        MuxOp::SetTheme { id } => {
+            if crate::theme::builtin_terminal_themes()
+                .iter()
+                .any(|t| t.id == id)
+            {
+                broadcast_theme_changed(shared, &id);
+                Ok(MuxPayload::ThemeSet)
+            } else {
+                Err(ConmuxError::Unsupported {
+                    message: format!("未知主题 id: {id}（theme ls 查可用预置）"),
+                })
+            }
+        }
     };
     match result {
         Ok(payload) => MuxReply::Ok {
@@ -475,6 +485,17 @@ fn attach_with_limits(
                 .remove(&pane_id);
             Err(e)
         }
+    }
+}
+
+/// 向全部连接广播主题切换（D-8：全局事件，非按订阅；消费者据此实时换肤）。
+fn broadcast_theme_changed(shared: &Arc<DaemonShared>, id: &str) {
+    let conns = shared.conns.lock().unwrap_or_else(recover);
+    for conn in conns.values() {
+        conn.enqueue(
+            WireFrame::Notify(MuxNotify::ThemeChanged { id: id.to_string() }),
+            128,
+        );
     }
 }
 
@@ -800,13 +821,57 @@ mod tests {
         );
     }
 
-    /// SetTheme 仍 Unsupported（M2c 广播）。
+    /// M2c：有效 id 的 SetTheme 向**全部已注册连接**广播 ThemeChanged（全局换肤）。
     #[test]
-    fn set_theme_unsupported_in_m2b() {
+    fn set_theme_broadcasts_to_all_connections() {
+        let shared = test_shared();
+        let (conn_a, rx_a) = test_conn();
+        let (conn_b, rx_b) = test_conn();
+        shared
+            .conns
+            .lock()
+            .unwrap()
+            .insert(1, Arc::clone(&conn_a));
+        shared
+            .conns
+            .lock()
+            .unwrap()
+            .insert(2, Arc::clone(&conn_b));
+        let reply = build_reply(
+            MuxRequest {
+                correlation_id: 9,
+                op: MuxOp::SetTheme {
+                    id: crate::theme::DEFAULT_TERMINAL_THEME_ID.into(),
+                },
+            },
+            &shared,
+            &conn_a,
+        );
+        assert!(matches!(
+            reply,
+            MuxReply::Ok {
+                payload: MuxPayload::ThemeSet,
+                ..
+            }
+        ));
+        for rx in [&rx_a, &rx_b] {
+            let frames = drain_frames(rx);
+            assert!(
+                frames
+                    .iter()
+                    .any(|f| matches!(f, WireFrame::Notify(MuxNotify::ThemeChanged { .. }))),
+                "SetTheme 应向全部连接广播 ThemeChanged"
+            );
+        }
+    }
+
+    /// 未知 theme id ⇒ Unsupported（不广播垃圾）。
+    #[test]
+    fn set_theme_unknown_id_rejected() {
         let mut r = reader_with(&[
             hello(PROTOCOL_VERSION),
             request(MuxOp::SetTheme {
-                id: "b-dark-ink".into(),
+                id: "no-such-theme".into(),
             }),
         ]);
         let (conn, rx) = test_conn();

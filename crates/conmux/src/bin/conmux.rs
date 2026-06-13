@@ -30,6 +30,7 @@ fn run(args: &[String]) -> i32 {
         Some("resize") => cmd_resize(&args[1..]),
         Some("respawn") => cmd_respawn(&args[1..]),
         Some("attach") => cmd_attach(&args[1..]),
+        Some("theme") => cmd_theme(&args[1..]),
         Some("kill-server") => cmd_kill_server(),
         Some("-h") | Some("--help") | Some("help") | None => {
             usage();
@@ -58,6 +59,8 @@ fn usage() {
   conmux resize -t PANE -x COLS -y ROWS  调整 pane 尺寸\n\
   conmux respawn -t PANE [-d DIR] [--size RxC] [-- CMD...]  同 ID 重起\n\
   conmux attach -t PANE                  接入 pane（重放画面 + 转发键入；Ctrl+] 脱离）\n\
+  conmux theme ls                        列主题预置\n\
+  conmux theme set ID                    热切换主题（广播全部客户端）\n\
   conmux kill-server                     终结 daemon 及全部会话\n\
 \n\
 其余子命令（连接当前用户 daemon，不存在则自动拉起）。"
@@ -392,6 +395,35 @@ mod cmds {
         let _ = &render; // 渲染线程随进程退出终结
         eprintln!("\r\n[conmux detached — pane 仍在 daemon 中运行]");
         0
+    }
+
+    /// `conmux theme ls` / `conmux theme set ID`。
+    pub fn cmd_theme(args: &[String]) -> i32 {
+        match args.first().map(String::as_str) {
+            Some("ls") => with_client(|c| match c.request(MuxOp::ListThemes)? {
+                MuxPayload::Themes(themes) => {
+                    println!("{:<14} {:<10} NAME", "ID", "APPEARANCE");
+                    for t in &themes {
+                        println!("{:<14} {:<10} {}", t.id, format!("{:?}", t.appearance), t.name);
+                    }
+                    Ok(())
+                }
+                other => Err(unexpected(other)),
+            }),
+            Some("set") => {
+                let Some(id) = args.get(1).cloned() else {
+                    return fail("theme set 需 ID");
+                };
+                with_client(|c| match c.request(MuxOp::SetTheme { id: id.clone() })? {
+                    MuxPayload::ThemeSet => {
+                        eprintln!("主题已切换并广播: {id}");
+                        Ok(())
+                    }
+                    other => Err(unexpected(other)),
+                })
+            }
+            _ => fail("用法: conmux theme ls | conmux theme set ID"),
+        }
     }
 
     /// `conmux kill-server`：终结 daemon 及全部会话。
