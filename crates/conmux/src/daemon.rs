@@ -21,7 +21,7 @@ use std::io::Read;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::event::{MuxNotify, PaneEventSink};
 use crate::pane::PaneHost;
@@ -39,6 +39,63 @@ const MAX_QUEUE_BYTES: usize = 8 * 1024 * 1024;
 
 /// per-连接 attach 最小间隔（D-7 限速）：防快照放大 DoS（~100B Attach → 1.4MB 快照帧）。
 const ATTACH_MIN_INTERVAL: Duration = Duration::from_millis(500);
+
+/// daemon 日志滚动上限（D-2：本地文件，无遥测）。
+const MAX_LOG_BYTES: u64 = 1024 * 1024;
+
+// ===== 连接审计日志（D-2 / RT-2，本地文件，无遥测，fail-soft）=====
+
+/// daemon 连接级审计日志：连接/断开事件（{pid, image_path, 时刻}）落本地文件。
+/// **fail-soft**：任何 I/O 失败静默忽略，绝不阻断服务（审计是诊断辅助，非服务依赖）。
+struct DaemonLog {
+    state: Mutex<LogState>,
+}
+struct LogState {
+    path: std::path::PathBuf,
+    max_bytes: u64,
+}
+
+impl DaemonLog {
+    /// 生产：`%LOCALAPPDATA%\conmux\daemon.log`（滚动 1 MiB）。无 LOCALAPPDATA 退化到 temp。
+    fn for_current_user() -> Self {
+        let mut dir = std::env::var_os("LOCALAPPDATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        dir.push("conmux");
+        let _ = std::fs::create_dir_all(&dir);
+        dir.push("daemon.log");
+        Self::with_path(dir, MAX_LOG_BYTES)
+    }
+
+    fn with_path(path: std::path::PathBuf, max_bytes: u64) -> Self {
+        Self {
+            state: Mutex::new(LogState { path, max_bytes }),
+        }
+    }
+
+    /// 追加一条审计行（`<epoch_ms> <event>`）。滚动：超上限把现文件改名 .1 后另起。
+    fn log(&self, event: &str) {
+        use std::io::Write;
+        let g = self.state.lock().unwrap_or_else(recover);
+        // 滚动（best-effort）。
+        if let Ok(meta) = std::fs::metadata(&g.path) {
+            if meta.len() > g.max_bytes {
+                let _ = std::fs::rename(&g.path, g.path.with_extension("log.1"));
+            }
+        }
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&g.path)
+        {
+            let _ = writeln!(f, "{ts} {event}");
+        }
+    }
+}
 
 /// 中毒容忍锁恢复（H-3，与 pane.rs::recover 同策略）——连接线程 panic 不级联成全域锁风暴。
 fn recover<T>(e: PoisonError<MutexGuard<'_, T>>) -> MutexGuard<'_, T> {
@@ -141,6 +198,8 @@ struct DaemonShared {
     next_conn_id: AtomicU64,
     /// 正在取快照的 pane 集（D-7：per-pane 并发快照=1，进行中再 Attach 回 Busy，防放大）。
     attaching: Mutex<HashSet<PaneId>>,
+    /// 连接级审计日志（D-2/RT-2，本地文件 fail-soft）。
+    log: DaemonLog,
 }
 
 /// conmux daemon。`bind` 绑定管道，`serve` 进入服务循环。
@@ -168,6 +227,7 @@ impl Daemon {
             conns,
             next_conn_id: AtomicU64::new(1),
             attaching: Mutex::new(HashSet::new()),
+            log: DaemonLog::for_current_user(),
         });
         Ok(Self { shared, listener })
     }
@@ -241,12 +301,20 @@ fn kill_all_panes(host: &PaneHost) {
 fn handle_connection(stream: PipeStream, shared: Arc<DaemonShared>) {
     // I-5：身份不可得 ⇒ 拒（serve_connection 收 None 即 RejectedNoIdentity）。
     let identity = stream.client_process_id();
-    if let Some(pid) = identity {
-        let _image = process_image_path(pid); // 连接级审计取数（RT-2，落盘 M2c）
-    }
+    let conn_id = shared.next_conn_id.fetch_add(1, Ordering::SeqCst);
+    // 连接级审计（RT-2：{pid, image_path, 时刻}）。身份不可得也记（fail-closed 留痕）。
+    let image = identity.and_then(process_image_path).unwrap_or_default();
+    shared.log.log(&format!(
+        "connect conn={conn_id} pid={} image={image:?}",
+        identity.map(|p| p.to_string()).unwrap_or_else(|| "none".into())
+    ));
+
     let (mut reader, writer) = match stream.split() {
         Ok(halves) => halves,
-        Err(_) => return, // 事件创建失败（极罕见资源耗尽）——放弃该连接
+        Err(_) => {
+            shared.log.log(&format!("disconnect conn={conn_id} reason=split_failed"));
+            return; // 事件创建失败（极罕见资源耗尽）——放弃该连接
+        }
     };
 
     let (tx, rx) = channel::<Outbound>();
@@ -257,7 +325,6 @@ fn handle_connection(stream: PipeStream, shared: Arc<DaemonShared>) {
         subscriptions: Mutex::new(HashSet::new()),
         last_attach_at: Mutex::new(None),
     });
-    let conn_id = shared.next_conn_id.fetch_add(1, Ordering::SeqCst);
     shared
         .conns
         .lock()
@@ -275,6 +342,16 @@ fn handle_connection(stream: PipeStream, shared: Arc<DaemonShared>) {
     shared.conns.lock().unwrap_or_else(recover).remove(&conn_id);
     let _ = conn.tx.send(Outbound::Disconnect);
     let _ = writer_thread.join();
+
+    // 断开审计：背压触发（dead）vs 正常，连同 reader 结果。
+    let reason = if conn.dead.load(Ordering::Relaxed) {
+        "backpressure"
+    } else {
+        "normal"
+    };
+    shared
+        .log
+        .log(&format!("disconnect conn={conn_id} reason={reason} outcome={outcome:?}"));
 
     if outcome == ConnOutcome::KillServerRequested {
         trigger_shutdown(&shared);
@@ -533,6 +610,7 @@ mod tests {
             conns,
             next_conn_id: AtomicU64::new(1),
             attaching: Mutex::new(HashSet::new()),
+            log: DaemonLog::with_path(std::env::temp_dir().join("conmux-test-unused.log"), MAX_LOG_BYTES),
         })
     }
 
@@ -884,6 +962,32 @@ mod tests {
                 ..
             }))
         ));
+    }
+
+    /// 审计日志：写入可读回，超上限滚动到 .1（fail-soft 不 panic）。
+    #[test]
+    fn daemon_log_writes_and_rotates() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("conmux-audit-test-{}.log", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("log.1"));
+
+        let log = DaemonLog::with_path(path.clone(), 64); // 小上限触发滚动
+        log.log("connect conn=1 pid=42 image=\"x\"");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("connect conn=1 pid=42"), "应写入审计行");
+
+        // 写到超 64 字节 → 下次 log 触发滚动（现文件改名 .1，另起新文件）。
+        for i in 0..10 {
+            log.log(&format!("disconnect conn={i} reason=normal outcome=Closed"));
+        }
+        assert!(
+            path.with_extension("log.1").exists(),
+            "超上限应滚动到 .1"
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("log.1"));
     }
 
     /// ListThemes 可用。
