@@ -92,6 +92,8 @@ impl Client {
                         ),
                     });
                 }
+                // M2c-3 反冒充（I-2 客户端侧，红队 M-4）：核验 daemon 进程身份。
+                verify_server_identity(&stream);
                 Ok(Self {
                     stream,
                     next_cid: 1,
@@ -349,6 +351,33 @@ impl AttachSender {
             }),
         )
         .map_err(wire_to_conmux)
+    }
+}
+
+/// 反冒充核验（I-2 客户端侧，红队 M-4）：daemon 进程映像应与本客户端同主体。
+///
+/// **dev 退化为 image path 比对**（conmux CLI 自拉起/同装时 daemon == 本 exe，匹配即静默）；
+/// 不匹配/不可得 ⇒ **报警**（threat model：同用户抢注最坏退化为 DoS，不产生静默劫持——校验
+/// 职责是抬高门槛 + 可审计 + 报警，非硬断）。**生产加固登记**：Authenticode 签名同主体校验
+/// （WinVerifyTrust）替代路径比对，对第三方客户端按签名而非路径判定。
+fn verify_server_identity(stream: &PipeStream) {
+    let server_image = stream
+        .server_process_id()
+        .and_then(crate::pipe::process_image_path);
+    let self_exe = std::env::current_exe()
+        .ok()
+        .map(|p| p.to_string_lossy().to_lowercase());
+    match (server_image, self_exe) {
+        (Some(srv), Some(me)) if srv.to_lowercase() != me => {
+            eprintln!(
+                "conmux 警告：daemon 进程映像（{srv}）与本客户端（{me}）不一致——可能被冒充或为\
+                 第三方 daemon。生产应以 Authenticode 签名同主体校验；如非预期请 `conmux kill-server` 后重试。"
+            );
+        }
+        (None, _) => {
+            eprintln!("conmux 警告：无法核验 daemon 进程身份（GetNamedPipeServerProcessId 失败）。");
+        }
+        _ => {} // 匹配 = 同 exe（conmux CLI 自拉起 / 同装），静默。
     }
 }
 

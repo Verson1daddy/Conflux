@@ -35,9 +35,9 @@ use windows_sys::Win32::Storage::FileSystem::{
     OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
 };
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, WaitNamedPipeW,
-    PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES,
-    PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, GetNamedPipeServerProcessId,
+    WaitNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
+    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 use windows_sys::Win32::System::Threading::{
     CreateEventW, GetCurrentProcess, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW,
@@ -243,6 +243,19 @@ impl PipeStream {
         let mut pid: u32 = 0;
         // SAFETY: 句柄为服务端 accept 得到的管道实例。
         let ok = unsafe { GetNamedPipeClientProcessId(self.inner.handle, &mut pid) };
+        if ok != 0 {
+            Some(pid)
+        } else {
+            None
+        }
+    }
+
+    /// 取**服务端**进程 id（客户端侧反冒充用，I-2 客户端校验）：与服务端 image 比对防被
+    /// 抢注者冒充 daemon 收割注入。身份不可得 ⇒ None。
+    pub fn server_process_id(&self) -> Option<u32> {
+        let mut pid: u32 = 0;
+        // SAFETY: 句柄为客户端 CreateFile 得到的管道实例。
+        let ok = unsafe { GetNamedPipeServerProcessId(self.inner.handle, &mut pid) };
         if ok != 0 {
             Some(pid)
         } else {
