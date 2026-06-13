@@ -18,8 +18,10 @@ use windows_sys::Win32::System::Threading::{
     PROCESS_INFORMATION, STARTUPINFOW,
 };
 
-use crate::pipe::{try_connect, ConnectOutcome, PipeStream};
+use crate::event::MuxNotify;
+use crate::pipe::{try_connect, ConnectOutcome, PipeReader, PipeStream, PipeWriter};
 use crate::protocol::{MuxOp, MuxPayload, MuxReply, MuxRequest, WireFrame, PROTOCOL_VERSION};
+use crate::types::PaneId;
 use crate::wire::{read_frame, write_frame, WireError};
 use crate::ConmuxError;
 
@@ -121,7 +123,7 @@ impl Client {
                         MuxReply::Err { error, .. } => Err(error),
                     };
                 }
-                WireFrame::Notify(_) => continue, // M2a 忽略异步事件
+                WireFrame::Notify(_) => continue, // 控制态忽略异步事件
                 other => {
                     return Err(ConmuxError::PtyError {
                         message: format!("非预期帧方向（客户端只应收 Reply/Notify）：{other:?}"),
@@ -130,6 +132,233 @@ impl Client {
             }
         }
     }
+
+    /// Attach 一个 pane（D-6）：发 `Attach` → 收 `AttachSnapshot`（**缓冲**期间到达的 live
+    /// `PaneOutput`，客户端拼接契约 M-1）→ 拆连接为流式会话。消费 `Client`（连接转 attach 态）。
+    ///
+    /// 返回 [`Attached`]：快照（preamble/history/last_seq/state）+ 缓冲帧（已按 seq 升序、
+    /// 去重 `seq>last_seq`）+ [`AttachSession`]（收 live 输出 + 注入 stdin）。重建画面顺序 =
+    /// 喂 preamble → 喂 history → 喂 buffered → 循环 `session.recv_output()`。
+    pub fn attach(self, pane_id: &PaneId) -> Result<Attached, ConmuxError> {
+        let Client {
+            mut stream,
+            mut next_cid,
+        } = self;
+        let cid = next_cid;
+        next_cid = next_cid.wrapping_add(1);
+        write_frame(
+            &mut stream,
+            &WireFrame::Request(MuxRequest {
+                correlation_id: cid,
+                op: MuxOp::Attach {
+                    pane_id: pane_id.clone(),
+                },
+            }),
+        )
+        .map_err(wire_to_conmux)?;
+
+        // 缓冲快照前到达的本 pane live 帧（D-6 拼接契约：未来帧不得先于历史渲染）。
+        let mut buffered: Vec<(u64, Vec<u8>)> = Vec::new();
+        let (mode_preamble, history, last_seq, pane_state) = loop {
+            match read_frame(&mut stream).map_err(wire_to_conmux)? {
+                WireFrame::Reply(MuxReply::Ok {
+                    correlation_id,
+                    payload:
+                        MuxPayload::AttachSnapshot {
+                            mode_preamble_b64,
+                            history_b64,
+                            last_seq,
+                            pane_state,
+                        },
+                }) if correlation_id == cid => {
+                    break (
+                        b64_decode(&mode_preamble_b64)?,
+                        b64_decode(&history_b64)?,
+                        last_seq,
+                        pane_state,
+                    );
+                }
+                WireFrame::Reply(MuxReply::Err {
+                    correlation_id,
+                    error,
+                }) if correlation_id == cid => return Err(error),
+                WireFrame::Notify(MuxNotify::PaneOutput {
+                    pane_id: pid,
+                    seq,
+                    data,
+                }) if &pid == pane_id => buffered.push((seq, data)),
+                // 其它 pane 事件 / 非本请求应答：attach 期忽略。
+                _ => {}
+            }
+        };
+
+        // 缓冲帧按 seq 升序 + 去重（只留 seq>last_seq；≤last_seq 已含于 history）。
+        buffered.sort_by_key(|(s, _)| *s);
+        buffered.retain(|(s, _)| *s > last_seq);
+
+        let (reader, writer) = stream.split()?;
+        Ok(Attached {
+            mode_preamble,
+            history,
+            last_seq,
+            pane_state,
+            buffered,
+            session: AttachSession {
+                reader,
+                writer,
+                pane_id: pane_id.clone(),
+                next_cid,
+            },
+        })
+    }
+}
+
+/// Attach 握手结果（D-6）：原子快照 + attach 前缓冲的 live 帧 + 流式会话。
+pub struct Attached {
+    /// 非默认 VT 模式位合成前导（先喂）。
+    pub mode_preamble: Vec<u8>,
+    /// ring 原始 VT 历史（次喂）。
+    pub history: Vec<u8>,
+    /// 快照序号高水位（live 去重锚）。
+    pub last_seq: u64,
+    pub pane_state: crate::types::PaneState,
+    /// attach 前缓冲、`seq>last_seq` 的 live 帧（升序，喂完 history 后喂这些）。
+    pub buffered: Vec<(u64, Vec<u8>)>,
+    /// 流式会话（继续收 live 输出 + 注入 stdin）。
+    pub session: AttachSession,
+}
+
+/// Attach 流式事件。
+pub enum AttachEvent {
+    /// pane 输出（`seq` 单调，客户端可据 `> last_seq` 去重）。
+    Output { seq: u64, data: Vec<u8> },
+    /// pane 进程退出。
+    Exited { exit_code: Option<i32> },
+}
+
+/// Attach 流式会话：reader 收 live 输出，writer 注入 stdin（经唯一写链 UserDirect）。
+/// reader/writer 各自独立事件（重叠 I/O），可分别交不同线程并发（attach UI：渲染线程 + stdin 线程）。
+pub struct AttachSession {
+    reader: PipeReader,
+    writer: PipeWriter,
+    pane_id: PaneId,
+    next_cid: u64,
+}
+
+impl AttachSession {
+    /// 读下一个本 pane 事件（阻塞）。跳过 stdin ack（Reply）与其它 pane 帧。
+    /// 返回 None = 连接关闭。
+    pub fn recv_output(&mut self) -> Option<AttachEvent> {
+        loop {
+            match read_frame(&mut self.reader) {
+                Ok(WireFrame::Notify(MuxNotify::PaneOutput {
+                    pane_id, seq, data,
+                })) if pane_id == self.pane_id => {
+                    return Some(AttachEvent::Output { seq, data })
+                }
+                Ok(WireFrame::Notify(MuxNotify::PaneExited {
+                    pane_id,
+                    exit_code,
+                })) if pane_id == self.pane_id => {
+                    return Some(AttachEvent::Exited { exit_code })
+                }
+                Ok(_) => continue, // 其它 pane / stdin ack reply
+                Err(_) => return None,
+            }
+        }
+    }
+
+    /// 拆出 reader 与一个可注入 stdin 的句柄（attach UI：渲染线程拿 reader，主线程拿 sender）。
+    pub fn into_split(self) -> (AttachReader, AttachSender) {
+        (
+            AttachReader {
+                reader: self.reader,
+                pane_id: self.pane_id.clone(),
+            },
+            AttachSender {
+                writer: self.writer,
+                pane_id: self.pane_id,
+                next_cid: self.next_cid,
+            },
+        )
+    }
+
+    /// 注入 stdin 字节到 pane（经唯一写链，UserDirect）。
+    pub fn send_input(&mut self, data: &[u8]) -> Result<(), ConmuxError> {
+        let cid = self.next_cid;
+        self.next_cid = self.next_cid.wrapping_add(1);
+        write_frame(
+            &mut self.writer,
+            &WireFrame::Request(MuxRequest {
+                correlation_id: cid,
+                op: MuxOp::Send {
+                    pane_id: self.pane_id.clone(),
+                    data: data.to_vec(),
+                },
+            }),
+        )
+        .map_err(wire_to_conmux)
+    }
+}
+
+/// attach 渲染半（交渲染线程，循环 `recv_output`）。
+pub struct AttachReader {
+    reader: PipeReader,
+    pane_id: PaneId,
+}
+impl AttachReader {
+    pub fn recv_output(&mut self) -> Option<AttachEvent> {
+        loop {
+            match read_frame(&mut self.reader) {
+                Ok(WireFrame::Notify(MuxNotify::PaneOutput {
+                    pane_id, seq, data,
+                })) if pane_id == self.pane_id => {
+                    return Some(AttachEvent::Output { seq, data })
+                }
+                Ok(WireFrame::Notify(MuxNotify::PaneExited {
+                    pane_id,
+                    exit_code,
+                })) if pane_id == self.pane_id => {
+                    return Some(AttachEvent::Exited { exit_code })
+                }
+                Ok(_) => continue,
+                Err(_) => return None,
+            }
+        }
+    }
+}
+
+/// attach 注入半（交 stdin 线程，转发键入）。
+pub struct AttachSender {
+    writer: PipeWriter,
+    pane_id: PaneId,
+    next_cid: u64,
+}
+impl AttachSender {
+    pub fn send_input(&mut self, data: &[u8]) -> Result<(), ConmuxError> {
+        let cid = self.next_cid;
+        self.next_cid = self.next_cid.wrapping_add(1);
+        write_frame(
+            &mut self.writer,
+            &WireFrame::Request(MuxRequest {
+                correlation_id: cid,
+                op: MuxOp::Send {
+                    pane_id: self.pane_id.clone(),
+                    data: data.to_vec(),
+                },
+            }),
+        )
+        .map_err(wire_to_conmux)
+    }
+}
+
+fn b64_decode(s: &str) -> Result<Vec<u8>, ConmuxError> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(s.as_bytes())
+        .map_err(|e| ConmuxError::SerializationError {
+            message: format!("base64 解码失败: {e}"),
+        })
 }
 
 /// detached spawn 当前可执行文件的 `daemon` 子命令。

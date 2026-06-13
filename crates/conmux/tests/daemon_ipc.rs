@@ -9,7 +9,7 @@
 
 use std::time::{Duration, Instant};
 
-use conmux::client::Client;
+use conmux::client::{AttachEvent, Client};
 use conmux::daemon::{Daemon, DaemonConfig, ShutdownHandle};
 use conmux::pane::{CommandSpec, SpawnRequest};
 use conmux::pipe::{try_connect, ConnectOutcome};
@@ -244,6 +244,89 @@ fn kill_server_stops_daemon() {
             Err(e) => panic!("daemon 关闭未收敛（BUSY 不退）: {e}"),
         }
     }
+}
+
+/// D-6 无缝拼接：attach 期间高频输出，断言 seq 严格连续（无丢无重）+ 再 attach 画面完整。
+#[test]
+fn attach_seq_continuity_and_reattach_intact() {
+    let name = r"\\.\pipe\conmux-itest-attach";
+    let sh = start_daemon(name);
+    let mut ctl = connect_retry(name);
+
+    let pane = "attach-pane";
+    ctl.request(MuxOp::Spawn(spawn_req(pane, "cmd.exe", &["/k", "prompt $G"])))
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(1000)); // 初始输出沉淀
+
+    // 第二客户端 attach → 原子快照。
+    let attached = connect_retry(name)
+        .attach(&PaneId(pane.into()))
+        .expect("attach 应成功");
+    let s0 = attached.last_seq;
+    assert!(s0 > 0, "初始有输出，快照 last_seq 应 > 0");
+
+    // 缓冲帧（若有）须紧接 last_seq 连续。
+    let mut exp = s0;
+    for (seq, _) in &attached.buffered {
+        exp += 1;
+        assert_eq!(*seq, exp, "buffered seq 应紧接 last_seq 连续（无跳变）");
+    }
+    let live_start = exp; // = s0 + buffered.len()
+
+    // 注入命令驱动输出，在独立线程采集 live 帧（recv 阻塞，主线程 recv_timeout 兜底防挂）。
+    let mut session = attached.session;
+    session
+        .send_input(b"echo SEQTEST_MARKER\r")
+        .expect("注入应成功");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut seqs = Vec::new();
+        let mut saw = false;
+        while let Some(ev) = session.recv_output() {
+            if let AttachEvent::Output { seq, data } = ev {
+                seqs.push(seq);
+                if String::from_utf8_lossy(&data).contains("SEQTEST_MARKER") {
+                    saw = true;
+                    break;
+                }
+            }
+        }
+        let _ = tx.send((seqs, saw));
+    });
+    let (live_seqs, saw) = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("attach 流采集超时（无丢/挂死）");
+    assert!(saw, "应收到注入命令的回显 marker");
+    assert!(!live_seqs.is_empty(), "应收到 live 输出帧");
+
+    // 核心断言：live 帧 seq 从 live_start+1 起**严格连续 +1**（无丢帧无重帧，D-6）。
+    let mut exp = live_start;
+    for s in &live_seqs {
+        exp += 1;
+        assert_eq!(
+            *s, exp,
+            "live seq 应严格连续：期望 {exp} 实得 {s}（无丢无重不变量）"
+        );
+    }
+
+    // 再 attach：新快照历史应含先前输出（detach→重 attach 画面完整）。
+    let reattached = connect_retry(name)
+        .attach(&PaneId(pane.into()))
+        .expect("re-attach 应成功");
+    assert!(
+        String::from_utf8_lossy(&reattached.history).contains("SEQTEST_MARKER"),
+        "re-attach 历史应含先前 marker（画面完整）"
+    );
+    assert!(
+        reattached.last_seq >= exp,
+        "re-attach last_seq 应 >= 先前 live 高水位"
+    );
+
+    ctl.request(MuxOp::KillTree {
+        pane_id: PaneId(pane.into()),
+    })
+    .unwrap();
+    sh.shutdown();
 }
 
 /// 原始连接（绕过 Client 握手，供安全测试构造对抗帧）。
