@@ -16,8 +16,10 @@ name = "conmux"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
-# capture() 的 CaptureResult.data_base64 编码（cutover 2b-3b）。
+# capture() 的 CaptureResult.data_base64 编码（cutover 2b-3b）+ MuxNotify.data wire base64（M2a）。
 base64 = "0.22"
+# wire 帧编码（M2a，D-4 长度前缀 JSON）——自 dev 提升为生产依赖。
+serde_json = "1"
 # 后续增量：tokio（按需）
 
 # cutover 2b（MF-4 JobObject + ConPTY 后端）。windows-sys（非整 windows crate，体积
@@ -33,5 +35,4 @@ windows-sys = { version = "0.59", features = [
 # 应答 DSR ESC[6n，否则启动阻塞（spike research/conpty-spike-2026-06-11 实证）。
 portable-pty = "0.9"
 
-[dev-dependencies]
-serde_json = "1"
+# serde_json 已在生产依赖（wire），dev 无需重复声明。

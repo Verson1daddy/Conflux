@@ -66,6 +66,11 @@ pub mod protocol;
 /// 进程监管：ProcessSupervisor / SupervisorFactory（每 pane 一 Job，契约 §3 / MF-4）。
 pub mod job;
 
+/// **Stability: unstable** — may change without notice.
+/// 长度前缀帧编解码（M2 设计 D-4）：`u32 LE + JSON(WireFrame)`，4 MiB 上限。
+/// daemon / 客户端 / 第三方前端共用的 wire 编解码面；M2 期可能调整。
+pub mod wire;
+
 /// Pane 抽象与 PaneHost 门面（契约 §2）。`PaneBackend`/`PaneSession`/`Pane` 为
 /// `pub(crate)` 隐私墙（MF-1）；`PaneHost`/`CommandSpec`/`SpawnRequest` 对外公开。
 pub mod pane;
@@ -90,6 +95,7 @@ pub use job::{ProcessSupervisor, SupervisorFactory};
 pub use job::{JobObjectSupervisor, JobObjectSupervisorFactory};
 // PaneHost 类型 + 公开入参类型对外可见；构造器 2a 仍 pub(crate)（待 2b Windows 构造器）。
 pub use pane::{CommandSpec, PaneHost, SpawnRequest};
-pub use protocol::{MuxOp, MuxPayload, MuxReply, MuxRequest};
+pub use protocol::{MuxOp, MuxPayload, MuxReply, MuxRequest, WireFrame, PROTOCOL_VERSION};
+pub use wire::{read_frame, write_frame, WireError, MAX_FRAME_BYTES};
 pub use theme::{builtin_terminal_themes, TerminalTheme, ThemeAppearance, DEFAULT_TERMINAL_THEME_ID};
 pub use types::{InjectionSource, PaneId, PaneLifecycle, PaneSize, PaneState, ScrollbackInfo};

@@ -38,6 +38,12 @@ pub enum ConmuxError {
     /// 序列化/反序列化错误（协议层）。
     #[error("序列化错误: {message}")]
     SerializationError { message: String },
+
+    /// op 被识别但此 daemon 构建不支持（M2a：Subscribe/Attach 等分阶段到 M2b；
+    /// 或客户端比 daemon 新、请求了未实现的操作）。区别于 `SerializationError`
+    /// （后者是 wire 解析失败，前者是语义上能解析但 daemon 无对应实现）。
+    #[error("不支持的操作: {message}")]
+    Unsupported { message: String },
 }
 
 #[cfg(test)]
