@@ -81,6 +81,12 @@ pub mod pane;
 #[cfg(windows)]
 pub(crate) mod pane_win;
 
+/// **Stability: unstable** — may change without notice。
+/// 命名管道传输原语（M2a，仅 Windows）：服务端监听（FIRST_PIPE_INSTANCE + DACL +
+/// REJECT_REMOTE，I-1..I-5）+ 客户端连接 + 单连接字节流。
+#[cfg(windows)]
+pub mod pipe;
+
 /// 终端主题预置注册表（契约 D7：多预置 + 背景基调可调）。conmux 是主题数据
 /// 唯一属主，conflux 与未来独立 CLI 共享。
 pub mod theme;

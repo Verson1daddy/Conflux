@@ -27,9 +27,13 @@ serde_json = "1"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
-    "Win32_Security",         # CreateJobObjectW 的 SECURITY_ATTRIBUTES 参数需要
+    "Win32_Security",              # SECURITY_ATTRIBUTES / token 查询（JobObject + pipe DACL）
+    "Win32_Security_Authorization", # M2a：ConvertSid/SecurityDescriptor（pipe DACL，I-1）
     "Win32_System_JobObjects",
     "Win32_System_Threading",
+    "Win32_System_Pipes",          # M2a：命名管道服务端/客户端（I-1..I-5）
+    "Win32_System_IO",             # M2a：ConnectNamedPipe/ReadFile/WriteFile 的 OVERLAPPED 形参
+    "Win32_Storage_FileSystem",    # M2a：CreateFileW/ReadFile/WriteFile + FIRST_PIPE_INSTANCE + PIPE_ACCESS_DUPLEX
 ] }
 # 2b-2 起为生产依赖（WindowsPaneSession）。0.9 无条件设 INHERIT_CURSOR → 读线程必须
 # 应答 DSR ESC[6n，否则启动阻塞（spike research/conpty-spike-2026-06-11 实证）。
