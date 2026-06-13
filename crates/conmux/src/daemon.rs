@@ -1,37 +1,45 @@
-//! conmux daemon 服务端（M2 设计 D-2/D-3/D-4，仅 Windows）。
+//! conmux daemon 服务端（M2 设计 D-2..D-7，仅 Windows）。
 //!
 //! tmux server 模型（I-4）：单 daemon 持全部 ConPTY pane；CLI/GUI/第三方是瘦客户端。
-//! 每客户端连接一线程（D-7 风险登记裁决：v1 用 std 线程，单用户客户端数 ≤ 个位数）。
+//! **每连接 reader + writer 双线程**（D-7）：reader 阻塞 ReadFile 收请求/stdin；writer 从
+//! 有界外发队列取帧 WriteFile（回复 + 订阅事件）。事件 fan-out 非阻塞投递——任何慢客户端
+//! 不传导到 PTY 读路径（D-7）。
 //!
-//! ## 安全不变量落实位
-//! - **I-2 抢注守卫**：[`Daemon::bind`] 经 `PipeListener::bind`（FIRST_PIPE_INSTANCE），失败即报错退出。
-//! - **I-5 身份 fail-closed**：[`handle_connection`] 取不到客户端 pid ⇒ 立即断连，不匿名放行。
-//! - **D-4 握手 + H-2 方向约束**：[`serve_connection`] 首帧必须 Hello 且版本严格相等；
-//!   握手后只接受 `Request`；任何方向违例 ⇒ 断连（无 HelloAck / 无应答）。
-//! - **R-1 唯一写链跨 IPC**：[`dispatch`] 对 `Send` 唯一实现 = `PaneHost::inject_stdin`。
-//! - **R-2 IPC 注入一律 UserDirect**：dispatcher 硬编码 `InjectionSource::UserDirect`，
-//!   wire 无 source 协商面（MF-2 + 类型上无字段）。
-//! - **H-3 panic 隔离**：每连接处理以 `catch_unwind` 包裹，单连接对抗输入只断该连接。
-//!
-//! M2a 范围：请求-应答全实现；事件 fan-out（Subscribe/Attach）与主题广播（SetTheme）
-//! 留 M2b/M2c，dispatcher 对其返回 [`ConmuxError::Unsupported`]（类型已冻结，wire 不 churn）。
+//! ## 安全/正确性不变量落实位
+//! - **I-2 抢注守卫**：[`Daemon::bind`] 经 `PipeListener::bind`（FIRST_PIPE_INSTANCE），失败即退出。
+//! - **I-5 身份 fail-closed**：[`handle_connection`] 取不到客户端 pid ⇒ 立即断连。
+//! - **D-4 握手 + H-2 方向约束**：[`serve_connection`] 首帧必须 Hello + 版本严格相等；握手后只收 Request。
+//! - **R-1 唯一写链跨 IPC / R-2 IPC 注入一律 UserDirect**：[`build_reply`] 对 Send 唯一实现 = `inject_stdin(UserDirect)`。
+//! - **D-5 订阅模型**：Subscribe/Unsubscribe/Attach 维护每连接订阅集；[`FanoutSink`] 只向订阅者投递。
+//! - **D-6 attach 无缝拼接**：Attach = 先注册订阅、后取 `attach_snapshot`（原子 history+last_seq）；
+//!   base64/JSON 在锁外（PaneHost 已保证 H-1 锁纪律）。
+//! - **D-7 背压**：每连接外发队列字节上界（8 MiB），超限断连该连接（读泵零损失）。
+//! - **H-3 panic 隔离**：每连接 reader 以 `catch_unwind` 包裹；PaneHost 锁中毒容忍（M2a-M1）。
 
-use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::io::Read;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::event::{MuxNotify, PaneEventSink};
 use crate::pane::PaneHost;
-use crate::pipe::{process_image_path, try_connect, ConnectOutcome, PipeListener, PipeStream};
-use crate::protocol::{
-    MuxOp, MuxPayload, MuxReply, MuxRequest, WireFrame, PROTOCOL_VERSION,
-};
-use crate::types::InjectionSource;
+use crate::pipe::{process_image_path, try_connect, ConnectOutcome, PipeListener, PipeStream, PipeWriter};
+use crate::protocol::{MuxOp, MuxPayload, MuxReply, MuxRequest, WireFrame, PROTOCOL_VERSION};
+use crate::types::{InjectionSource, PaneId};
 use crate::wire::{read_frame, write_frame, WireError};
 use crate::ConmuxError;
 
 /// daemon 版本（HelloAck 回报，仅审计/诊断，不参与授权）。
 const DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// 每连接外发队列字节上界（D-7）。超限 ⇒ 断连该连接（客户端重连经 attach 快照恢复，零损失）。
+const MAX_QUEUE_BYTES: usize = 8 * 1024 * 1024;
+
+/// 中毒容忍锁恢复（H-3，与 pane.rs::recover 同策略）——连接线程 panic 不级联成全域锁风暴。
+fn recover<T>(e: PoisonError<MutexGuard<'_, T>>) -> MutexGuard<'_, T> {
+    e.into_inner()
+}
 
 /// daemon 装配配置。
 pub struct DaemonConfig {
@@ -48,36 +56,109 @@ impl DaemonConfig {
     }
 }
 
-/// 跨连接共享态：PaneHost（全部 pane 的属主）+ 运行标志 + 管道名（self-connect 唤醒用）。
+// ===== 外发队列 / 连接句柄 =====
+
+/// 投递给 writer 线程的外发项。
+enum Outbound {
+    /// 一帧（含近似字节数，用于背压记账）。
+    Frame(WireFrame, usize),
+    /// 主动断连信号（背压超限 / 连接清理）——writer 收到即退出。
+    Disconnect,
+}
+
+/// 连接句柄：外发队列 sender + 背压记账 + 订阅集。reader 线程、writer 线程、FanoutSink 共享。
+struct ConnHandle {
+    tx: Sender<Outbound>,
+    /// 当前排队待发字节数（背压锚）。
+    queued_bytes: AtomicUsize,
+    /// 背压触发后置 true：fanout 跳过、reader 不再入队（writer 已收 Disconnect 退出）。
+    dead: AtomicBool,
+    /// 本连接订阅的 pane 集（D-5）。
+    subscriptions: Mutex<HashSet<PaneId>>,
+}
+
+impl ConnHandle {
+    /// 入队一帧（背压感知，非阻塞）。超 8 MiB ⇒ 置 dead + 发 Disconnect（D-7）。
+    fn enqueue(&self, frame: WireFrame, bytes: usize) {
+        if self.dead.load(Ordering::Relaxed) {
+            return;
+        }
+        if self.queued_bytes.load(Ordering::Relaxed).saturating_add(bytes) > MAX_QUEUE_BYTES {
+            self.dead.store(true, Ordering::Relaxed);
+            let _ = self.tx.send(Outbound::Disconnect);
+            return;
+        }
+        self.queued_bytes.fetch_add(bytes, Ordering::Relaxed);
+        if self.tx.send(Outbound::Frame(frame, bytes)).is_err() {
+            // writer 已退出（连接断）——回滚记账。
+            self.queued_bytes.fetch_sub(bytes, Ordering::Relaxed);
+        }
+    }
+
+    fn is_subscribed(&self, pane_id: &PaneId) -> bool {
+        self.subscriptions.lock().unwrap_or_else(recover).contains(pane_id)
+    }
+}
+
+/// 事件出口：把 per-pane 事件 fan-out 给订阅该 pane 的连接（D-5）。
+/// **非阻塞**（D-7）：on_notify 由 PaneHost 读泵调用，只做短锁 + 非阻塞 try_send，
+/// 慢客户端的背压断连不回传到读路径。
+struct FanoutSink {
+    conns: Arc<Mutex<HashMap<u64, Arc<ConnHandle>>>>,
+}
+
+impl PaneEventSink for FanoutSink {
+    fn on_notify(&self, notify: MuxNotify) {
+        let pane_id = match &notify {
+            MuxNotify::PaneOutput { pane_id, .. } | MuxNotify::PaneExited { pane_id, .. } => {
+                pane_id.clone()
+            }
+            // ThemeChanged 广播 = M2c（依赖 SetTheme 落地）。
+            _ => return,
+        };
+        let bytes = notify_bytes(&notify);
+        let conns = self.conns.lock().unwrap_or_else(recover);
+        for conn in conns.values() {
+            if conn.is_subscribed(&pane_id) {
+                conn.enqueue(WireFrame::Notify(notify.clone()), bytes);
+            }
+        }
+    }
+}
+
+/// 跨连接共享态：PaneHost（全部 pane 的属主）+ 运行标志 + 管道名 + 连接注册表。
 struct DaemonShared {
     host: PaneHost,
     running: AtomicBool,
     pipe_name: String,
+    conns: Arc<Mutex<HashMap<u64, Arc<ConnHandle>>>>,
+    next_conn_id: AtomicU64,
 }
 
-/// 事件出口占位（M2a）：fan-out 到订阅者归 M2b，本 sink 丢弃事件。
-/// scrollback 由读线程在 sink 之前喂入，故 `capture` 仍可读到历史（请求-应答可用）。
-struct NoopSink;
-impl PaneEventSink for NoopSink {
-    fn on_notify(&self, _notify: MuxNotify) {}
-}
-
-/// conmux daemon。`bind` 绑定管道（抢注守卫），`serve` 进入服务循环。
+/// conmux daemon。`bind` 绑定管道，`serve` 进入服务循环。
 pub struct Daemon {
     shared: Arc<DaemonShared>,
     listener: PipeListener,
 }
 
 impl Daemon {
-    /// 绑定管道并装配 PaneHost。`bind` 失败 ⇒ 已有 daemon / 被抢注（I-2，不降级）。
+    /// 绑定管道并装配 PaneHost（事件出口 = FanoutSink）。`bind` 失败 ⇒ 已有 daemon / 被抢注（I-2）。
     pub fn bind(config: DaemonConfig) -> Result<Self, ConmuxError> {
         let listener = PipeListener::bind(&config.pipe_name)?;
-        // M2a 单用形态：钩子链为空（R-2 全 UserDirect，无策略钩子）；event_sink = NoopSink。
-        let host = PaneHost::new_windows(Vec::new(), Arc::new(NoopSink));
+        let conns: Arc<Mutex<HashMap<u64, Arc<ConnHandle>>>> = Arc::new(Mutex::new(HashMap::new()));
+        // M2a 单用形态：钩子链空（R-2 全 UserDirect）；event_sink = FanoutSink（按订阅投递）。
+        let host = PaneHost::new_windows(
+            Vec::new(),
+            Arc::new(FanoutSink {
+                conns: Arc::clone(&conns),
+            }),
+        );
         let shared = Arc::new(DaemonShared {
             host,
             running: AtomicBool::new(true),
             pipe_name: config.pipe_name,
+            conns,
+            next_conn_id: AtomicU64::new(1),
         });
         Ok(Self { shared, listener })
     }
@@ -89,7 +170,7 @@ impl Daemon {
         }
     }
 
-    /// 服务循环：accept → 每连接一线程。阻塞至 shutdown（KillServer / 句柄触发）。
+    /// 服务循环：accept → 每连接 reader 线程（reader 内再起 writer 线程）。阻塞至 shutdown。
     pub fn serve(mut self) {
         while self.shared.running.load(Ordering::SeqCst) {
             match self.listener.accept() {
@@ -99,7 +180,7 @@ impl Daemon {
                     }
                     let shared = Arc::clone(&self.shared);
                     std::thread::spawn(move || {
-                        // H-3 panic 隔离：单连接的对抗输入/bug panic 只断该连接。
+                        // H-3：单连接 panic（含其 writer 线程外）不传导 daemon 主体。
                         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             handle_connection(stream, shared);
                         }));
@@ -109,7 +190,6 @@ impl Daemon {
                     if !self.shared.running.load(Ordering::SeqCst) {
                         break;
                     }
-                    // accept 偶发失败：短暂退避后继续（不让单次失败打死服务循环）。
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }
             }
@@ -117,75 +197,114 @@ impl Daemon {
     }
 }
 
-/// 关闭句柄：触发 daemon 退出 + 整树终结全部 pane。
+/// 关闭句柄：触发 daemon 退出 + 整树终结全部 pane + 断开全部连接。
 pub struct ShutdownHandle {
     shared: Arc<DaemonShared>,
 }
 
 impl ShutdownHandle {
-    /// 触发关闭：set running=false → kill 全部 pane → self-connect 唤醒阻塞的 accept。
     pub fn shutdown(&self) {
         trigger_shutdown(&self.shared);
     }
 }
 
-/// 关闭：标志位 → kill 全部 pane → self-connect 唤醒阻塞在 ConnectNamedPipe 的 accept。
+/// 关闭：标志位 → kill 全部 pane → 断开全部连接（writer 退出）→ self-connect 唤醒 accept。
 fn trigger_shutdown(shared: &Arc<DaemonShared>) {
     shared.running.store(false, Ordering::SeqCst);
     kill_all_panes(&shared.host);
+    // 断开全部连接（writer 收 Disconnect 退出；reader 阻塞者待进程退出，见 D-7 v1 说明）。
+    for conn in shared.conns.lock().unwrap_or_else(recover).values() {
+        let _ = conn.tx.send(Outbound::Disconnect);
+    }
     // 唤醒阻塞的 accept：连上即弃。serve 循环 accept 返回后查 running=false → break。
     if let Ok(ConnectOutcome::Connected(s)) = try_connect(&shared.pipe_name, 200) {
         drop(s);
     }
 }
 
-/// 整树终结全部 pane（KillServer / 关闭；KILL_ON_JOB_CLOSE 兜底，但显式 kill 更确定）。
 fn kill_all_panes(host: &PaneHost) {
     for state in host.list_panes() {
         let _ = host.kill(&state.pane_id);
     }
 }
 
-/// 单连接处理（真实管道）：取身份（I-5 fail-closed）→ serve_connection → KillServer 后触发关闭。
-fn handle_connection(mut stream: PipeStream, shared: Arc<DaemonShared>) {
-    // I-5：身份不可得 ⇒ 不匿名放行（serve_connection 收 None 即 RejectedNoIdentity）。
+/// 单连接处理：取身份（I-5）→ split 读写半 → 起 writer 线程 → reader 循环 → 清理。
+fn handle_connection(stream: PipeStream, shared: Arc<DaemonShared>) {
+    // I-5：身份不可得 ⇒ 拒（serve_connection 收 None 即 RejectedNoIdentity）。
     let identity = stream.client_process_id();
-    // 连接级审计取数（RT-2：{pid, image_path}）。M2a 取数验证可得性；落盘归 M2c daemon 日志。
     if let Some(pid) = identity {
-        let _image = process_image_path(pid);
+        let _image = process_image_path(pid); // 连接级审计取数（RT-2，落盘 M2c）
     }
-    let outcome = serve_connection(&mut stream, identity, &shared.host, &shared.running);
+    let (mut reader, writer) = match stream.split() {
+        Ok(halves) => halves,
+        Err(_) => return, // 事件创建失败（极罕见资源耗尽）——放弃该连接
+    };
+
+    let (tx, rx) = channel::<Outbound>();
+    let conn = Arc::new(ConnHandle {
+        tx,
+        queued_bytes: AtomicUsize::new(0),
+        dead: AtomicBool::new(false),
+        subscriptions: Mutex::new(HashSet::new()),
+    });
+    let conn_id = shared.next_conn_id.fetch_add(1, Ordering::SeqCst);
+    shared
+        .conns
+        .lock()
+        .unwrap_or_else(recover)
+        .insert(conn_id, Arc::clone(&conn));
+
+    // writer 线程：drain 外发队列。
+    let writer_conn = Arc::clone(&conn);
+    let writer_thread = std::thread::spawn(move || writer_loop(writer, rx, writer_conn));
+
+    // reader 循环（本线程）。
+    let outcome = serve_connection(&mut reader, identity, &shared, &conn);
+
+    // 清理：摘连接 + 通知 writer 退出 + join。
+    shared.conns.lock().unwrap_or_else(recover).remove(&conn_id);
+    let _ = conn.tx.send(Outbound::Disconnect);
+    let _ = writer_thread.join();
+
     if outcome == ConnOutcome::KillServerRequested {
         trigger_shutdown(&shared);
+    }
+}
+
+/// writer 线程主体：从队列取帧 WriteFile；Disconnect 或写失败即退出。
+fn writer_loop(mut writer: PipeWriter, rx: Receiver<Outbound>, conn: Arc<ConnHandle>) {
+    while let Ok(item) = rx.recv() {
+        match item {
+            Outbound::Frame(frame, bytes) => {
+                conn.queued_bytes.fetch_sub(bytes, Ordering::Relaxed);
+                if write_frame(&mut writer, &frame).is_err() {
+                    break; // 客户端断开
+                }
+            }
+            Outbound::Disconnect => break,
+        }
     }
 }
 
 /// 连接处理结果（安全/协议不变量的可观测出口，供单元测试断言）。
 #[derive(Debug, PartialEq, Eq)]
 enum ConnOutcome {
-    /// I-5：客户端身份不可得 ⇒ 拒连（无 HelloAck）。
     RejectedNoIdentity,
-    /// D-4：握手版本不匹配 ⇒ 断连（无 HelloAck）。
     RejectedBadVersion,
-    /// H-2：首帧非 Hello ⇒ 断连。
     RejectedBadFirstFrame,
-    /// H-2：握手后收到非 Request 方向帧 ⇒ 断连。
     RejectedBadDirection,
-    /// 客户端正常断开（帧边界 EOF）。
     Closed,
-    /// 收到 KillServer 请求（已回 ack）。
     KillServerRequested,
-    /// I/O 错误断连。
     IoError,
 }
 
-/// 协议/安全核心（与传输解耦，操作任意 Read+Write + 注入的客户端身份）——
-/// 使握手/方向/fail-closed 不变量可在内存 duplex 上单测，无需真实管道。
-fn serve_connection<S: Read + Write>(
-    stream: &mut S,
+/// 协议/安全核心（reader 侧）：读帧 → 握手 → 请求循环，回复经 `conn.enqueue` 入外发队列。
+/// 与传输解耦（泛型 `Read`）使握手/方向/fail-closed 不变量可在内存 Cursor 上单测。
+fn serve_connection<R: Read>(
+    reader: &mut R,
     identity: Option<u32>,
-    host: &PaneHost,
-    running: &AtomicBool,
+    shared: &Arc<DaemonShared>,
+    conn: &ConnHandle,
 ) -> ConnOutcome {
     // I-5 fail-closed：身份不可得即拒，不进握手。
     if identity.is_none() {
@@ -193,20 +312,20 @@ fn serve_connection<S: Read + Write>(
     }
 
     // D-4 握手：首帧必须 Hello（仅握手期合法）+ 版本严格相等。
-    match read_frame(stream) {
+    match read_frame(reader) {
         Ok(WireFrame::Hello {
             protocol_version, ..
         }) => {
             if protocol_version != PROTOCOL_VERSION {
                 return ConnOutcome::RejectedBadVersion; // 不回 HelloAck
             }
-            let ack = WireFrame::HelloAck {
-                protocol_version: PROTOCOL_VERSION,
-                daemon_version: DAEMON_VERSION.into(),
-            };
-            if write_frame(stream, &ack).is_err() {
-                return ConnOutcome::IoError;
-            }
+            conn.enqueue(
+                WireFrame::HelloAck {
+                    protocol_version: PROTOCOL_VERSION,
+                    daemon_version: DAEMON_VERSION.into(),
+                },
+                128,
+            );
         }
         Ok(_) => return ConnOutcome::RejectedBadFirstFrame, // H-2：首帧非 Hello
         Err(WireError::Eof) => return ConnOutcome::Closed,
@@ -215,13 +334,11 @@ fn serve_connection<S: Read + Write>(
 
     // 请求循环：H-2 只接受 Request。
     loop {
-        match read_frame(stream) {
+        match read_frame(reader) {
             Ok(WireFrame::Request(req)) => {
                 let kill_server = matches!(req.op, MuxOp::KillServer);
-                let reply = dispatch(host, req, running);
-                if write_frame(stream, &WireFrame::Reply(reply)).is_err() {
-                    return ConnOutcome::IoError;
-                }
+                let reply = build_reply(req, shared, conn);
+                conn.enqueue(WireFrame::Reply(reply), 256);
                 if kill_server {
                     return ConnOutcome::KillServerRequested;
                 }
@@ -233,9 +350,11 @@ fn serve_connection<S: Read + Write>(
     }
 }
 
-/// 请求分发（经 PaneHost，R-1）。`MuxOp` 穷尽 match——未来加变体在此编译报错强制裁决。
-fn dispatch(host: &PaneHost, req: MuxRequest, running: &AtomicBool) -> MuxReply {
+/// 构建应答（经 PaneHost，R-1）。`MuxOp` 穷尽 match——未来加变体在此编译报错强制裁决。
+fn build_reply(req: MuxRequest, shared: &Arc<DaemonShared>, conn: &ConnHandle) -> MuxReply {
     let cid = req.correlation_id;
+    let host = &shared.host;
+    let running = &shared.running;
     let result: Result<MuxPayload, ConmuxError> = match req.op {
         // M2a-M3：关闭中拒绝新建/重起——否则 sweep 后到的 Spawn 拿成功应答却被 Job drop 瞬死。
         MuxOp::Spawn(_) | MuxOp::Respawn(_) if !running.load(Ordering::SeqCst) => {
@@ -249,7 +368,6 @@ fn dispatch(host: &PaneHost, req: MuxRequest, running: &AtomicBool) -> MuxReply 
             host.respawn(&pane_id, r).map(|_| MuxPayload::Spawned(pane_id))
         }
         // R-1 / R-2：IPC 注入唯一写链 = inject_stdin；source 硬编码 UserDirect（wire 无协商）。
-        // data 为原始字节（M2a-M2，wire 上 base64）。
         MuxOp::Send { pane_id, data } => host
             .inject_stdin(&pane_id, &data, InjectionSource::UserDirect)
             .map(|_| MuxPayload::Sent),
@@ -261,13 +379,42 @@ fn dispatch(host: &PaneHost, req: MuxRequest, running: &AtomicBool) -> MuxReply 
         MuxOp::ListPanes => Ok(MuxPayload::Panes(host.list_panes())),
         MuxOp::ListThemes => Ok(MuxPayload::Themes(crate::theme::builtin_terminal_themes())),
         MuxOp::KillServer => Ok(MuxPayload::ServerKillScheduled),
-        // M2b：事件 fan-out + 无缝快照（需 seq 入 scrollback 锁域）。类型已冻结、行为留 M2b。
-        MuxOp::Subscribe { .. } | MuxOp::Unsubscribe { .. } | MuxOp::Attach { .. } => {
-            Err(ConmuxError::Unsupported {
-                message: "Subscribe/Unsubscribe/Attach 在 M2b 落地（事件流/无缝快照）".into(),
-            })
+        // D-5 订阅：维护本连接订阅集（fan-out 据此投递）。
+        MuxOp::Subscribe { pane_id } => {
+            conn.subscriptions.lock().unwrap_or_else(recover).insert(pane_id);
+            Ok(MuxPayload::Subscribed)
         }
-        // M2c：主题热切换需向订阅者广播 ThemeChanged（依赖 M2b fan-out）。
+        MuxOp::Unsubscribe { pane_id } => {
+            conn.subscriptions
+                .lock()
+                .unwrap_or_else(recover)
+                .remove(&pane_id);
+            Ok(MuxPayload::Unsubscribed)
+        }
+        // D-6 attach：**先注册订阅、后取快照**（注册到快照间事件按 seq>last_seq 去重，无丢无重）。
+        MuxOp::Attach { pane_id } => {
+            conn.subscriptions
+                .lock()
+                .unwrap_or_else(recover)
+                .insert(pane_id.clone());
+            match host.attach_snapshot(&pane_id) {
+                Ok(snap) => Ok(MuxPayload::AttachSnapshot {
+                    mode_preamble_b64: b64(&snap.mode_preamble),
+                    history_b64: b64(&snap.history),
+                    last_seq: snap.last_seq,
+                    pane_state: snap.pane_state,
+                }),
+                Err(e) => {
+                    // 快照失败：回滚订阅，回错误。
+                    conn.subscriptions
+                        .lock()
+                        .unwrap_or_else(recover)
+                        .remove(&pane_id);
+                    Err(e)
+                }
+            }
+        }
+        // M2c：主题热切换需向订阅者广播 ThemeChanged（依赖广播面）。
         MuxOp::SetTheme { .. } => Err(ConmuxError::Unsupported {
             message: "SetTheme 在 M2c 落地（主题广播）".into(),
         }),
@@ -284,55 +431,73 @@ fn dispatch(host: &PaneHost, req: MuxRequest, running: &AtomicBool) -> MuxReply 
     }
 }
 
+fn b64(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// 事件近似字节数（背压记账；PaneOutput 数据是主量）。
+fn notify_bytes(notify: &MuxNotify) -> usize {
+    match notify {
+        MuxNotify::PaneOutput { data, .. } => data.len() + 64,
+        _ => 128,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::MuxRequest;
+    use crate::types::{PaneId, PaneSize};
     use std::io::Cursor;
 
-    /// 内存 duplex：读侧预载客户端帧（Cursor），写侧收集 daemon 回帧（Vec）。
-    /// serve_connection 顺序读 Cursor 直到 EOF，回帧进 out——无需真实管道即可断言协议/安全不变量。
-    struct DuplexMock {
-        reader: Cursor<Vec<u8>>,
-        out: Vec<u8>,
-    }
-    impl DuplexMock {
-        fn with_frames(frames: &[WireFrame]) -> Self {
-            let mut buf = Vec::new();
-            for f in frames {
-                write_frame(&mut buf, f).unwrap();
-            }
-            Self {
-                reader: Cursor::new(buf),
-                out: Vec::new(),
-            }
-        }
-        /// 解析写侧收集到的回帧序列。
-        fn replies(&self) -> Vec<WireFrame> {
-            let mut cur = Cursor::new(self.out.clone());
-            let mut v = Vec::new();
-            while let Ok(f) = read_frame(&mut cur) {
-                v.push(f);
-            }
-            v
-        }
-    }
-    impl Read for DuplexMock {
-        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-            self.reader.read(buf)
-        }
-    }
-    impl Write for DuplexMock {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.out.write(buf)
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
+    fn test_shared() -> Arc<DaemonShared> {
+        let conns = Arc::new(Mutex::new(HashMap::new()));
+        let host = PaneHost::new_windows(
+            Vec::new(),
+            Arc::new(FanoutSink {
+                conns: Arc::clone(&conns),
+            }),
+        );
+        Arc::new(DaemonShared {
+            host,
+            running: AtomicBool::new(true),
+            pipe_name: "test".into(),
+            conns,
+            next_conn_id: AtomicU64::new(1),
+        })
     }
 
-    fn empty_host() -> PaneHost {
-        PaneHost::new_windows(Vec::new(), Arc::new(NoopSink))
+    fn test_conn() -> (Arc<ConnHandle>, Receiver<Outbound>) {
+        let (tx, rx) = channel();
+        (
+            Arc::new(ConnHandle {
+                tx,
+                queued_bytes: AtomicUsize::new(0),
+                dead: AtomicBool::new(false),
+                subscriptions: Mutex::new(HashSet::new()),
+            }),
+            rx,
+        )
+    }
+
+    /// 把客户端帧序列编码进 Cursor（reader 喂入）。
+    fn reader_with(frames: &[WireFrame]) -> Cursor<Vec<u8>> {
+        let mut buf = Vec::new();
+        for f in frames {
+            write_frame(&mut buf, f).unwrap();
+        }
+        Cursor::new(buf)
+    }
+
+    /// 抽出 writer 队列里的全部回帧。
+    fn drain_frames(rx: &Receiver<Outbound>) -> Vec<WireFrame> {
+        let mut v = Vec::new();
+        while let Ok(item) = rx.try_recv() {
+            if let Outbound::Frame(f, _) = item {
+                v.push(f);
+            }
+        }
+        v
     }
 
     fn hello(v: u32) -> WireFrame {
@@ -348,45 +513,48 @@ mod tests {
         })
     }
 
-    /// I-5：客户端身份不可得 ⇒ RejectedNoIdentity，不写任何回帧（无 HelloAck）。
+    /// I-5：身份不可得 ⇒ RejectedNoIdentity，不入任何回帧（无 HelloAck）。
     #[test]
     fn no_identity_is_rejected_before_handshake() {
-        let mut mock = DuplexMock::with_frames(&[hello(PROTOCOL_VERSION)]);
-        let outcome = serve_connection(&mut mock, None, &empty_host(), &AtomicBool::new(true));
+        let mut r = reader_with(&[hello(PROTOCOL_VERSION)]);
+        let (conn, rx) = test_conn();
+        let outcome = serve_connection(&mut r, None, &test_shared(), &conn);
         assert_eq!(outcome, ConnOutcome::RejectedNoIdentity);
-        assert!(mock.out.is_empty(), "拒连不应写 HelloAck");
+        assert!(drain_frames(&rx).is_empty(), "拒连不应回任何帧");
     }
 
     /// D-4：握手版本不匹配 ⇒ RejectedBadVersion，无 HelloAck。
     #[test]
     fn wrong_protocol_version_is_rejected() {
-        let mut mock = DuplexMock::with_frames(&[hello(PROTOCOL_VERSION + 99)]);
-        let outcome = serve_connection(&mut mock, Some(1234), &empty_host(), &AtomicBool::new(true));
+        let mut r = reader_with(&[hello(PROTOCOL_VERSION + 99)]);
+        let (conn, rx) = test_conn();
+        let outcome = serve_connection(&mut r, Some(1234), &test_shared(), &conn);
         assert_eq!(outcome, ConnOutcome::RejectedBadVersion);
-        assert!(mock.replies().is_empty(), "版本不匹配不应回 HelloAck");
+        assert!(drain_frames(&rx).is_empty());
     }
 
-    /// H-2：首帧非 Hello（直接发 Request）⇒ RejectedBadFirstFrame。
+    /// H-2：首帧非 Hello ⇒ RejectedBadFirstFrame。
     #[test]
     fn non_hello_first_frame_is_rejected() {
-        let mut mock = DuplexMock::with_frames(&[request(MuxOp::ListPanes)]);
-        let outcome = serve_connection(&mut mock, Some(1234), &empty_host(), &AtomicBool::new(true));
+        let mut r = reader_with(&[request(MuxOp::ListPanes)]);
+        let (conn, rx) = test_conn();
+        let outcome = serve_connection(&mut r, Some(1234), &test_shared(), &conn);
         assert_eq!(outcome, ConnOutcome::RejectedBadFirstFrame);
-        assert!(mock.replies().is_empty());
+        assert!(drain_frames(&rx).is_empty());
     }
 
-    /// 握手后收到非 Request 方向帧（Notify）⇒ RejectedBadDirection（H-2）。
+    /// H-2：握手后收到非 Request 方向帧 ⇒ RejectedBadDirection（但已回 HelloAck）。
     #[test]
     fn wrong_direction_after_handshake_is_rejected() {
         let notify = WireFrame::Notify(MuxNotify::PaneExited {
-            pane_id: crate::types::PaneId("x".into()),
+            pane_id: PaneId("x".into()),
             exit_code: None,
         });
-        let mut mock = DuplexMock::with_frames(&[hello(PROTOCOL_VERSION), notify]);
-        let outcome = serve_connection(&mut mock, Some(1234), &empty_host(), &AtomicBool::new(true));
+        let mut r = reader_with(&[hello(PROTOCOL_VERSION), notify]);
+        let (conn, rx) = test_conn();
+        let outcome = serve_connection(&mut r, Some(1234), &test_shared(), &conn);
         assert_eq!(outcome, ConnOutcome::RejectedBadDirection);
-        // 握手成功了（回了 HelloAck），但随后方向违例断连。
-        let replies = mock.replies();
+        let replies = drain_frames(&rx);
         assert_eq!(replies.len(), 1);
         assert!(matches!(replies[0], WireFrame::HelloAck { .. }));
     }
@@ -394,11 +562,11 @@ mod tests {
     /// happy path：Hello + ListPanes + EOF ⇒ HelloAck + Reply(Panes 空) + Closed。
     #[test]
     fn handshake_then_listpanes_replies_ok() {
-        let mut mock =
-            DuplexMock::with_frames(&[hello(PROTOCOL_VERSION), request(MuxOp::ListPanes)]);
-        let outcome = serve_connection(&mut mock, Some(1234), &empty_host(), &AtomicBool::new(true));
+        let mut r = reader_with(&[hello(PROTOCOL_VERSION), request(MuxOp::ListPanes)]);
+        let (conn, rx) = test_conn();
+        let outcome = serve_connection(&mut r, Some(1234), &test_shared(), &conn);
         assert_eq!(outcome, ConnOutcome::Closed);
-        let replies = mock.replies();
+        let replies = drain_frames(&rx);
         assert_eq!(replies.len(), 2);
         assert!(matches!(replies[0], WireFrame::HelloAck { .. }));
         match &replies[1] {
@@ -413,11 +581,11 @@ mod tests {
     /// KillServer ⇒ 回 ServerKillScheduled + 返回 KillServerRequested。
     #[test]
     fn kill_server_acks_then_signals() {
-        let mut mock =
-            DuplexMock::with_frames(&[hello(PROTOCOL_VERSION), request(MuxOp::KillServer)]);
-        let outcome = serve_connection(&mut mock, Some(1234), &empty_host(), &AtomicBool::new(true));
+        let mut r = reader_with(&[hello(PROTOCOL_VERSION), request(MuxOp::KillServer)]);
+        let (conn, rx) = test_conn();
+        let outcome = serve_connection(&mut r, Some(1234), &test_shared(), &conn);
         assert_eq!(outcome, ConnOutcome::KillServerRequested);
-        let replies = mock.replies();
+        let replies = drain_frames(&rx);
         assert!(matches!(
             replies.last(),
             Some(WireFrame::Reply(MuxReply::Ok {
@@ -427,78 +595,158 @@ mod tests {
         ));
     }
 
-    /// M2b 留：Subscribe/Attach 返回 Unsupported（类型已冻结，行为分阶段）。
+    /// D-5：Subscribe 把 pane 加入本连接订阅集（后续 fan-out 据此投递）。
     #[test]
-    fn subscribe_and_attach_are_unsupported_in_m2a() {
-        for op in [
-            MuxOp::Subscribe {
-                pane_id: crate::types::PaneId("p".into()),
-            },
-            MuxOp::Attach {
-                pane_id: crate::types::PaneId("p".into()),
-            },
-            MuxOp::SetTheme { id: "b-dark-ink".into() },
-        ] {
-            let mut mock = DuplexMock::with_frames(&[hello(PROTOCOL_VERSION), request(op)]);
-            serve_connection(&mut mock, Some(1234), &empty_host(), &AtomicBool::new(true));
-            let replies = mock.replies();
-            assert!(
-                matches!(
-                    replies.last(),
-                    Some(WireFrame::Reply(MuxReply::Err {
-                        error: ConmuxError::Unsupported { .. },
-                        ..
-                    }))
-                ),
-                "M2a 应回 Unsupported，实际: {:?}",
-                replies.last()
-            );
-        }
+    fn subscribe_registers_in_connection_set() {
+        let mut r = reader_with(&[
+            hello(PROTOCOL_VERSION),
+            request(MuxOp::Subscribe {
+                pane_id: PaneId("p1".into()),
+            }),
+        ]);
+        let (conn, rx) = test_conn();
+        serve_connection(&mut r, Some(1234), &test_shared(), &conn);
+        assert!(
+            conn.is_subscribed(&PaneId("p1".into())),
+            "Subscribe 后订阅集应含 p1"
+        );
+        let replies = drain_frames(&rx);
+        assert!(matches!(
+            replies.last(),
+            Some(WireFrame::Reply(MuxReply::Ok {
+                payload: MuxPayload::Subscribed,
+                ..
+            }))
+        ));
     }
 
-    /// M2a-M3：关闭中（running=false）Spawn 被拒（不回成功应答 = 不产生瞬死 pane）。
+    /// Unsubscribe 移除订阅。
+    #[test]
+    fn unsubscribe_removes_from_set() {
+        let mut r = reader_with(&[
+            hello(PROTOCOL_VERSION),
+            request(MuxOp::Subscribe {
+                pane_id: PaneId("p1".into()),
+            }),
+            request(MuxOp::Unsubscribe {
+                pane_id: PaneId("p1".into()),
+            }),
+        ]);
+        let (conn, _rx) = test_conn();
+        serve_connection(&mut r, Some(1234), &test_shared(), &conn);
+        assert!(!conn.is_subscribed(&PaneId("p1".into())));
+    }
+
+    /// Attach 不存在的 pane ⇒ 订阅回滚 + 回 PaneNotFound（不留悬空订阅）。
+    #[test]
+    fn attach_unknown_pane_rolls_back_subscription() {
+        let mut r = reader_with(&[
+            hello(PROTOCOL_VERSION),
+            request(MuxOp::Attach {
+                pane_id: PaneId("nope".into()),
+            }),
+        ]);
+        let (conn, rx) = test_conn();
+        serve_connection(&mut r, Some(1234), &test_shared(), &conn);
+        assert!(
+            !conn.is_subscribed(&PaneId("nope".into())),
+            "attach 快照失败应回滚订阅"
+        );
+        let replies = drain_frames(&rx);
+        assert!(matches!(
+            replies.last(),
+            Some(WireFrame::Reply(MuxReply::Err {
+                error: ConmuxError::PaneNotFound { .. },
+                ..
+            }))
+        ));
+    }
+
+    /// 背压：排队字节超 8 MiB ⇒ 连接置 dead + 发 Disconnect（D-7）。
+    #[test]
+    fn backpressure_disconnects_over_limit() {
+        let (conn, rx) = test_conn();
+        // 入队一帧标记 9 MiB（超限）。
+        conn.enqueue(
+            WireFrame::Notify(MuxNotify::PaneExited {
+                pane_id: PaneId("p".into()),
+                exit_code: None,
+            }),
+            9 * 1024 * 1024,
+        );
+        assert!(conn.dead.load(Ordering::Relaxed), "超限应置 dead");
+        // 队列里应是 Disconnect（非 Frame）。
+        assert!(matches!(rx.try_recv(), Ok(Outbound::Disconnect)));
+        // dead 后再入队被丢弃。
+        conn.enqueue(
+            WireFrame::Notify(MuxNotify::PaneExited {
+                pane_id: PaneId("p".into()),
+                exit_code: None,
+            }),
+            10,
+        );
+        assert!(rx.try_recv().is_err(), "dead 后不再入队");
+    }
+
+    /// M2a-M3：关闭中 Spawn 被拒（不回成功应答）。
     #[test]
     fn spawn_rejected_during_shutdown() {
-        let spawn = WireFrame::Request(MuxRequest {
-            correlation_id: 1,
-            op: MuxOp::Spawn(crate::pane::SpawnRequest {
-                pane_id: crate::types::PaneId("x".into()),
-                command: crate::pane::CommandSpec {
-                    program: "cmd.exe".into(),
-                    args: vec![],
-                    cwd: None,
-                    env: vec![],
-                },
-                size: crate::types::PaneSize { rows: 24, cols: 80 },
-                adapter_id: "shell".into(),
-                display_name: None,
-                created_at: 0,
-            }),
-        });
-        let mut mock = DuplexMock::with_frames(&[hello(PROTOCOL_VERSION), spawn]);
-        // running=false 模拟关闭中。
-        serve_connection(&mut mock, Some(1234), &empty_host(), &AtomicBool::new(false));
-        let replies = mock.replies();
-        assert!(
-            matches!(
-                replies.last(),
-                Some(WireFrame::Reply(MuxReply::Err {
-                    error: ConmuxError::SupervisorError { .. },
-                    ..
-                }))
-            ),
-            "关闭中 Spawn 应回错误（不回成功应答），实际: {:?}",
-            replies.last()
-        );
+        let spawn = request(MuxOp::Spawn(crate::pane::SpawnRequest {
+            pane_id: PaneId("x".into()),
+            command: crate::pane::CommandSpec {
+                program: "cmd.exe".into(),
+                args: vec![],
+                cwd: None,
+                env: vec![],
+            },
+            size: PaneSize { rows: 24, cols: 80 },
+            adapter_id: "shell".into(),
+            display_name: None,
+            created_at: 0,
+        }));
+        let mut r = reader_with(&[hello(PROTOCOL_VERSION), spawn]);
+        let (conn, rx) = test_conn();
+        let shared = test_shared();
+        shared.running.store(false, Ordering::SeqCst);
+        serve_connection(&mut r, Some(1234), &shared, &conn);
+        let replies = drain_frames(&rx);
+        assert!(matches!(
+            replies.last(),
+            Some(WireFrame::Reply(MuxReply::Err {
+                error: ConmuxError::SupervisorError { .. },
+                ..
+            }))
+        ));
     }
 
-    /// ListThemes 在 M2a 即可用（返回内置预置，无需 fan-out）。
+    /// SetTheme 仍 Unsupported（M2c 广播）。
     #[test]
-    fn list_themes_works_in_m2a() {
-        let mut mock =
-            DuplexMock::with_frames(&[hello(PROTOCOL_VERSION), request(MuxOp::ListThemes)]);
-        serve_connection(&mut mock, Some(1234), &empty_host(), &AtomicBool::new(true));
-        let replies = mock.replies();
+    fn set_theme_unsupported_in_m2b() {
+        let mut r = reader_with(&[
+            hello(PROTOCOL_VERSION),
+            request(MuxOp::SetTheme {
+                id: "b-dark-ink".into(),
+            }),
+        ]);
+        let (conn, rx) = test_conn();
+        serve_connection(&mut r, Some(1234), &test_shared(), &conn);
+        let replies = drain_frames(&rx);
+        assert!(matches!(
+            replies.last(),
+            Some(WireFrame::Reply(MuxReply::Err {
+                error: ConmuxError::Unsupported { .. },
+                ..
+            }))
+        ));
+    }
+
+    /// ListThemes 可用。
+    #[test]
+    fn list_themes_works() {
+        let mut r = reader_with(&[hello(PROTOCOL_VERSION), request(MuxOp::ListThemes)]);
+        let (conn, rx) = test_conn();
+        serve_connection(&mut r, Some(1234), &test_shared(), &conn);
+        let replies = drain_frames(&rx);
         match replies.last() {
             Some(WireFrame::Reply(MuxReply::Ok {
                 payload: MuxPayload::Themes(themes),

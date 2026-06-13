@@ -19,8 +19,9 @@ use crate::ConmuxError;
 
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, LocalFree, ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE,
-    ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, ERROR_NO_DATA, ERROR_PIPE_BUSY,
-    ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
+    ERROR_FILE_NOT_FOUND, ERROR_HANDLE_EOF, ERROR_INSUFFICIENT_BUFFER, ERROR_IO_PENDING,
+    ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE,
+    INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -30,8 +31,8 @@ use windows_sys::Win32::Security::{
     PSECURITY_DESCRIPTOR,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, ReadFile, WriteFile, FILE_FLAG_FIRST_PIPE_INSTANCE, OPEN_EXISTING,
-    PIPE_ACCESS_DUPLEX,
+    CreateFileW, ReadFile, WriteFile, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED,
+    OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
 };
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, WaitNamedPipeW,
@@ -39,9 +40,10 @@ use windows_sys::Win32::System::Pipes::{
     PIPE_WAIT,
 };
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW,
+    CreateEventW, GetCurrentProcess, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW,
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
+use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 
 const PIPE_PREFIX: &str = r"\\.\pipe\conmux.";
 const PIPE_BUF_SIZE: u32 = 64 * 1024;
@@ -66,7 +68,8 @@ pub fn try_connect(name: &str, busy_wait_ms: u32) -> Result<ConnectOutcome, Conm
     let wide = to_wide(name);
     // 有限重试：BUSY 时等待后重试，最多 8 轮防活锁。
     for _ in 0..8 {
-        // SAFETY: 标准 Win32；无共享、OPEN_EXISTING、默认安全属性。
+        // SAFETY: 标准 Win32；无共享、OPEN_EXISTING、FILE_FLAG_OVERLAPPED（客户端 attach 时
+        // 也需读写并发——重叠句柄不串行；控制态顺序读写同样适用）。
         let handle = unsafe {
             CreateFileW(
                 wide.as_ptr(),
@@ -74,12 +77,12 @@ pub fn try_connect(name: &str, busy_wait_ms: u32) -> Result<ConnectOutcome, Conm
                 0,
                 std::ptr::null(),
                 OPEN_EXISTING,
-                0,
+                FILE_FLAG_OVERLAPPED,
                 std::ptr::null_mut(),
             )
         };
         if handle != INVALID_HANDLE_VALUE {
-            return Ok(ConnectOutcome::Connected(PipeStream { handle }));
+            return PipeStream::from_handle(handle).map(ConnectOutcome::Connected);
         }
         let err = unsafe { GetLastError() };
         match err {
@@ -101,95 +104,204 @@ pub fn try_connect(name: &str, busy_wait_ms: u32) -> Result<ConnectOutcome, Conm
     })
 }
 
-// ===== PipeStream：单连接字节流 =====
+// ===== PipeStream：单连接字节流（重叠 I/O，可拆读/写半）=====
+//
+// **为何重叠 I/O（FILE_FLAG_OVERLAPPED）**：同步（非重叠）句柄上，I/O 管理器**串行化**
+// 同一文件对象的全部 I/O——reader 线程阻塞在 ReadFile 时，writer 线程的 WriteFile 会排在
+// 其后无法进行（实测死锁：握手 HelloAck 永不发出）。重叠句柄上每个操作各带 OVERLAPPED +
+// 事件，读写互不串行——daemon 每连接 reader+writer 双线程方得并发（D-7）。
 
-/// 单连接字节流端点（服务端 accept 或客户端 connect 得到）。Read+Write，Drop 关句柄。
-///
-/// 阻塞 byte-mode 管道：`ReadFile` 在对端关闭时返回 `ERROR_BROKEN_PIPE` → 映射为
-/// `Ok(0)`（帧边界 EOF，wire 层据此判优雅关闭 vs 截断）。
-pub struct PipeStream {
+/// 共享底层句柄（重叠模式）。`PipeStream`/`PipeReader`/`PipeWriter` 各持一个 `Arc`，
+/// 最后一个 drop 时关句柄。
+struct PipeHandle {
     handle: HANDLE,
 }
+unsafe impl Send for PipeHandle {}
+unsafe impl Sync for PipeHandle {}
+impl Drop for PipeHandle {
+    fn drop(&mut self) {
+        // SAFETY: 句柄由 PipeHandle 单一所有，最后一个 Arc drop 时关一次。
+        unsafe { CloseHandle(self.handle) };
+    }
+}
 
-// HANDLE 裸指针非 Send；本流单一所有权（一个连接一个流，交一个处理线程），跨线程移动安全。
-unsafe impl Send for PipeStream {}
+/// 一个重叠操作流的手动复位事件（每读/写半各一个，使读写并发不串行）。
+struct IoEvent {
+    event: HANDLE,
+}
+impl IoEvent {
+    fn new() -> Result<Self, ConmuxError> {
+        // 手动复位（bManualReset=1）、初始非信号（bInitialState=0）、无名。
+        let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+        if event.is_null() {
+            return Err(ConmuxError::PtyError {
+                message: format!("CreateEventW 失败（GetLastError={}）", unsafe {
+                    GetLastError()
+                }),
+            });
+        }
+        Ok(Self { event })
+    }
+}
+unsafe impl Send for IoEvent {}
+impl Drop for IoEvent {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.event) };
+    }
+}
+
+/// 重叠读：发起 ReadFile(OVERLAPPED) → GetOverlappedResult(bWait) 等完成。对端关闭 ⇒ `Ok(0)`。
+fn overlapped_read(handle: HANDLE, event: HANDLE, buf: &mut [u8]) -> io::Result<usize> {
+    if buf.is_empty() {
+        return Ok(0);
+    }
+    let mut ov: OVERLAPPED = unsafe { std::mem::zeroed() };
+    ov.hEvent = event;
+    // SAFETY: 重叠句柄；buf 有效；lpNumberOfBytesRead=null（重叠下经 GetOverlappedResult 取）。
+    let ok = unsafe {
+        ReadFile(
+            handle,
+            buf.as_mut_ptr().cast(),
+            buf.len().min(u32::MAX as usize) as u32,
+            std::ptr::null_mut(),
+            &mut ov,
+        )
+    };
+    if ok == 0 {
+        let err = unsafe { GetLastError() };
+        if err != ERROR_IO_PENDING {
+            return map_read_err(err);
+        }
+    }
+    let mut got: u32 = 0;
+    // bWait=TRUE：等本操作完成（经 ov.hEvent，不串行化其它方向操作）。
+    let r = unsafe { GetOverlappedResult(handle, &ov, &mut got, 1) };
+    if r != 0 {
+        Ok(got as usize)
+    } else {
+        map_read_err(unsafe { GetLastError() })
+    }
+}
+
+fn map_read_err(err: u32) -> io::Result<usize> {
+    if err == ERROR_BROKEN_PIPE || err == ERROR_NO_DATA || err == ERROR_HANDLE_EOF {
+        Ok(0) // 对端关闭 ⇒ EOF
+    } else {
+        Err(io::Error::from_raw_os_error(err as i32))
+    }
+}
+
+/// 重叠写：发起 WriteFile(OVERLAPPED) → GetOverlappedResult(bWait) 等完成。
+fn overlapped_write(handle: HANDLE, event: HANDLE, buf: &[u8]) -> io::Result<usize> {
+    if buf.is_empty() {
+        return Ok(0);
+    }
+    let mut ov: OVERLAPPED = unsafe { std::mem::zeroed() };
+    ov.hEvent = event;
+    // SAFETY: 重叠句柄；buf 有效；lpNumberOfBytesWritten=null。
+    let ok = unsafe {
+        WriteFile(
+            handle,
+            buf.as_ptr(),
+            buf.len().min(u32::MAX as usize) as u32,
+            std::ptr::null_mut(),
+            &mut ov,
+        )
+    };
+    if ok == 0 {
+        let err = unsafe { GetLastError() };
+        if err != ERROR_IO_PENDING {
+            return Err(io::Error::from_raw_os_error(err as i32));
+        }
+    }
+    let mut got: u32 = 0;
+    let r = unsafe { GetOverlappedResult(handle, &ov, &mut got, 1) };
+    if r != 0 {
+        Ok(got as usize)
+    } else {
+        Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32))
+    }
+}
+
+/// 单连接字节流端点（服务端 accept 或客户端 connect 得到）。Read+Write；可 [`split`](PipeStream::split)
+/// 为读半/写半交两个线程并发（daemon 每连接 reader+writer 双线程模型，D-7）。
+pub struct PipeStream {
+    inner: std::sync::Arc<PipeHandle>,
+    ev: IoEvent,
+}
 
 impl PipeStream {
+    fn from_handle(handle: HANDLE) -> Result<Self, ConmuxError> {
+        Ok(Self {
+            inner: std::sync::Arc::new(PipeHandle { handle }),
+            ev: IoEvent::new()?,
+        })
+    }
+
     /// 取客户端进程 id（I-5：身份不可得 ⇒ None，调用方 fail-closed 断连）。
     pub fn client_process_id(&self) -> Option<u32> {
         let mut pid: u32 = 0;
         // SAFETY: 句柄为服务端 accept 得到的管道实例。
-        let ok = unsafe { GetNamedPipeClientProcessId(self.handle, &mut pid) };
+        let ok = unsafe { GetNamedPipeClientProcessId(self.inner.handle, &mut pid) };
         if ok != 0 {
             Some(pid)
         } else {
             None
         }
     }
+
+    /// 拆为读半 + 写半（共享句柄，各自独立事件）。reader 半交 reader 线程重叠 ReadFile；
+    /// writer 半交 writer 线程从有界队列取帧重叠 WriteFile——两半不同事件 ⇒ 不串行。
+    pub fn split(self) -> Result<(PipeReader, PipeWriter), ConmuxError> {
+        let reader = PipeReader {
+            inner: std::sync::Arc::clone(&self.inner),
+            ev: IoEvent::new()?,
+        };
+        let writer = PipeWriter {
+            inner: std::sync::Arc::clone(&self.inner),
+            ev: IoEvent::new()?,
+        };
+        Ok((reader, writer))
+    }
 }
 
 impl Read for PipeStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        let mut read: u32 = 0;
-        // SAFETY: buf 有效、长度匹配；同步阻塞读（无 OVERLAPPED）。
-        let ok = unsafe {
-            ReadFile(
-                self.handle,
-                buf.as_mut_ptr().cast(),
-                buf.len().min(u32::MAX as usize) as u32,
-                &mut read,
-                std::ptr::null_mut(),
-            )
-        };
-        if ok != 0 {
-            return Ok(read as usize);
-        }
-        let err = unsafe { GetLastError() };
-        // 对端关闭 ⇒ EOF（Ok(0)）；wire 层在帧边界视为优雅关闭、帧中途视为截断。
-        if err == ERROR_BROKEN_PIPE || err == ERROR_NO_DATA {
-            return Ok(0);
-        }
-        Err(io::Error::from_raw_os_error(err as i32))
+        overlapped_read(self.inner.handle, self.ev.event, buf)
     }
 }
-
 impl Write for PipeStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        let mut written: u32 = 0;
-        // SAFETY: buf 有效、长度匹配；同步阻塞写。
-        let ok = unsafe {
-            WriteFile(
-                self.handle,
-                buf.as_ptr(),
-                buf.len().min(u32::MAX as usize) as u32,
-                &mut written,
-                std::ptr::null_mut(),
-            )
-        };
-        if ok != 0 {
-            return Ok(written as usize);
-        }
-        let err = unsafe { GetLastError() };
-        Err(io::Error::from_raw_os_error(err as i32))
+        overlapped_write(self.inner.handle, self.ev.event, buf)
     }
-
-    /// no-op：WriteFile 已把字节交给管道；`FlushFileBuffers` 会阻塞等对端读完，
-    /// 不在写路径上承担（背压由 daemon 有界队列治理，D-7）。
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
 }
 
-impl Drop for PipeStream {
-    fn drop(&mut self) {
-        // SAFETY: 句柄单一所有，drop 关一次。
-        unsafe { CloseHandle(self.handle) };
+/// 连接读半（只读）。交 daemon 每连接的 reader 线程。
+pub struct PipeReader {
+    inner: std::sync::Arc<PipeHandle>,
+    ev: IoEvent,
+}
+impl Read for PipeReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        overlapped_read(self.inner.handle, self.ev.event, buf)
+    }
+}
+
+/// 连接写半（只写）。交 daemon 每连接的 writer 线程（drain 有界外发队列）。
+pub struct PipeWriter {
+    inner: std::sync::Arc<PipeHandle>,
+    ev: IoEvent,
+}
+impl Write for PipeWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        overlapped_write(self.inner.handle, self.ev.event, buf)
+    }
+    /// no-op：WriteFile 已把字节交给管道；背压由 daemon 有界队列治理（D-7）。
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -235,23 +347,45 @@ impl PipeListener {
             self.pending = create_instance(&self.name_wide, self.psd, false)?;
         }
         let handle = self.pending;
-        // SAFETY: handle 为本 listener 创建的管道实例。阻塞至客户端连入。
-        let ok = unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) };
+        // 重叠句柄上 ConnectNamedPipe 须带 OVERLAPPED：用临时事件等客户端连入。
+        let conn_ev = IoEvent::new()?;
+        let mut ov: OVERLAPPED = unsafe { std::mem::zeroed() };
+        ov.hEvent = conn_ev.event;
+        // SAFETY: handle 为本 listener 创建的重叠管道实例；ov 栈上有效到 GetOverlappedResult 返回。
+        let ok = unsafe { ConnectNamedPipe(handle, &mut ov) };
         if ok == 0 {
             let err = unsafe { GetLastError() };
-            // 客户端在 CreateNamedPipe 与 ConnectNamedPipe 之间已连入 ⇒ 视为成功。
-            if err != ERROR_PIPE_CONNECTED {
-                unsafe { CloseHandle(handle) };
-                self.pending = INVALID_HANDLE_VALUE;
-                return Err(ConmuxError::PtyError {
-                    message: format!("ConnectNamedPipe 失败（GetLastError={err}）"),
-                });
+            match err {
+                // 等客户端连入（GetOverlappedResult bWait 经 ov.hEvent 等待）。
+                ERROR_IO_PENDING => {
+                    let mut got: u32 = 0;
+                    let r = unsafe { GetOverlappedResult(handle, &ov, &mut got, 1) };
+                    if r == 0 {
+                        let e2 = unsafe { GetLastError() };
+                        unsafe { CloseHandle(handle) };
+                        self.pending = INVALID_HANDLE_VALUE;
+                        return Err(ConmuxError::PtyError {
+                            message: format!("ConnectNamedPipe 等待失败（GetLastError={e2}）"),
+                        });
+                    }
+                }
+                // 客户端在 CreateNamedPipe 与 ConnectNamedPipe 之间已连入 ⇒ 成功。
+                ERROR_PIPE_CONNECTED => {}
+                other => {
+                    unsafe { CloseHandle(handle) };
+                    self.pending = INVALID_HANDLE_VALUE;
+                    return Err(ConmuxError::PtyError {
+                        message: format!("ConnectNamedPipe 失败（GetLastError={other}）"),
+                    });
+                }
             }
         }
+        drop(conn_ev);
         // 预建下一实例（best-effort：失败则置 null，下次 accept 入口重建）。
         self.pending = create_instance(&self.name_wide, self.psd, false)
             .unwrap_or(INVALID_HANDLE_VALUE);
-        Ok(PipeStream { handle })
+        // from_handle 失败（事件创建失败，极罕见）时 Arc<PipeHandle> drop 会关 handle。
+        PipeStream::from_handle(handle)
     }
 }
 
@@ -276,7 +410,8 @@ fn create_instance(
         lpSecurityDescriptor: psd,
         bInheritHandle: 0, // FALSE：句柄不可被子进程继承
     };
-    let mut open_mode = PIPE_ACCESS_DUPLEX;
+    // FILE_FLAG_OVERLAPPED：重叠模式——使 daemon 每连接 reader/writer 双线程读写不串行（防死锁）。
+    let mut open_mode = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED;
     if first {
         open_mode |= FILE_FLAG_FIRST_PIPE_INSTANCE;
     }

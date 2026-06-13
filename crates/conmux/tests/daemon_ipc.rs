@@ -233,15 +233,15 @@ fn kill_server_stops_daemon() {
     ));
     drop(client);
 
-    // daemon 关闭后，新连接最终 ⇒ NoDaemon（给关闭一点时间）。
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // daemon 关闭后，新连接最终 ⇒ NoDaemon。关闭窗口内实例可能被 self-connect 占用
+    // （try_connect 反复 BUSY → Err）或仍短暂可连——两者都视为"仍在收敛"，继续等。
+    let deadline = Instant::now() + Duration::from_secs(8);
     loop {
-        match try_connect(name, 100).expect("try_connect") {
-            ConnectOutcome::NoDaemon => break,
-            ConnectOutcome::Connected(_) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(100))
-            }
-            ConnectOutcome::Connected(_) => panic!("kill-server 后 daemon 仍在监听"),
+        match try_connect(name, 100) {
+            Ok(ConnectOutcome::NoDaemon) => break,
+            _ if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
+            Ok(ConnectOutcome::Connected(_)) => panic!("kill-server 后 daemon 仍在监听"),
+            Err(e) => panic!("daemon 关闭未收敛（BUSY 不退）: {e}"),
         }
     }
 }
