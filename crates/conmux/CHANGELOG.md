@@ -23,6 +23,13 @@
     防 stdio 句柄泄漏）+ 握手 + 请求-应答。
   - **CLI 二进制** `conmux`：`daemon`/`new`/`ls`/`send`/`capture`/`kill`/`resize`/`respawn`/`kill-server`
     （手搓 arg 解析，不引 clap）。`serde_json` 自 dev 提升为生产依赖。
+  - **M2a 红队闸收口**（86/100 PASS-with-conditions → 三 MEDIUM 全清）：
+    - **M2a-M1 锁中毒容忍**（H-3）：`PaneHost` 全部 `.lock().expect()` 改 `into_inner()` 恢复续用——
+      持锁线程 panic 不再级联成全域锁风暴。采「恢复续用」而非设计 D-7 的「受控自杀」：PaneHost 是
+      conmux/conflux 共享库，库层 `process::exit` 会杀整个 Tauri app；受控退出属 daemon（独立形态策略层）。
+    - **M2a-M2 `Send.data` 改 `Vec<u8>` + base64**（承诺面）：与 `PaneOutput.data` 编码统一，
+      支撑 M2b raw attach 的非 UTF-8 stdin（方向键/二进制粘贴）；趁 wire 未发布一次到位，免 M2b 破坏性变更。
+    - **M2a-M3 关闭时序**：dispatch 入口查 `running`，关闭中拒绝 `Spawn`/`Respawn`（不回成功应答即瞬死的 pane）。
 - **VT 私有模式跟踪 + 重放前导**（M2 重放架构第一块砖，spike 实证裁决）：读泵增量跟踪
   DECSET/DECRST 模态位（alt-screen 族 / `?25` 光标可见性 / `?1` DECCKM / 鼠标
   `?1000/1002/1003/1006` / `?2004` bracketed paste，跨 chunk 撕裂容错）；新增承诺面方法

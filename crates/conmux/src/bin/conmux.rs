@@ -186,9 +186,9 @@ mod cmds {
         let Some(pane) = target else {
             return fail("send 需 -t PANE");
         };
-        let mut data = text_parts.join(" ");
+        let mut data = text_parts.join(" ").into_bytes();
         if !literal {
-            data.push('\r');
+            data.push(b'\r'); // 回车提交（缺省）；--literal 不补
         }
         with_client(|c| match c.request(MuxOp::Send { pane_id: PaneId(pane.clone()), data: data.clone() })? {
             MuxPayload::Sent => Ok(()),

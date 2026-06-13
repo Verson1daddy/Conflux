@@ -149,7 +149,7 @@ fn send_injects_into_real_pane() {
     match client
         .request(MuxOp::Send {
             pane_id: PaneId(pane.into()),
-            data: "echo CONMUX_INJECTED_42\r".into(),
+            data: b"echo CONMUX_INJECTED_42\r".to_vec(),
         })
         .unwrap()
     {

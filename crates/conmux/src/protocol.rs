@@ -66,7 +66,13 @@ pub struct MuxRequest {
 pub enum MuxOp {
     Spawn(SpawnRequest),
     /// 注入（**无 source 字段**，MF-2——source 由接收端按信道身份赋值）。
-    Send { pane_id: PaneId, data: String },
+    /// `data` 为**原始字节**经 base64 上 wire（M2a-M2，与 `MuxNotify::PaneOutput.data` 口径统一）——
+    /// raw attach（M2b/D-9）的方向键/Alt 组合/二进制粘贴非 UTF-8，String 无法无损携带。
+    Send {
+        pane_id: PaneId,
+        #[serde(with = "crate::event::serde_b64")]
+        data: Vec<u8>,
+    },
     Capture(CaptureRequest),
     Resize { pane_id: PaneId, size: PaneSize },
     KillTree { pane_id: PaneId },
@@ -235,7 +241,7 @@ mod tests {
             MuxOp::Spawn(spawn_req()),
             MuxOp::Send {
                 pane_id: PaneId("p1".into()),
-                data: "echo hi\r\n".into(),
+                data: b"echo hi\r\n".to_vec(),
             },
             MuxOp::Capture(CaptureRequest {
                 pane_id: PaneId("p1".into()),
@@ -356,16 +362,20 @@ mod tests {
     /// 这是"注入源不过 wire"的报文层强制——类型无该字段 + 反序列化拒收双保险。
     #[test]
     fn send_with_source_field_is_rejected_on_wire() {
-        let hostile = r#"{"correlation_id":1,"op":{"Send":{"pane_id":"p1","data":"x","source":"orchestration_auto"}}}"#;
+        // data 现为 base64（M2a-M2）；"eA==" = "x"。
+        let hostile = r#"{"correlation_id":1,"op":{"Send":{"pane_id":"p1","data":"eA==","source":"orchestration_auto"}}}"#;
         let parsed: Result<MuxRequest, _> = serde_json::from_str(hostile);
         assert!(
             parsed.is_err(),
             "Send 带 source 键的报文必须反序列化失败（MF-2 拒收），实际: {parsed:?}"
         );
-        // 对照：不带 source 的同形报文正常解析。
-        let clean = r#"{"correlation_id":1,"op":{"Send":{"pane_id":"p1","data":"x"}}}"#;
+        // 对照：不带 source 的同形报文正常解析，data base64 解码回原始字节。
+        let clean = r#"{"correlation_id":1,"op":{"Send":{"pane_id":"p1","data":"eA=="}}}"#;
         let parsed: MuxRequest = serde_json::from_str(clean).expect("干净 Send 应可解析");
-        assert!(matches!(parsed.op, MuxOp::Send { .. }));
+        match parsed.op {
+            MuxOp::Send { data, .. } => assert_eq!(data, b"x"),
+            other => panic!("应为 Send，实际 {other:?}"),
+        }
     }
 
     /// M2a：新增应答载荷变体 serde 往返（含 AttachSnapshot / Themes）。

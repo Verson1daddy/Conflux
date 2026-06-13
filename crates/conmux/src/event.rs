@@ -42,7 +42,8 @@ pub enum MuxNotify {
 }
 
 /// `Vec<u8>` ↔ base64 字符串 serde 适配（D-4，wire 边界用）。
-mod serde_b64 {
+/// `pub(crate)`：`MuxOp::Send.data` 复用同一编码（M2a-M2，与 `PaneOutput.data` 口径统一）。
+pub(crate) mod serde_b64 {
     use base64::Engine;
     use serde::{Deserialize, Deserializer, Serializer};
 

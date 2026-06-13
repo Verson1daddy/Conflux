@@ -11,7 +11,7 @@
 //! 后端（portable-pty 0.9 + JobObjectSupervisor + 读线程 + capture）在系统集成子步（2b）落地。
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::event::{MuxNotify, PaneEventSink};
 use crate::inject::{InjectionContext, InjectionHook};
@@ -19,6 +19,21 @@ use crate::job::{ProcessSupervisor, SupervisorFactory};
 use crate::scrollback::{LineIndexedBuffer, DEFAULT_BUFFER_CAPACITY};
 use crate::types::{InjectionSource, PaneId, PaneLifecycle, PaneSize, PaneState, ScrollbackInfo};
 use crate::ConmuxError;
+
+/// 中毒容忍锁恢复（H-3 / M2a 红队 M2a-M1）。
+///
+/// 持锁线程 panic 会毒化 `Mutex`；裸 `.expect()` 会让之后**每个** `.lock()` 级联 panic，
+/// daemon 沦为「全 pane 不可管理的活死状态」。本助手以 `into_inner()` 取回**被守护数据**
+/// 续用，单点 panic 不传导成全域锁风暴（daemon 侧 `catch_unwind` 另保证连接线程 panic 不
+/// 越界，二者叠加 = H-3 隔离）。
+///
+/// **为何「恢复续用」而非设计 D-7 的「受控自杀」**：`PaneHost` 是 conmux/conflux **共享库**
+/// ——conflux 在 Tauri 进程内 in-proc 持有它，库层 `process::exit` 会杀掉整个 app。受控退出
+/// 是 daemon（独立形态的策略层）的决策，不属机制库。PaneHost 锁内临界区皆短（HashMap
+/// 增删查 / `Arc::clone` / 环形缓冲 memcpy），无破坏性中途态，恢复的数据一致可用。
+fn recover<T>(e: PoisonError<MutexGuard<'_, T>>) -> MutexGuard<'_, T> {
+    e.into_inner()
+}
 
 /// 进程启动规格（契约 §13 空白-1 裁决：spawn cwd 用 `cwd`，与 `PaneState.working_dir`
 /// 展示语义区分）。retrofit 自 conflux `pty/manager.rs` 的 `CommandBuilder`。
@@ -125,7 +140,7 @@ pub(crate) struct Pane {
 impl Pane {
     fn to_state(&self, pane_id: &PaneId) -> PaneState {
         let (first, last) = {
-            let sb = self.scrollback.lock().expect("scrollback 锁未中毒");
+            let sb = self.scrollback.lock().unwrap_or_else(recover);
             sb.line_range_available()
         };
         PaneState {
@@ -141,7 +156,7 @@ impl Pane {
                 total_bytes: self
                     .scrollback
                     .lock()
-                    .expect("scrollback 锁未中毒")
+                    .unwrap_or_else(recover)
                     .total_bytes(),
                 first_abs_line: first,
                 last_abs_line: last,
@@ -213,7 +228,7 @@ impl PaneHost {
     /// → 注册。assign 失败 ⇒ 不注册（不产生无监管 pane）。读线程/capture 接线在 2b。
     pub fn spawn(&self, req: SpawnRequest) -> Result<PaneId, ConmuxError> {
         {
-            let panes = self.panes.lock().expect("panes 锁未中毒");
+            let panes = self.panes.lock().unwrap_or_else(recover);
             if panes.contains_key(&req.pane_id) {
                 return Err(ConmuxError::SpawnFailed {
                     message: format!("pane_id 已存在: {}", req.pane_id.0),
@@ -246,7 +261,7 @@ impl PaneHost {
         #[cfg(windows)]
         if let Some(sink) = self.event_sink.clone() {
             let (writer, reader) = {
-                let mut s = session.lock().expect("session 锁未中毒");
+                let mut s = session.lock().unwrap_or_else(recover);
                 (s.protocol_writer(), s.take_reader())
             };
             if let Some(writer) = writer {
@@ -261,8 +276,8 @@ impl PaneHost {
                         std::thread::spawn(move || {
                             let mut seq: u64 = 0;
                             crate::pane_win::pump_reader_with_dsr(reader, writer, |chunk| {
-                                sb.lock().expect("scrollback 锁").append(chunk);
-                                md.lock().expect("modes 锁").feed(chunk);
+                                sb.lock().unwrap_or_else(recover).append(chunk);
+                                md.lock().unwrap_or_else(recover).feed(chunk);
                                 seq += 1;
                                 sink.on_notify(MuxNotify::PaneOutput {
                                     pane_id: pane_id.clone(),
@@ -313,7 +328,7 @@ impl PaneHost {
             modes,
         };
         {
-            let mut panes = self.panes.lock().expect("panes 锁未中毒");
+            let mut panes = self.panes.lock().unwrap_or_else(recover);
             match panes.entry(req.pane_id.clone()) {
                 std::collections::hash_map::Entry::Vacant(v) => {
                     v.insert(pane);
@@ -353,7 +368,7 @@ impl PaneHost {
     ) -> Result<(), ConmuxError> {
         // 表锁内只取句柄，立即释放（D-1a）。
         let (inject_lock, session) = {
-            let panes = self.panes.lock().expect("panes 锁未中毒");
+            let panes = self.panes.lock().unwrap_or_else(recover);
             let pane = panes
                 .get(pane_id)
                 .ok_or_else(|| ConmuxError::PaneNotFound {
@@ -361,7 +376,7 @@ impl PaneHost {
                 })?;
             (Arc::clone(&pane.inject_lock), Arc::clone(&pane.session))
         };
-        let _serial = inject_lock.lock().expect("inject 锁未中毒");
+        let _serial = inject_lock.lock().unwrap_or_else(recover);
 
         let ctx = InjectionContext {
             pane_id,
@@ -382,7 +397,7 @@ impl PaneHost {
             }
         }
 
-        let result = session.lock().expect("session 锁未中毒").write_all(data);
+        let result = session.lock().unwrap_or_else(recover).write_all(data);
         for hook in &self.hooks {
             hook.after_inject(&ctx, &result);
         }
@@ -393,7 +408,7 @@ impl PaneHost {
     /// （MF-4 cl.4：失败仍清理，调用方据返回的 Err 决定是否标 zombie/上报）。
     pub fn kill(&self, pane_id: &PaneId) -> Result<(), ConmuxError> {
         let pane = {
-            let mut panes = self.panes.lock().expect("panes 锁未中毒");
+            let mut panes = self.panes.lock().unwrap_or_else(recover);
             panes
                 .remove(pane_id)
                 .ok_or_else(|| ConmuxError::PaneNotFound {
@@ -411,7 +426,7 @@ impl PaneHost {
         let old = self
             .panes
             .lock()
-            .expect("panes 锁未中毒")
+            .unwrap_or_else(recover)
             .remove(pane_id);
         // 旧 pane 存在则整树终结（忽略 kill 错误：可能已自退）。
         if let Some(old) = old {
@@ -424,7 +439,7 @@ impl PaneHost {
     pub fn resize(&self, pane_id: &PaneId, size: PaneSize) -> Result<(), ConmuxError> {
         // C-2 锁纪律：表锁内只取句柄；session 等待/IO 在锁外（同 inject_stdin D-1a）。
         let session = {
-            let panes = self.panes.lock().expect("panes 锁未中毒");
+            let panes = self.panes.lock().unwrap_or_else(recover);
             let pane = panes
                 .get(pane_id)
                 .ok_or_else(|| ConmuxError::PaneNotFound {
@@ -432,10 +447,10 @@ impl PaneHost {
                 })?;
             Arc::clone(&pane.session)
         };
-        session.lock().expect("session 锁未中毒").resize(size)?;
+        session.lock().unwrap_or_else(recover).resize(size)?;
         // 写回 size：重入表锁并以 Arc::ptr_eq 验证代际——句柄取出期间 pane 可能被
         // respawn（同 id 新 pane），旧代际的写回一律作废。
-        let mut panes = self.panes.lock().expect("panes 锁未中毒");
+        let mut panes = self.panes.lock().unwrap_or_else(recover);
         if let Some(pane) = panes.get_mut(pane_id) {
             if Arc::ptr_eq(&pane.session, &session) {
                 pane.size = size;
@@ -454,7 +469,7 @@ impl PaneHost {
         // C-2 锁纪律：表锁内只读 lifecycle + 取句柄；try_exit_code（可能阻塞于系统调用）
         // 在锁外执行。
         let session = {
-            let panes = self.panes.lock().expect("panes 锁未中毒");
+            let panes = self.panes.lock().unwrap_or_else(recover);
             let pane = panes
                 .get(pane_id)
                 .ok_or_else(|| ConmuxError::PaneNotFound {
@@ -471,14 +486,15 @@ impl PaneHost {
         let code = match session.try_lock() {
             Ok(mut s) => s.try_exit_code(),
             Err(std::sync::TryLockError::WouldBlock) => return Ok(None),
-            Err(std::sync::TryLockError::Poisoned(_)) => panic!("session 锁中毒"),
+            // 中毒容忍（M2a-M1）：取回守护数据续探，不级联 panic（与 `recover` 同策略）。
+            Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner().try_exit_code(),
         };
         let Some(c) = code else {
             return Ok(None);
         };
         // 写回：代际验证（与读线程 Weak 守卫同源语义）——句柄取出期间 pane 被
         // respawn/kill 时，旧代际的迟到退出码不得污染同 id 新 pane。
-        let mut panes = self.panes.lock().expect("panes 锁未中毒");
+        let mut panes = self.panes.lock().unwrap_or_else(recover);
         match panes.get_mut(pane_id) {
             Some(pane) if Arc::ptr_eq(&pane.session, &session) => {
                 pane.lifecycle = PaneLifecycle::Exited(c);
@@ -501,7 +517,7 @@ impl PaneHost {
     pub fn mode_preamble(&self, pane_id: &PaneId) -> Result<Vec<u8>, ConmuxError> {
         // C-2 锁纪律：表锁内只取句柄；modes 锁为纯内存短持有。
         let modes = {
-            let panes = self.panes.lock().expect("panes 锁未中毒");
+            let panes = self.panes.lock().unwrap_or_else(recover);
             let pane = panes
                 .get(pane_id)
                 .ok_or_else(|| ConmuxError::PaneNotFound {
@@ -509,20 +525,20 @@ impl PaneHost {
                 })?;
             Arc::clone(&pane.modes)
         };
-        let preamble = modes.lock().expect("modes 锁未中毒").preamble();
+        let preamble = modes.lock().unwrap_or_else(recover).preamble();
         Ok(preamble)
     }
 
     /// 对账/死亡检测用。
     pub fn list_panes(&self) -> Vec<PaneState> {
-        let panes = self.panes.lock().expect("panes 锁未中毒");
+        let panes = self.panes.lock().unwrap_or_else(recover);
         panes.iter().map(|(id, pane)| pane.to_state(id)).collect()
     }
 
     /// 单 pane 状态查询（V1-core：行级 jump-back 的 scrollback 高水位取数路径——
     /// ingest 每事件一查，避免 list_panes O(n)）。
     pub fn pane_state(&self, pane_id: &PaneId) -> Result<PaneState, ConmuxError> {
-        let panes = self.panes.lock().expect("panes 锁未中毒");
+        let panes = self.panes.lock().unwrap_or_else(recover);
         panes
             .get(pane_id)
             .map(|pane| pane.to_state(pane_id))
@@ -541,13 +557,13 @@ impl PaneHost {
         req: crate::capture::CaptureRequest,
     ) -> Result<crate::capture::CaptureResult, ConmuxError> {
         use crate::capture::CaptureRange;
-        let panes = self.panes.lock().expect("panes 锁未中毒");
+        let panes = self.panes.lock().unwrap_or_else(recover);
         let pane = panes
             .get(&req.pane_id)
             .ok_or_else(|| ConmuxError::PaneNotFound {
                 pane_id: req.pane_id.0.clone(),
             })?;
-        let sb = pane.scrollback.lock().expect("scrollback 锁未中毒");
+        let sb = pane.scrollback.lock().unwrap_or_else(recover);
         let (first, last) = sb.line_range_available();
 
         // 取字节 + truncated 判定（LineRange 被环覆盖 → None → truncated）。

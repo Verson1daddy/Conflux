@@ -154,7 +154,7 @@ fn handle_connection(mut stream: PipeStream, shared: Arc<DaemonShared>) {
     if let Some(pid) = identity {
         let _image = process_image_path(pid);
     }
-    let outcome = serve_connection(&mut stream, identity, &shared.host);
+    let outcome = serve_connection(&mut stream, identity, &shared.host, &shared.running);
     if outcome == ConnOutcome::KillServerRequested {
         trigger_shutdown(&shared);
     }
@@ -185,6 +185,7 @@ fn serve_connection<S: Read + Write>(
     stream: &mut S,
     identity: Option<u32>,
     host: &PaneHost,
+    running: &AtomicBool,
 ) -> ConnOutcome {
     // I-5 fail-closed：身份不可得即拒，不进握手。
     if identity.is_none() {
@@ -217,7 +218,7 @@ fn serve_connection<S: Read + Write>(
         match read_frame(stream) {
             Ok(WireFrame::Request(req)) => {
                 let kill_server = matches!(req.op, MuxOp::KillServer);
-                let reply = dispatch(host, req);
+                let reply = dispatch(host, req, running);
                 if write_frame(stream, &WireFrame::Reply(reply)).is_err() {
                     return ConnOutcome::IoError;
                 }
@@ -233,17 +234,24 @@ fn serve_connection<S: Read + Write>(
 }
 
 /// 请求分发（经 PaneHost，R-1）。`MuxOp` 穷尽 match——未来加变体在此编译报错强制裁决。
-fn dispatch(host: &PaneHost, req: MuxRequest) -> MuxReply {
+fn dispatch(host: &PaneHost, req: MuxRequest, running: &AtomicBool) -> MuxReply {
     let cid = req.correlation_id;
     let result: Result<MuxPayload, ConmuxError> = match req.op {
+        // M2a-M3：关闭中拒绝新建/重起——否则 sweep 后到的 Spawn 拿成功应答却被 Job drop 瞬死。
+        MuxOp::Spawn(_) | MuxOp::Respawn(_) if !running.load(Ordering::SeqCst) => {
+            Err(ConmuxError::SupervisorError {
+                message: "daemon 正在关闭，拒绝新建/重起 pane".into(),
+            })
+        }
         MuxOp::Spawn(r) => host.spawn(r).map(MuxPayload::Spawned),
         MuxOp::Respawn(r) => {
             let pane_id = r.pane_id.clone();
             host.respawn(&pane_id, r).map(|_| MuxPayload::Spawned(pane_id))
         }
         // R-1 / R-2：IPC 注入唯一写链 = inject_stdin；source 硬编码 UserDirect（wire 无协商）。
+        // data 为原始字节（M2a-M2，wire 上 base64）。
         MuxOp::Send { pane_id, data } => host
-            .inject_stdin(&pane_id, data.as_bytes(), InjectionSource::UserDirect)
+            .inject_stdin(&pane_id, &data, InjectionSource::UserDirect)
             .map(|_| MuxPayload::Sent),
         MuxOp::Capture(r) => host.capture(r).map(MuxPayload::Captured),
         MuxOp::Resize { pane_id, size } => {
@@ -344,7 +352,7 @@ mod tests {
     #[test]
     fn no_identity_is_rejected_before_handshake() {
         let mut mock = DuplexMock::with_frames(&[hello(PROTOCOL_VERSION)]);
-        let outcome = serve_connection(&mut mock, None, &empty_host());
+        let outcome = serve_connection(&mut mock, None, &empty_host(), &AtomicBool::new(true));
         assert_eq!(outcome, ConnOutcome::RejectedNoIdentity);
         assert!(mock.out.is_empty(), "拒连不应写 HelloAck");
     }
@@ -353,7 +361,7 @@ mod tests {
     #[test]
     fn wrong_protocol_version_is_rejected() {
         let mut mock = DuplexMock::with_frames(&[hello(PROTOCOL_VERSION + 99)]);
-        let outcome = serve_connection(&mut mock, Some(1234), &empty_host());
+        let outcome = serve_connection(&mut mock, Some(1234), &empty_host(), &AtomicBool::new(true));
         assert_eq!(outcome, ConnOutcome::RejectedBadVersion);
         assert!(mock.replies().is_empty(), "版本不匹配不应回 HelloAck");
     }
@@ -362,7 +370,7 @@ mod tests {
     #[test]
     fn non_hello_first_frame_is_rejected() {
         let mut mock = DuplexMock::with_frames(&[request(MuxOp::ListPanes)]);
-        let outcome = serve_connection(&mut mock, Some(1234), &empty_host());
+        let outcome = serve_connection(&mut mock, Some(1234), &empty_host(), &AtomicBool::new(true));
         assert_eq!(outcome, ConnOutcome::RejectedBadFirstFrame);
         assert!(mock.replies().is_empty());
     }
@@ -375,7 +383,7 @@ mod tests {
             exit_code: None,
         });
         let mut mock = DuplexMock::with_frames(&[hello(PROTOCOL_VERSION), notify]);
-        let outcome = serve_connection(&mut mock, Some(1234), &empty_host());
+        let outcome = serve_connection(&mut mock, Some(1234), &empty_host(), &AtomicBool::new(true));
         assert_eq!(outcome, ConnOutcome::RejectedBadDirection);
         // 握手成功了（回了 HelloAck），但随后方向违例断连。
         let replies = mock.replies();
@@ -388,7 +396,7 @@ mod tests {
     fn handshake_then_listpanes_replies_ok() {
         let mut mock =
             DuplexMock::with_frames(&[hello(PROTOCOL_VERSION), request(MuxOp::ListPanes)]);
-        let outcome = serve_connection(&mut mock, Some(1234), &empty_host());
+        let outcome = serve_connection(&mut mock, Some(1234), &empty_host(), &AtomicBool::new(true));
         assert_eq!(outcome, ConnOutcome::Closed);
         let replies = mock.replies();
         assert_eq!(replies.len(), 2);
@@ -407,7 +415,7 @@ mod tests {
     fn kill_server_acks_then_signals() {
         let mut mock =
             DuplexMock::with_frames(&[hello(PROTOCOL_VERSION), request(MuxOp::KillServer)]);
-        let outcome = serve_connection(&mut mock, Some(1234), &empty_host());
+        let outcome = serve_connection(&mut mock, Some(1234), &empty_host(), &AtomicBool::new(true));
         assert_eq!(outcome, ConnOutcome::KillServerRequested);
         let replies = mock.replies();
         assert!(matches!(
@@ -432,7 +440,7 @@ mod tests {
             MuxOp::SetTheme { id: "b-dark-ink".into() },
         ] {
             let mut mock = DuplexMock::with_frames(&[hello(PROTOCOL_VERSION), request(op)]);
-            serve_connection(&mut mock, Some(1234), &empty_host());
+            serve_connection(&mut mock, Some(1234), &empty_host(), &AtomicBool::new(true));
             let replies = mock.replies();
             assert!(
                 matches!(
@@ -448,12 +456,48 @@ mod tests {
         }
     }
 
+    /// M2a-M3：关闭中（running=false）Spawn 被拒（不回成功应答 = 不产生瞬死 pane）。
+    #[test]
+    fn spawn_rejected_during_shutdown() {
+        let spawn = WireFrame::Request(MuxRequest {
+            correlation_id: 1,
+            op: MuxOp::Spawn(crate::pane::SpawnRequest {
+                pane_id: crate::types::PaneId("x".into()),
+                command: crate::pane::CommandSpec {
+                    program: "cmd.exe".into(),
+                    args: vec![],
+                    cwd: None,
+                    env: vec![],
+                },
+                size: crate::types::PaneSize { rows: 24, cols: 80 },
+                adapter_id: "shell".into(),
+                display_name: None,
+                created_at: 0,
+            }),
+        });
+        let mut mock = DuplexMock::with_frames(&[hello(PROTOCOL_VERSION), spawn]);
+        // running=false 模拟关闭中。
+        serve_connection(&mut mock, Some(1234), &empty_host(), &AtomicBool::new(false));
+        let replies = mock.replies();
+        assert!(
+            matches!(
+                replies.last(),
+                Some(WireFrame::Reply(MuxReply::Err {
+                    error: ConmuxError::SupervisorError { .. },
+                    ..
+                }))
+            ),
+            "关闭中 Spawn 应回错误（不回成功应答），实际: {:?}",
+            replies.last()
+        );
+    }
+
     /// ListThemes 在 M2a 即可用（返回内置预置，无需 fan-out）。
     #[test]
     fn list_themes_works_in_m2a() {
         let mut mock =
             DuplexMock::with_frames(&[hello(PROTOCOL_VERSION), request(MuxOp::ListThemes)]);
-        serve_connection(&mut mock, Some(1234), &empty_host());
+        serve_connection(&mut mock, Some(1234), &empty_host(), &AtomicBool::new(true));
         let replies = mock.replies();
         match replies.last() {
             Some(WireFrame::Reply(MuxReply::Ok {
