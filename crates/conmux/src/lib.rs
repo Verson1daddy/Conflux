@@ -111,7 +111,7 @@ pub use job::{ProcessSupervisor, SupervisorFactory};
 #[cfg(windows)]
 pub use job::{JobObjectSupervisor, JobObjectSupervisorFactory};
 // PaneHost 类型 + 公开入参类型对外可见；构造器 2a 仍 pub(crate)（待 2b Windows 构造器）。
-pub use pane::{CommandSpec, PaneHost, SpawnRequest};
+pub use pane::{CommandSpec, PaneHost, PaneSnapshot, SpawnRequest};
 pub use protocol::{MuxOp, MuxPayload, MuxReply, MuxRequest, WireFrame, PROTOCOL_VERSION};
 pub use wire::{read_frame, write_frame, WireError, MAX_FRAME_BYTES};
 pub use theme::{builtin_terminal_themes, TerminalTheme, ThemeAppearance, DEFAULT_TERMINAL_THEME_ID};

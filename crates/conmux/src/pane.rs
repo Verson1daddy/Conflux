@@ -61,6 +61,34 @@ pub struct SpawnRequest {
     pub created_at: i64,
 }
 
+/// attach 原子快照（M2 设计 D-6）。`PaneHost::attach_snapshot` 在 scrollback 锁内原子取
+/// `(history, last_seq)`，锁外组装；消费方据此重建画面：喂 `mode_preamble` → 喂 `history`
+/// （原始 VT 字节）→ 按 `seq > last_seq` 连续喂 live `PaneOutput`。**承诺面**——嵌入 API +
+/// wire `MuxPayload::AttachSnapshot` 的源数据（后者把字节 base64）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneSnapshot {
+    /// 非默认 VT 模式位合成前导（alt-screen/光标/鼠标/bracketed paste），见 [`PaneHost::mode_preamble`]。
+    pub mode_preamble: Vec<u8>,
+    /// ring 内全部有效**原始字节**（含 VT 序列，供 xterm 重放自愈）。
+    pub history: Vec<u8>,
+    /// 与 `history` **原子对应**的 PaneOutput 序号高水位（live 流去重锚，D-6）。
+    pub last_seq: u64,
+    /// 取快照时的 pane 状态。
+    pub pane_state: PaneState,
+}
+
+/// `attach_snapshot` 在表锁内拷出的标量元字段（出表锁后组装 PaneState 用，避免表锁内读 scrollback）。
+struct SnapshotMeta {
+    adapter_id: String,
+    display_name: Option<String>,
+    lifecycle: PaneLifecycle,
+    pid: Option<u32>,
+    exit_code: Option<i32>,
+    working_dir: String,
+    size: PaneSize,
+    created_at: i64,
+}
+
 // ===== 内部 trait（pub(crate)，不导出——MF-1 隐私墙）=====
 
 /// 后端工厂：打开一个未 spawn 的 PTY 会话。
@@ -274,11 +302,12 @@ impl PaneHost {
                         // reader 永不 EOF、线程泄漏。upgrade 失败（pane 已移除）⇒ exit_code=None。
                         let session_weak = Arc::downgrade(&session);
                         std::thread::spawn(move || {
-                            let mut seq: u64 = 0;
                             crate::pane_win::pump_reader_with_dsr(reader, writer, |chunk| {
-                                sb.lock().unwrap_or_else(recover).append(chunk);
+                                // D-6：seq 在 scrollback 锁内与字节追加**原子绑定**——保证
+                                // emit 的 seq=S 对应的 ring 状态必含本块，attach 快照锁内同读
+                                // (read_all_bytes, seq) 即原子。emit 在锁外（H-1：序列化/投递不入锁）。
+                                let seq = sb.lock().unwrap_or_else(recover).append_and_seq(chunk);
                                 md.lock().unwrap_or_else(recover).feed(chunk);
-                                seq += 1;
                                 sink.on_notify(MuxNotify::PaneOutput {
                                     pane_id: pane_id.clone(),
                                     seq,
@@ -527,6 +556,72 @@ impl PaneHost {
         };
         let preamble = modes.lock().unwrap_or_else(recover).preamble();
         Ok(preamble)
+    }
+
+    /// attach 原子快照（M2 设计 D-6）。**无缝拼接不变量**：`history` 字节与 `last_seq` 在
+    /// scrollback 锁内**同时**读取（原子对应），锁内仅做 memcpy 克隆 + 读 seq（H-1：base64 /
+    /// JSON / 帧写出一律由调用方在锁外做，避免 1MB 级 CPU 工作进锁饿死读泵）。
+    ///
+    /// 调用方（daemon Attach 处理）须**先注册订阅、后取快照**：注册到快照间到达的事件按
+    /// `seq > last_seq` 过滤即去重，保证无丢帧无重帧（D-6 客户端拼接契约）。
+    pub fn attach_snapshot(&self, pane_id: &PaneId) -> Result<PaneSnapshot, ConmuxError> {
+        // C-2 锁纪律：表锁内只取句柄 + 拷贝标量元字段，立即释放（不在表锁内读 scrollback）。
+        let (scrollback, modes, meta) = {
+            let panes = self.panes.lock().unwrap_or_else(recover);
+            let pane = panes
+                .get(pane_id)
+                .ok_or_else(|| ConmuxError::PaneNotFound {
+                    pane_id: pane_id.0.clone(),
+                })?;
+            (
+                Arc::clone(&pane.scrollback),
+                Arc::clone(&pane.modes),
+                SnapshotMeta {
+                    adapter_id: pane.adapter_id.clone(),
+                    display_name: pane.display_name.clone(),
+                    lifecycle: pane.lifecycle.clone(),
+                    pid: pane.pid,
+                    exit_code: pane.exit_code,
+                    working_dir: pane.working_dir.clone(),
+                    size: pane.size,
+                    created_at: pane.created_at,
+                },
+            )
+        };
+        // 原子读 scrollback：(history, last_seq, 行窗) 同锁内取（H-1：仅 memcpy + 读字段）。
+        let (history, last_seq, sb_info) = {
+            let g = scrollback.lock().unwrap_or_else(recover);
+            let (first, last) = g.line_range_available();
+            (
+                g.read_all_bytes(),
+                g.seq(),
+                ScrollbackInfo {
+                    total_bytes: g.total_bytes(),
+                    first_abs_line: first,
+                    last_abs_line: last,
+                },
+            )
+        };
+        // 模式前导（独立短内存锁，与 scrollback 不嵌套）。
+        let mode_preamble = modes.lock().unwrap_or_else(recover).preamble();
+        let pane_state = PaneState {
+            pane_id: pane_id.clone(),
+            adapter_id: meta.adapter_id,
+            display_name: meta.display_name,
+            lifecycle: meta.lifecycle,
+            pid: meta.pid,
+            exit_code: meta.exit_code,
+            working_dir: meta.working_dir,
+            size: meta.size,
+            scrollback: sb_info,
+            created_at: meta.created_at,
+        };
+        Ok(PaneSnapshot {
+            mode_preamble,
+            history,
+            last_seq,
+            pane_state,
+        })
     }
 
     /// 对账/死亡检测用。
@@ -1626,6 +1721,54 @@ mod tests {
             ));
 
             host.kill(&PaneId("w3".into())).unwrap();
+        }
+
+        /// D-6：attach_snapshot 取回原始 VT 历史 + last_seq>0，且 last_seq 与收到的最后一个
+        /// PaneOutput.seq 一致（原子对应）。未知 pane → PaneNotFound。
+        #[test]
+        fn new_windows_attach_snapshot_history_and_seq() {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let host = PaneHost::new_windows(
+                vec![],
+                Arc::new(CollectSink {
+                    events: Arc::clone(&events),
+                }),
+            );
+            host.spawn(win_req("ws", "conmux-attach-marker")).unwrap();
+            std::thread::sleep(Duration::from_millis(1800));
+
+            let snap = host
+                .attach_snapshot(&PaneId("ws".into()))
+                .expect("attach_snapshot 应成功");
+            let text = String::from_utf8_lossy(&snap.history);
+            assert!(
+                text.contains("conmux-attach-marker"),
+                "history 应含原始 VT 输出，实际:\n{text}"
+            );
+            assert!(snap.last_seq > 0, "有输出后 last_seq 应 > 0");
+            assert_eq!(snap.pane_state.pane_id, PaneId("ws".into()));
+
+            // last_seq 应等于收到的最后一个 PaneOutput 的 seq（原子对应，无丢无重）。
+            let max_emitted_seq = events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|e| match e {
+                    MuxNotify::PaneOutput { seq, .. } => Some(*seq),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0);
+            assert_eq!(
+                snap.last_seq, max_emitted_seq,
+                "快照 last_seq 应与最后 emit 的 PaneOutput.seq 一致（D-6 原子）"
+            );
+
+            assert!(matches!(
+                host.attach_snapshot(&PaneId("nope".into())),
+                Err(ConmuxError::PaneNotFound { .. })
+            ));
+            host.kill(&PaneId("ws".into())).unwrap();
         }
 
         /// D-2a：自然退出后 PaneExited 事件携带精确退出码 + poll_exit 兜底返回同码。
