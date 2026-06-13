@@ -87,6 +87,17 @@ pub(crate) mod pane_win;
 #[cfg(windows)]
 pub mod pipe;
 
+/// **Stability: unstable** — may change without notice。
+/// conmux daemon 服务端（M2a，仅 Windows）：管道监听 + 握手 + dispatcher（经 PaneHost）
+/// + KillServer。承重墙安全不变量 I-2/I-5/R-1/R-2/H-2/H-3 的落实位。
+#[cfg(windows)]
+pub mod daemon;
+
+/// **Stability: unstable** — may change without notice。
+/// conmux 瘦客户端（M2a，仅 Windows）：连接（自动拉起）+ 握手 + 请求-应答。
+#[cfg(windows)]
+pub mod client;
+
 /// 终端主题预置注册表（契约 D7：多预置 + 背景基调可调）。conmux 是主题数据
 /// 唯一属主，conflux 与未来独立 CLI 共享。
 pub mod theme;

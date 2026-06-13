@@ -13,6 +13,12 @@ categories = ["command-line-utilities", "os::windows-apis"]
 [lib]
 name = "conmux"
 
+# 单二进制多子命令（M2 设计 D-2）：`conmux daemon` 跑 daemon，其余为瘦客户端。
+# 手搓 arg 解析——不引 clap，保持 conflux 嵌入 conmux 时的依赖树精简。
+[[bin]]
+name = "conmux"
+path = "src/bin/conmux.rs"
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"

@@ -5,6 +5,24 @@
 ## [Unreleased]
 
 ### Added
+- **M2a daemon IPC 地基**（命名管道 + 单二进制 CLI，"关窗不死"承重墙的第一阶段）：
+  - **协议增补**（承诺面，D-4/D-8）：`MuxOp` 增 `Respawn`/`Subscribe`/`Unsubscribe`/`Attach`/
+    `ListThemes`/`SetTheme`/`KillServer`；`MuxPayload` 增 `Subscribed`/`Unsubscribed`/
+    `AttachSnapshot`/`Themes`/`ThemeSet`/`ServerKillScheduled`；新增帧信封 `WireFrame`
+    （`Hello`/`HelloAck`/`Request`/`Reply`/`Notify`，`deny_unknown_fields` + H-2 方向约束）
+    + `PROTOCOL_VERSION=1`；`MuxNotify` 补 `Serialize`/`Deserialize`（`PaneOutput.data` base64
+    适配）+ `ThemeChanged` 变体；`ConmuxError::Unsupported`。
+  - **wire 帧编码** `wire` 模块（D-4）：`u32 LE 长度 + JSON`，4 MiB 上限（超大长度先拒不预分配），
+    EOF 区分帧边界优雅关闭 vs 截断。
+  - **命名管道传输** `pipe` 模块（仅 Windows，I-1..I-5）：服务端首实例 `FILE_FLAG_FIRST_PIPE_INSTANCE`
+    抢注守卫（失败不降级）+ DACL 仅授权当前用户 SID + `PIPE_REJECT_REMOTE_CLIENTS` + 客户端身份取数。
+  - **daemon** `daemon` 模块（仅 Windows）：管道监听 + 握手（版本严格相等）+ dispatcher（经 `PaneHost`，
+    R-1 `Send`→`inject_stdin`、R-2 IPC 注入硬编码 `UserDirect`）+ KillServer + I-5 身份 fail-closed
+    + H-2 帧方向约束 + H-3 panic 隔离。`Subscribe`/`Attach`/`SetTheme` 返回 `Unsupported`（行为留 M2b/M2c）。
+  - **client** `client` 模块（仅 Windows）：连接 + 自动拉起（`CreateProcessW` `bInheritHandles=FALSE`
+    防 stdio 句柄泄漏）+ 握手 + 请求-应答。
+  - **CLI 二进制** `conmux`：`daemon`/`new`/`ls`/`send`/`capture`/`kill`/`resize`/`respawn`/`kill-server`
+    （手搓 arg 解析，不引 clap）。`serde_json` 自 dev 提升为生产依赖。
 - **VT 私有模式跟踪 + 重放前导**（M2 重放架构第一块砖，spike 实证裁决）：读泵增量跟踪
   DECSET/DECRST 模态位（alt-screen 族 / `?25` 光标可见性 / `?1` DECCKM / 鼠标
   `?1000/1002/1003/1006` / `?2004` bracketed paste，跨 chunk 撕裂容错）；新增承诺面方法
