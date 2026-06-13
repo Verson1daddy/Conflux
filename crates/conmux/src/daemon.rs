@@ -21,6 +21,7 @@ use std::io::Read;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use crate::event::{MuxNotify, PaneEventSink};
 use crate::pane::PaneHost;
@@ -35,6 +36,9 @@ const DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// 每连接外发队列字节上界（D-7）。超限 ⇒ 断连该连接（客户端重连经 attach 快照恢复，零损失）。
 const MAX_QUEUE_BYTES: usize = 8 * 1024 * 1024;
+
+/// per-连接 attach 最小间隔（D-7 限速）：防快照放大 DoS（~100B Attach → 1.4MB 快照帧）。
+const ATTACH_MIN_INTERVAL: Duration = Duration::from_millis(500);
 
 /// 中毒容忍锁恢复（H-3，与 pane.rs::recover 同策略）——连接线程 panic 不级联成全域锁风暴。
 fn recover<T>(e: PoisonError<MutexGuard<'_, T>>) -> MutexGuard<'_, T> {
@@ -75,6 +79,8 @@ struct ConnHandle {
     dead: AtomicBool,
     /// 本连接订阅的 pane 集（D-5）。
     subscriptions: Mutex<HashSet<PaneId>>,
+    /// 上次 attach 时刻（D-7 限速：<500ms 回 Busy，防快照放大 DoS）。
+    last_attach_at: Mutex<Option<Instant>>,
 }
 
 impl ConnHandle {
@@ -133,6 +139,8 @@ struct DaemonShared {
     pipe_name: String,
     conns: Arc<Mutex<HashMap<u64, Arc<ConnHandle>>>>,
     next_conn_id: AtomicU64,
+    /// 正在取快照的 pane 集（D-7：per-pane 并发快照=1，进行中再 Attach 回 Busy，防放大）。
+    attaching: Mutex<HashSet<PaneId>>,
 }
 
 /// conmux daemon。`bind` 绑定管道，`serve` 进入服务循环。
@@ -159,6 +167,7 @@ impl Daemon {
             pipe_name: config.pipe_name,
             conns,
             next_conn_id: AtomicU64::new(1),
+            attaching: Mutex::new(HashSet::new()),
         });
         Ok(Self { shared, listener })
     }
@@ -246,6 +255,7 @@ fn handle_connection(stream: PipeStream, shared: Arc<DaemonShared>) {
         queued_bytes: AtomicUsize::new(0),
         dead: AtomicBool::new(false),
         subscriptions: Mutex::new(HashSet::new()),
+        last_attach_at: Mutex::new(None),
     });
     let conn_id = shared.next_conn_id.fetch_add(1, Ordering::SeqCst);
     shared
@@ -391,29 +401,8 @@ fn build_reply(req: MuxRequest, shared: &Arc<DaemonShared>, conn: &ConnHandle) -
                 .remove(&pane_id);
             Ok(MuxPayload::Unsubscribed)
         }
-        // D-6 attach：**先注册订阅、后取快照**（注册到快照间事件按 seq>last_seq 去重，无丢无重）。
-        MuxOp::Attach { pane_id } => {
-            conn.subscriptions
-                .lock()
-                .unwrap_or_else(recover)
-                .insert(pane_id.clone());
-            match host.attach_snapshot(&pane_id) {
-                Ok(snap) => Ok(MuxPayload::AttachSnapshot {
-                    mode_preamble_b64: b64(&snap.mode_preamble),
-                    history_b64: b64(&snap.history),
-                    last_seq: snap.last_seq,
-                    pane_state: snap.pane_state,
-                }),
-                Err(e) => {
-                    // 快照失败：回滚订阅，回错误。
-                    conn.subscriptions
-                        .lock()
-                        .unwrap_or_else(recover)
-                        .remove(&pane_id);
-                    Err(e)
-                }
-            }
-        }
+        // D-6 attach（限速 + 并发=1，D-7）：见 attach_with_limits。
+        MuxOp::Attach { pane_id } => attach_with_limits(shared, conn, pane_id),
         // M2c：主题热切换需向订阅者广播 ThemeChanged（依赖广播面）。
         MuxOp::SetTheme { .. } => Err(ConmuxError::Unsupported {
             message: "SetTheme 在 M2c 落地（主题广播）".into(),
@@ -428,6 +417,64 @@ fn build_reply(req: MuxRequest, shared: &Arc<DaemonShared>, conn: &ConnHandle) -
             correlation_id: cid,
             error,
         },
+    }
+}
+
+/// Attach 处理（D-6 无缝拼接 + D-7 限速）：
+/// 1. per-连接 ≥500ms 限速（防快照放大 DoS）；2. per-pane 并发快照=1（进行中再 Attach 回 Busy）；
+/// 3. **先注册订阅、后取快照**（注册到快照间事件按 seq>last_seq 去重，无丢无重）。
+fn attach_with_limits(
+    shared: &Arc<DaemonShared>,
+    conn: &ConnHandle,
+    pane_id: PaneId,
+) -> Result<MuxPayload, ConmuxError> {
+    // D-7 限速：per-连接 attach 间隔 ≥500ms（被拒亦更新时刻，限制尝试频率）。
+    {
+        let mut last = conn.last_attach_at.lock().unwrap_or_else(recover);
+        if let Some(t) = *last {
+            if t.elapsed() < ATTACH_MIN_INTERVAL {
+                return Err(ConmuxError::Busy {
+                    message: "attach 过于频繁（<500ms），稍后重试".into(),
+                });
+            }
+        }
+        *last = Some(Instant::now());
+    }
+    // D-7 per-pane 并发快照=1：进行中再 Attach 同 pane → Busy（避免快照放大叠加）。
+    {
+        let mut set = shared.attaching.lock().unwrap_or_else(recover);
+        if !set.insert(pane_id.clone()) {
+            return Err(ConmuxError::Busy {
+                message: "该 pane 正在被另一 attach 取快照，稍后重试".into(),
+            });
+        }
+    }
+    // 先注册订阅（D-6），后取快照；无论成败清并发标记。
+    conn.subscriptions
+        .lock()
+        .unwrap_or_else(recover)
+        .insert(pane_id.clone());
+    let result = shared.host.attach_snapshot(&pane_id);
+    shared
+        .attaching
+        .lock()
+        .unwrap_or_else(recover)
+        .remove(&pane_id);
+    match result {
+        Ok(snap) => Ok(MuxPayload::AttachSnapshot {
+            mode_preamble_b64: b64(&snap.mode_preamble),
+            history_b64: b64(&snap.history),
+            last_seq: snap.last_seq,
+            pane_state: snap.pane_state,
+        }),
+        Err(e) => {
+            // 快照失败：回滚订阅。
+            conn.subscriptions
+                .lock()
+                .unwrap_or_else(recover)
+                .remove(&pane_id);
+            Err(e)
+        }
     }
 }
 
@@ -464,6 +511,7 @@ mod tests {
             pipe_name: "test".into(),
             conns,
             next_conn_id: AtomicU64::new(1),
+            attaching: Mutex::new(HashSet::new()),
         })
     }
 
@@ -475,6 +523,7 @@ mod tests {
                 queued_bytes: AtomicUsize::new(0),
                 dead: AtomicBool::new(false),
                 subscriptions: Mutex::new(HashSet::new()),
+                last_attach_at: Mutex::new(None),
             }),
             rx,
         )
@@ -717,6 +766,38 @@ mod tests {
                 ..
             }))
         ));
+    }
+
+    /// D-7：同连接 <500ms 内两次 Attach 同 pane，第二次回 Busy（限速防快照放大）。
+    #[test]
+    fn rapid_attach_is_rate_limited() {
+        let mut r = reader_with(&[
+            hello(PROTOCOL_VERSION),
+            request(MuxOp::Attach {
+                pane_id: PaneId("p".into()),
+            }),
+            request(MuxOp::Attach {
+                pane_id: PaneId("p".into()),
+            }),
+        ]);
+        let (conn, rx) = test_conn();
+        serve_connection(&mut r, Some(1234), &test_shared(), &conn);
+        let replies = drain_frames(&rx);
+        // 第一次：pane 不存在 → PaneNotFound（限速已记时刻）；第二次：<500ms → Busy。
+        let errs: Vec<_> = replies
+            .iter()
+            .filter_map(|f| match f {
+                WireFrame::Reply(MuxReply::Err { error, .. }) => Some(error),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errs.len(), 2, "两次 attach 各回一个 Err");
+        assert!(matches!(errs[0], ConmuxError::PaneNotFound { .. }));
+        assert!(
+            matches!(errs[1], ConmuxError::Busy { .. }),
+            "第二次快速 attach 应被限速 Busy，实际: {:?}",
+            errs[1]
+        );
     }
 
     /// SetTheme 仍 Unsupported（M2c 广播）。

@@ -18,6 +18,8 @@
     + `AttachSession`（recv_output / send_input）+ into_split（渲染半/注入半）。
   - **CLI `attach -t PANE`**：raw console（stdin 关行/回显 + stdout VT 处理 + VT 输入）+ 画面重放
     （preamble+history+缓冲）+ 渲染线程 + stdin→Send 转发 + `Ctrl+]` 脱离。
+  - **attach 限速**（D-7，红队 M2b-H1 收口）：per-连接 attach ≥500ms 间隔 + per-pane 并发快照=1
+    （进行中再 Attach 回 `ConmuxError::Busy`），防 ~100B Attach→1.4MB 快照帧的放大 DoS。
   - 验收：seq 连续性集成测试（真实 ConPTY，attach 期间注入驱动输出，断言 live seq 严格连续无丢无重
     + 再 attach 历史完整）；CLI attach 历史重放烟测。**注**：full 交互（键入/Ctrl+]/live TUI）待真实终端手验。
 - **M2a daemon IPC 地基**（命名管道 + 单二进制 CLI，"关窗不死"承重墙的第一阶段）：

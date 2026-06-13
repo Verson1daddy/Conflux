@@ -44,6 +44,10 @@ pub enum ConmuxError {
     /// （后者是 wire 解析失败，前者是语义上能解析但 daemon 无对应实现）。
     #[error("不支持的操作: {message}")]
     Unsupported { message: String },
+
+    /// 资源临时不可用，请稍后重试（M2b：attach 限速 / per-pane 并发快照=1 的排队拒绝，D-7）。
+    #[error("资源繁忙: {message}")]
+    Busy { message: String },
 }
 
 #[cfg(test)]
