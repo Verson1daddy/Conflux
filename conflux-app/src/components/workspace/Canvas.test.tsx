@@ -58,6 +58,12 @@ vi.mock("@/lib/tauri-bridge", () => ({
   togglePinInstance: vi.fn(),
 }));
 
+// jump-back effect 订阅跨窗口事件（真实实现走 Tauri listen）——测试环境无
+// Tauri runtime，stub 成立即 resolve 的 noop，避免 unhandled rejection 污染。
+vi.mock("@/lib/event-listener", () => ({
+  onJumpBackRequested: vi.fn(() => Promise.resolve(() => {})),
+}));
+
 vi.mock("./AgentCard", () => ({
   AgentCard: () => createElement("article", { "data-testid": "agent-card" }),
 }));

@@ -3,11 +3,14 @@
 import { describe, it, expect } from "vitest";
 import {
   approachLog,
+  approachPan,
+  cameraSettled,
   clampLogZoom,
   wheelLogDelta,
   anchorWorldPoint,
   panForAnchor,
   LOG_SNAP_EPSILON,
+  PAN_SNAP_EPSILON,
 } from "./camera-math";
 
 describe("camera-math（log 空间平滑缩放）", () => {
@@ -41,5 +44,25 @@ describe("camera-math（log 空间平滑缩放）", () => {
     // 用新 pan/zoom 反算光标下世界点，应与 w 一致
     expect((cursor.x - pan1.x) / 2.5).toBeCloseTo(w.wx, 9);
     expect((cursor.y - pan1.y) / 2.5).toBeCloseTo(w.wy, 9);
+  });
+
+  it("approachPan 单调趋近且帧率无关（两个 8ms ≈ 一个 16ms）", () => {
+    const one = approachPan(0, 400, 16);
+    const half = approachPan(approachPan(0, 400, 8), 400, 8);
+    expect(one).toBeGreaterThan(0);
+    expect(one).toBeLessThan(400);
+    expect(Math.abs(one - half)).toBeLessThan(1e-6);
+  });
+
+  it("approachPan 接近目标时 snap（亚像素以内直接落 target）", () => {
+    expect(approachPan(400 - PAN_SNAP_EPSILON / 2, 400, 16)).toBe(400);
+  });
+
+  it("cameraSettled：zoom 与 pan 双双落 target 才算停", () => {
+    const target = { x: 100, y: 200 };
+    expect(cameraSettled(2, 2, { x: 100, y: 200 }, target)).toBe(true);
+    expect(cameraSettled(2, 2.0001, { x: 100, y: 200 }, target)).toBe(false);
+    expect(cameraSettled(2, 2, { x: 100, y: 201 }, target)).toBe(false);
+    expect(cameraSettled(2, 2, { x: 99, y: 200 }, target)).toBe(false);
   });
 });

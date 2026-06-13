@@ -28,6 +28,8 @@ import {
 } from "@/lib/grid-model";
 import {
   approachLog,
+  approachPan,
+  cameraSettled,
   clampLogZoom,
   wheelLogDelta,
   anchorWorldPoint,
@@ -58,7 +60,6 @@ function CanvasImpl({ isFullscreen }: CanvasProps) {
   const setZoom = useWorkspaceStore((s) => s.setZoom);
   const setPan = useWorkspaceStore((s) => s.setPan);
 
-  const fitAll = useWorkspaceStore((s) => s.fitAll);
   const autoArrange = useWorkspaceStore((s) => s.autoArrange);
   const { triggerAutoPack } = useWorkspaceLayout();
   const [pinnedFilter, setPinnedFilter] = useState(false);
@@ -85,6 +86,11 @@ function CanvasImpl({ isFullscreen }: CanvasProps) {
   const visibleCards =
     pinnedFilter && !shouldRenderAllForPinnedFilter ? pinnedCards : cards;
 
+  // 批2（审计 C：pinned 过滤进出不对称）：当前可见卡 id 集——拖拽磁吸只对
+  // 可见卡生效（所见即所得）。pinnedFilter 开启时画布只渲染 pinned 卡，磁吸
+  // 候选集随之收窄，避免吸附到隐藏的非 pinned 卡。稳定 ref 传给 memo'd 卡片。
+  const visibleIdsRef = useRef<Set<string>>(new Set());
+
   const containerRef = useRef<HTMLDivElement>(null);
   const transformLayerRef = useRef<HTMLDivElement>(null);
   const worldGridRef = useRef<HTMLCanvasElement>(null);
@@ -97,7 +103,6 @@ function CanvasImpl({ isFullscreen }: CanvasProps) {
   const isInteractingRef = useRef(false);
   const interactionSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const commitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const zoomRafRef = useRef<number | null>(null);
   const gridDrawRafRef = useRef<number | null>(null);
   const previousCardCountRef = useRef(visibleCards.length);
 
@@ -209,18 +214,6 @@ function CanvasImpl({ isFullscreen }: CanvasProps) {
     }, 180);
   }, [scheduleGridDraw]);
 
-  const enableZoomTransition = useCallback(() => {
-    const el = transformLayerRef.current;
-    if (!el) return;
-    el.dataset.zooming = "true";
-    if (zoomRafRef.current) cancelAnimationFrame(zoomRafRef.current);
-    zoomRafRef.current = requestAnimationFrame(() => {
-      zoomRafRef.current = requestAnimationFrame(() => {
-        el.dataset.zooming = "false";
-      });
-    });
-  }, []);
-
   const applyTransform = useCallback(() => {
     const gridEl = worldGridRef.current;
     if (gridEl) {
@@ -257,19 +250,26 @@ function CanvasImpl({ isFullscreen }: CanvasProps) {
     }, 100);
   }, [setZoom, setPan]);
 
-  // ===== 滚轮缩放平滑（spec §1.4）=====
-  // log 空间指数趋近（τ=90ms）+ 锚点闭式重算 pan = p − w·zoom + 拖拽打断。
+  // ===== 相机平滑（spec §1.4 + 批2 统一）=====
+  // 单一 rAF 相机循环，两种平移模式共用同一 log 空间趋近曲线（τ=90ms）：
+  //   ① 锚点缩放模式（滚轮）：zoomAnchorRef 存在 → pan 由 panForAnchor 闭式重算；
+  //   ② 目标视口模式（Fit All / autoArrange / auto-fit / jump-back）：targetPanRef
+  //      存在 → pan 走 approachPan 趋近到目标（消 CSS transition 跳变 + 撕裂）。
+  // 拖拽打断：清两 ref + 锁 target = current。
   const logZoomRef = useRef(Math.log2(storeZoom));
   const targetLogZoomRef = useRef(Math.log2(storeZoom));
   const zoomAnchorRef = useRef<{
     cursor: { x: number; y: number };
     world: AnchorWorld;
   } | null>(null);
+  // 目标视口模式的飞行终点 pan（与 zoomAnchorRef 互斥）。
+  const targetPanRef = useRef<{ x: number; y: number } | null>(null);
   const zoomAnimRef = useRef<number | null>(null);
   const zoomAnimLastTRef = useRef(0);
 
   useEffect(() => {
-    // store 提交 / fitAll / 自动 fit 等外部 zoom 变更：log 域状态跟随。
+    // 外部 zoom 变更（其它路径直接 setZoom）：log 域状态跟随。相机动画自身
+    // 提交 store 时此 effect 也会跑，但此刻 ref 已等于 storeZoom，幂等无副作用。
     logZoomRef.current = Math.log2(storeZoom);
     targetLogZoomRef.current = logZoomRef.current;
   }, [storeZoom]);
@@ -282,20 +282,43 @@ function CanvasImpl({ isFullscreen }: CanvasProps) {
       logZoomRef.current = approachLog(logZoomRef.current, targetLogZoomRef.current, dt);
       liveZoom.current = 2 ** logZoomRef.current;
       const anchor = zoomAnchorRef.current;
+      const targetPan = targetPanRef.current;
       if (anchor) {
         livePan.current = panForAnchor(anchor.cursor, anchor.world, liveZoom.current);
+      } else if (targetPan) {
+        livePan.current = {
+          x: approachPan(livePan.current.x, targetPan.x, dt),
+          y: approachPan(livePan.current.y, targetPan.y, dt),
+        };
       }
       markInteraction();
       applyTransform();
-      if (logZoomRef.current !== targetLogZoomRef.current) {
+      const panTarget = targetPan ?? livePan.current;
+      if (!cameraSettled(logZoomRef.current, targetLogZoomRef.current, livePan.current, panTarget)) {
         zoomAnimRef.current = requestAnimationFrame(stepZoomAnimation);
       } else {
         zoomAnchorRef.current = null;
+        targetPanRef.current = null;
         zoomAnimLastTRef.current = 0;
         scheduleCommit();
       }
     },
     [applyTransform, markInteraction, scheduleCommit]
+  );
+
+  // 离散相机飞入（Fit All / autoArrange / auto-fit / jump-back 统一入口）：
+  // 设目标 zoom+pan，启动 rAF 趋近——与滚轮缩放同一平滑模型，零跳变。
+  const flyToViewport = useCallback(
+    (zoom: number, pan: { x: number; y: number }) => {
+      zoomAnchorRef.current = null;
+      targetLogZoomRef.current = clampLogZoom(Math.log2(zoom));
+      targetPanRef.current = { x: pan.x, y: pan.y };
+      if (zoomAnimRef.current === null) {
+        zoomAnimLastTRef.current = 0;
+        zoomAnimRef.current = requestAnimationFrame(stepZoomAnimation);
+      }
+    },
+    [stepZoomAnimation]
   );
 
   useEffect(() => {
@@ -360,9 +383,11 @@ function CanvasImpl({ isFullscreen }: CanvasProps) {
       }
 
       e.preventDefault();
-      // 拖拽打断缩放动画（tldraw 相机行为：用户输入即接管）。
+      // 拖拽打断相机动画（tldraw 相机行为：用户输入即接管）——锁 target=current
+      // 并清两种 pan 模式 ref，让 rAF 循环下一帧自然收敛停机。
       targetLogZoomRef.current = logZoomRef.current;
       zoomAnchorRef.current = null;
+      targetPanRef.current = null;
       (e.target as HTMLElement).setPointerCapture(e.pointerId);
       containerRef.current?.classList.add("cursor-grabbing");
 
@@ -399,7 +424,8 @@ function CanvasImpl({ isFullscreen }: CanvasProps) {
   );
 
   // jump-back 视口聚焦（spec §2.2）：监听跨窗口事件，把目标卡聚焦到视口中心
-  // 并触发一次性高亮脉冲。离散跳变走 CSS zoom transition（与 fitAll 同路径）。
+  // 并触发一次性高亮脉冲。批2：离散跳转走 log 相机飞入（flyToViewport），
+  // 与滚轮缩放同一平滑模型——消 CSS transition 跳变。
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let disposed = false;
@@ -416,14 +442,7 @@ function CanvasImpl({ isFullscreen }: CanvasProps) {
       const rect = el.getBoundingClientRect();
       const next = focusCardViewport(card, rect.width, rect.height);
       if (!next) return;
-      liveZoom.current = next.zoom;
-      livePan.current = next.pan;
-      logZoomRef.current = Math.log2(next.zoom);
-      targetLogZoomRef.current = logZoomRef.current;
-      setZoom(next.zoom);
-      setPan(next.pan);
-      enableZoomTransition();
-      applyTransform();
+      flyToViewport(next.zoom, next.pan);
       useWorkspaceStore.getState().setPulseCard(instanceId);
       if (pulseTimer) clearTimeout(pulseTimer);
       pulseTimer = setTimeout(() => {
@@ -441,19 +460,43 @@ function CanvasImpl({ isFullscreen }: CanvasProps) {
       if (pulseTimer) clearTimeout(pulseTimer);
       unlisten?.();
     };
-  }, [applyTransform, enableZoomTransition, setPan, setZoom]);
+  }, [flyToViewport]);
 
   const handleFitAll = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
-    fitAll(rect.width, rect.height);
-    const state = useWorkspaceStore.getState();
-    liveZoom.current = state.zoom;
-    livePan.current = { x: state.pan.x, y: state.pan.y };
-    enableZoomTransition();
-    applyTransform();
-  }, [fitAll, applyTransform, enableZoomTransition]);
+    // 批2：用纯函数算目标视口（不再先 set store 再回读），走 log 相机飞入。
+    // store 提交延后到动画停机的 scheduleCommit，与滚轮缩放同源。
+    const next = fitCardsIntoViewport({
+      cards: visibleCards,
+      viewportWidth: rect.width,
+      viewportHeight: rect.height,
+    });
+    if (!next) return;
+    flyToViewport(next.zoom, next.pan);
+  }, [flyToViewport, visibleCards]);
+
+  // Auto Arrange（审计：autoArrange 不跟视口 P1）：重排卡片后把重排结果 fit
+  // 进当前视口（相机飞入），否则卡都飞到 (24,24) 锚点而视口停在原处 → 看不到。
+  const handleAutoArrange = useCallback(() => {
+    autoArrange();
+    const el = containerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    // 重排是同步 set——立即取重排后位置；按当前可见集 fit（尊重 pinned 过滤）。
+    const visibleIds = new Set(visibleCards.map((c) => c.instance_id));
+    const arranged = useWorkspaceStore
+      .getState()
+      .cards.filter((c) => visibleIds.has(c.instance_id));
+    const next = fitCardsIntoViewport({
+      cards: arranged,
+      viewportWidth: rect.width,
+      viewportHeight: rect.height,
+    });
+    if (!next) return;
+    flyToViewport(next.zoom, next.pan);
+  }, [autoArrange, flyToViewport, visibleCards]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -491,6 +534,11 @@ function CanvasImpl({ isFullscreen }: CanvasProps) {
     }
   }, [shouldFailOpenPinnedFilter]);
 
+  // 可见卡 id 集随渲染同步——拖拽磁吸闭包（pointerdown 时建立）读最新值。
+  useEffect(() => {
+    visibleIdsRef.current = new Set(visibleCards.map((c) => c.instance_id));
+  }, [visibleCards]);
+
   useEffect(() => {
     const previousCardCount = previousCardCountRef.current;
     previousCardCountRef.current = visibleCards.length;
@@ -522,13 +570,9 @@ function CanvasImpl({ isFullscreen }: CanvasProps) {
       return;
     }
 
-    liveZoom.current = nextViewport.zoom;
-    livePan.current = nextViewport.pan;
-    setZoom(nextViewport.zoom);
-    setPan(nextViewport.pan);
-    enableZoomTransition();
-    applyTransform();
-  }, [applyTransform, enableZoomTransition, setPan, setZoom, visibleCards]);
+    // 批2：卡片恢复/删除后的自动 fit 也走 log 相机飞入（消 CSS transition 跳变）。
+    flyToViewport(nextViewport.zoom, nextViewport.pan);
+  }, [flyToViewport, visibleCards]);
 
   return (
     <div
@@ -589,6 +633,8 @@ function CanvasImpl({ isFullscreen }: CanvasProps) {
               isPinned={agentInfo?.is_pinned ?? false}
               layoutMode={layoutMode}
               zoom={liveZoom.current}
+              zoomRef={liveZoom}
+              visibleIdsRef={visibleIdsRef}
               fileCount={null}
               lastActivity={agentInfo?.last_activity_at ?? 0}
               isFlipped={isFlipped}
@@ -629,7 +675,7 @@ function CanvasImpl({ isFullscreen }: CanvasProps) {
         <button
           className="glass rounded-md px-2 py-1 text-[10px] font-mono text-white/40 hover:text-white/70 transition-colors"
           style={{ cursor: "pointer", border: "none" }}
-          onClick={autoArrange}
+          onClick={handleAutoArrange}
           title="Auto-arrange cards"
         >
           <svg

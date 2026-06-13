@@ -892,15 +892,18 @@ html[data-window-label="island"] #root {
   animation: modal-panel-exit var(--duration-exit) var(--ease-out-smooth) forwards;
 }
 
-/* ===== Agent card appear + smooth position transitions ===== */
+/* ===== Agent card appear + smooth position transitions =====
+ * 批2：定位改 transform: translate3d（合成器层，无 reflow）。入场动画因此只能
+ * 动 opacity——若再动 transform: scale 会覆盖 inline 的定位 translate，卡片入场
+ * 瞬跳到 (0,0)。overlap resolution 推位的平滑过渡随之改为 transition: transform。 */
 @keyframes card-appear {
-  from { opacity: 0; transform: scale(0.92); }
-  to   { opacity: 1; transform: scale(1); }
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 .card-appear {
   animation: card-appear var(--duration-normal) var(--ease-apple);
-  /* Smooth position transitions when pushed by overlap resolution */
-  transition: left 0.28s var(--ease-apple), top 0.28s var(--ease-apple);
+  /* Smooth position transitions when pushed by overlap resolution / auto-pack */
+  transition: transform 0.28s var(--ease-apple);
 }
 /* During active drag: disable position transition so it feels instant */
 .card-appear[data-dragging="true"] {
@@ -964,14 +967,13 @@ body {
   animation: fadeIn 0.2s ease;
 }
 
-/* Canvas zoom: smooth transition for wheel-zoom / fit-all; disabled during drag */
+/* Canvas camera: transform is driven frame-by-frame by the rAF log-space
+ * camera loop (wheel zoom + Fit All / autoArrange / auto-fit / jump-back all
+ * share it). No CSS transition on transform — it would fight the rAF loop. */
 .canvas-transform-layer {
   position: relative;
   z-index: 1;
   transition: none;
-}
-.canvas-transform-layer[data-zooming="true"] {
-  transition: transform 0.15s var(--ease-apple);
 }
 
 .canvas-shell {

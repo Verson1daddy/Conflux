@@ -5,6 +5,7 @@
 // Content adapts to card dimensions.
 
 import { Suspense, lazy, memo, useCallback, useRef, useLayoutEffect, useMemo, useState, useEffect } from "react";
+import type { RefObject } from "react";
 import { createPortal } from "react-dom";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useAgentStore } from "@/stores/agentStore";
@@ -18,7 +19,6 @@ import {
   DEFAULT_CARD_ACCENT_COLOR,
   resolveCardStatusMeta,
 } from "@/lib/agent-visuals";
-import { SNAP_GRID_PX } from "@/types/layout";
 import type { CardLayout, AgentStatus, Position, LayoutMode } from "@/types";
 import { useExitActions } from "@/hooks/useExitActions";
 import { useTerminalTheme } from "@/hooks/useTerminalTheme";
@@ -166,12 +166,6 @@ export function resolveCardFooterInfo(input: {
   };
 }
 
-// ===== Snap helper =====
-
-function snapToGrid(value: number): number {
-  return Math.round(value / SNAP_GRID_PX) * SNAP_GRID_PX;
-}
-
 // ===== Props =====
 
 interface AgentCardProps {
@@ -182,7 +176,14 @@ interface AgentCardProps {
   isSelected: boolean;
   isPinned: boolean;
   layoutMode: LayoutMode;
+  /** 渲染时刻的 zoom 快照（用于初次 transform 计算等无需实时性的读）。 */
   zoom: number;
+  /** 实时 zoom ref（拖拽/缩放数学直读当前值）——避免 memo 卡片在拖拽期间
+   *  读到陈旧的 zoom prop 快照（审计 C：stale zoom）。 */
+  zoomRef?: RefObject<number>;
+  /** 当前画布可见卡 id 集 ref——拖拽磁吸只对可见卡生效（审计 C：pinned
+   *  过滤进出不对称）。pinnedFilter 开启时不吸附隐藏卡。 */
+  visibleIdsRef?: RefObject<Set<string>>;
   fileCount: number | null;
   lastActivity: number;
   /** When true, the card flips in place to reveal the expanded agent view on
@@ -306,6 +307,8 @@ function AgentCardImpl({
   isPinned,
   layoutMode,
   zoom,
+  zoomRef,
+  visibleIdsRef,
   fileCount,
   lastActivity,
   isFlipped = false,
@@ -466,11 +469,13 @@ function AgentCardImpl({
 
   // ===== Shared DOM update helper =====
 
+  // 批2（审计：left/top 布局动画 P2）：定位用 transform: translate3d（合成器层，
+  // 不触发 layout/reflow），不再写 left/top。卡尺寸仍用 width/height——xterm 内容
+  // 依赖实际盒模型，无法用 scale 代偿。
   const applyTransform = useCallback(() => {
     const el = cardRef.current;
     if (!el) return;
-    el.style.left = `${livePos.current.x}px`;
-    el.style.top = `${livePos.current.y}px`;
+    el.style.transform = `translate3d(${livePos.current.x}px,${livePos.current.y}px,0)`;
     el.style.width = `${liveSize.current.width}px`;
     el.style.height = `${liveSize.current.height}px`;
   }, []);
@@ -593,17 +598,29 @@ function AgentCardImpl({
       resetSnapState();
 
       const onMove = (me: PointerEvent) => {
-        const dx = (me.clientX - startMouseX) / zoom;
-        const dy = (me.clientY - startMouseY) / zoom;
+        // 批2（审计 C：stale zoom）：拖拽数学直读实时 zoom ref——memo 卡片在拖拽
+        // 期间不重渲染，zoom prop 是挂载时快照；若同时滚轮缩放则换算系数陈旧。
+        const liveZoomVal = zoomRef?.current ?? zoom;
+        const dx = (me.clientX - startMouseX) / liveZoomVal;
+        const dy = (me.clientY - startMouseY) / liveZoomVal;
         const rawX = startX + dx;
         const rawY = startY + dy;
 
-        // Magnetic snap to nearby card edges/centers (priority over grid)
+        // Magnetic snap to nearby card edges/centers (intentional alignment
+        // feedback). 批2（审计 C：8px 量化不跟手）：非磁吸轴用连续值，不再
+        // snapToGrid——量化是拖拽抖动源，磁吸已提供对齐手感。
+        // 批2（审计 C：pinned 过滤进出不对称）：磁吸候选集 = 当前可见卡，
+        // 避免吸附到被 pinnedFilter 隐藏的卡（所见即所得）。
         const allCards = useWorkspaceStore.getState().cards;
-        const mag = magnetSnap(rawX, rawY, liveSize.current.width, liveSize.current.height, allCards, card.instance_id);
+        const visibleIds = visibleIdsRef?.current;
+        const snapCandidates =
+          visibleIds && visibleIds.size > 0
+            ? allCards.filter((c) => visibleIds.has(c.instance_id))
+            : allCards;
+        const mag = magnetSnap(rawX, rawY, liveSize.current.width, liveSize.current.height, snapCandidates, card.instance_id);
         livePos.current = {
-          x: mag.snappedX ? mag.x : snapToGrid(rawX),
-          y: mag.snappedY ? mag.y : snapToGrid(rawY),
+          x: mag.snappedX ? mag.x : rawX,
+          y: mag.snappedY ? mag.y : rawY,
         };
         applyTransform();
       };
@@ -621,7 +638,7 @@ function AgentCardImpl({
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
     },
-    [layoutMode, zoom, card.instance_id, selectCard, bringToFront, updateCardPosition, resolveOverlaps, applyTransform]
+    [layoutMode, zoom, zoomRef, visibleIdsRef, card.instance_id, selectCard, bringToFront, updateCardPosition, resolveOverlaps, applyTransform]
   );
 
   // ===== RESIZE (on corner handle) =====
@@ -642,11 +659,13 @@ function AgentCardImpl({
       bringToFront(card.instance_id);
 
       const onMove = (me: PointerEvent) => {
-        const dw = (me.clientX - startMouseX) / zoom;
-        const dh = (me.clientY - startMouseY) / zoom;
+        // 批2：实时 zoom ref（stale zoom）+ 连续值（去 8px 量化，跟手）。
+        const liveZoomVal = zoomRef?.current ?? zoom;
+        const dw = (me.clientX - startMouseX) / liveZoomVal;
+        const dh = (me.clientY - startMouseY) / liveZoomVal;
         liveSize.current = {
-          width: Math.max(MIN_CARD_W, snapToGrid(startW + dw)),
-          height: Math.max(MIN_CARD_H, snapToGrid(startH + dh)),
+          width: Math.max(MIN_CARD_W, startW + dw),
+          height: Math.max(MIN_CARD_H, startH + dh),
         };
         applyTransform();
       };
@@ -661,7 +680,7 @@ function AgentCardImpl({
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
     },
-    [zoom, card.instance_id, selectCard, bringToFront, updateCardSize, applyTransform]
+    [zoom, zoomRef, card.instance_id, selectCard, bringToFront, updateCardSize, applyTransform]
   );
 
   return (
@@ -671,8 +690,11 @@ function AgentCardImpl({
         isPulsing ? " agent-card-pulse" : ""
       }`}
       style={{
-        left: card.position.x,
-        top: card.position.y,
+        // 批2：定位走 transform: translate3d（合成器层，无 reflow）。left/top 固定 0
+        // 作为定位基点，实际位移由 transform 承担。
+        left: 0,
+        top: 0,
+        transform: `translate3d(${card.position.x}px,${card.position.y}px,0)`,
         width: card.size.width,
         height: card.size.height,
         zIndex: card.z_index,
