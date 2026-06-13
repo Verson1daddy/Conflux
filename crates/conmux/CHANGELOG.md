@@ -5,6 +5,14 @@
 ## [Unreleased]
 
 ### Added
+- **M2c 收口**（"关窗不死"完成判据达成）：
+  - **theme 广播**：SetTheme 校验 id → 向全部连接广播 `MuxNotify::ThemeChanged`（全局，daemon 不持久化）；CLI `theme ls/set`。
+  - **连接审计落盘**（D-2/RT-2）：`%LOCALAPPDATA%\conmux\daemon.log`（滚动 1MiB，fail-soft，无遥测）记 connect/disconnect{pid, image_path, reason, outcome}。
+  - **客户端反冒充**（I-2 客户端侧）：握手后核验 daemon 进程映像与本客户端同主体（dev 路径比对，不符报警；生产 Authenticode 登记）。
+  - **resize 联动**（D-9）：CLI attach 起手把控制台尺寸同步给 pane（`AttachSender::resize`）。
+  - **完成判据 e2e**：真实 ConPTY 驻留 alt-screen pane → attach（前导含 `?1049h` + 历史 marker）→ **客户端突断（=杀进程）→ pane 与进程存活（pid 不变）→ 重 attach 画面完整含模式位**。
+  - README 安全/威胁模型声明（同用户非 OS 强制边界 + 生命周期语义 + 本地无遥测）。
+  - `ConmuxError::Busy`（attach 限速排队拒绝）。
 - **M2b attach 流**（detach/attach 无缝重连——"关窗不死"承重墙主体）：
   - **seq 入 scrollback 锁域 + `PaneHost::attach_snapshot`**（D-6）：`PaneSnapshot{mode_preamble,
     history, last_seq, pane_state}` 原子取 (history, last_seq)，锁内仅 memcpy+读 seq（H-1，

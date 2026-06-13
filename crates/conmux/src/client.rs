@@ -352,6 +352,23 @@ impl AttachSender {
         )
         .map_err(wire_to_conmux)
     }
+
+    /// 调整 pane 尺寸（D-9 resize 联动：attach 起手 + 控制台尺寸变化时跟随）。
+    pub fn resize(&mut self, rows: u16, cols: u16) -> Result<(), ConmuxError> {
+        let cid = self.next_cid;
+        self.next_cid = self.next_cid.wrapping_add(1);
+        write_frame(
+            &mut self.writer,
+            &WireFrame::Request(MuxRequest {
+                correlation_id: cid,
+                op: MuxOp::Resize {
+                    pane_id: self.pane_id.clone(),
+                    size: crate::types::PaneSize { rows, cols },
+                },
+            }),
+        )
+        .map_err(wire_to_conmux)
+    }
 }
 
 /// 反冒充核验（I-2 客户端侧，红队 M-4）：daemon 进程映像应与本客户端同主体。

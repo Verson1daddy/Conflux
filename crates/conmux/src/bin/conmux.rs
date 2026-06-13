@@ -355,6 +355,10 @@ mod cmds {
         let restore = raw_console::enable();
 
         let (mut reader, mut sender) = attached.session.into_split();
+        // D-9 resize 联动：attach 起手把当前控制台尺寸同步给 pane（动态尺寸变化跟随登记后续）。
+        if let Some((rows, cols)) = raw_console::console_size() {
+            let _ = sender.resize(rows, cols);
+        }
         // 渲染线程：live 输出直写 stdout。
         let render = std::thread::spawn(move || {
             let mut out = std::io::stdout();
@@ -517,13 +521,26 @@ mod cmds {
         use windows_sys::Win32::Foundation::HANDLE;
         use windows_sys::Win32::Storage::FileSystem::ReadFile;
         use windows_sys::Win32::System::Console::{
-            GetConsoleMode, GetStdHandle, SetConsoleMode, ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT,
+            GetConsoleMode, GetConsoleScreenBufferInfo, GetStdHandle, SetConsoleMode,
+            CONSOLE_SCREEN_BUFFER_INFO, ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT,
             ENABLE_PROCESSED_INPUT, ENABLE_VIRTUAL_TERMINAL_INPUT,
             ENABLE_VIRTUAL_TERMINAL_PROCESSING, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
         };
 
         pub fn stdin_handle() -> HANDLE {
             unsafe { GetStdHandle(STD_INPUT_HANDLE) }
+        }
+
+        /// 当前控制台窗口尺寸 (rows, cols)（D-9 resize 联动）；非控制台 ⇒ None。
+        pub fn console_size() -> Option<(u16, u16)> {
+            let out_h = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+            let mut info: CONSOLE_SCREEN_BUFFER_INFO = unsafe { std::mem::zeroed() };
+            if unsafe { GetConsoleScreenBufferInfo(out_h, &mut info) } == 0 {
+                return None;
+            }
+            let cols = (info.srWindow.Right - info.srWindow.Left + 1).max(1) as u16;
+            let rows = (info.srWindow.Bottom - info.srWindow.Top + 1).max(1) as u16;
+            Some((rows, cols))
         }
 
         /// 同步读 stdin：raw 模式返回键入原始字节；重定向时读文件/管道字节。返回字节数（0=EOF/错误）。

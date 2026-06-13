@@ -329,6 +329,97 @@ fn attach_seq_continuity_and_reattach_intact() {
     sh.shutdown();
 }
 
+/// **M2 完成判据 e2e**（设计 §M2c）：spawn 驻留 alt-screen 的 pane → attach（画面含模式位）→
+/// **客户端突然断开**（= 杀客户端进程，连接关闭）→ pane 与进程存活 → 重 attach 画面完整含模式位。
+#[test]
+fn completion_criteria_kill_client_pane_survives_reattach_intact() {
+    let name = r"\\.\pipe\conmux-itest-completion";
+    let sh = start_daemon(name);
+    let mut ctl = connect_retry(name);
+
+    // 驻留 alt-screen + 隐藏光标 + marker 的 powershell（模拟 TUI 运行中，存活 30s）。
+    let pane = "completion-pane";
+    let req = SpawnRequest {
+        pane_id: PaneId(pane.into()),
+        command: CommandSpec {
+            program: "powershell.exe".into(),
+            args: vec![
+                "-NoProfile".into(),
+                "-Command".into(),
+                "Write-Host ([char]27+'[?1049h'+[char]27+'[?25l'+'COMPLETION_MARKER') -NoNewline; Start-Sleep -Seconds 30".into(),
+            ],
+            cwd: None,
+            env: Vec::new(),
+        },
+        size: PaneSize { rows: 30, cols: 120 },
+        adapter_id: "shell".into(),
+        display_name: Some("tui".into()),
+        created_at: 1_700_000_000_000,
+    };
+    ctl.request(MuxOp::Spawn(req)).unwrap();
+
+    // 等 powershell 启动并输出 marker（startup 慢，给够时间）。
+    let deadline = Instant::now() + Duration::from_secs(12);
+    while Instant::now() < deadline {
+        if capture_text(&mut ctl, pane).contains("COMPLETION_MARKER") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    // attach（客户端 B）→ 画面含模式位（alt-screen）+ 历史含 marker。
+    let attached = connect_retry(name)
+        .attach(&PaneId(pane.into()))
+        .expect("attach 应成功");
+    let preamble = String::from_utf8_lossy(&attached.mode_preamble).into_owned();
+    let history = String::from_utf8_lossy(&attached.history).into_owned();
+    assert!(
+        preamble.contains("[?1049h"),
+        "attach 快照前导应含 alt-screen 模式位，实际: {preamble:?}"
+    );
+    assert!(history.contains("COMPLETION_MARKER"), "attach 历史应含 marker");
+    let pid_before = match ctl.request(MuxOp::ListPanes).unwrap() {
+        MuxPayload::Panes(p) => p.iter().find(|s| s.pane_id.0 == pane).and_then(|s| s.pid),
+        _ => None,
+    };
+    assert!(pid_before.is_some(), "pane 应有 pid");
+
+    // ★ 客户端突然断开（= 杀客户端进程）：drop 整个 attach 连接。
+    drop(attached);
+    std::thread::sleep(Duration::from_millis(500)); // 让 daemon 处理 EOF 清理
+
+    // pane 与进程存活（关窗不死）。
+    match ctl.request(MuxOp::ListPanes).unwrap() {
+        MuxPayload::Panes(p) => {
+            let s = p.iter().find(|s| s.pane_id.0 == pane);
+            assert!(s.is_some(), "客户端断开后 pane 应存活");
+            assert_eq!(s.unwrap().pid, pid_before, "进程应是同一个（未重启）");
+        }
+        other => panic!("{other:?}"),
+    }
+
+    // 重 attach（客户端 C）→ 画面完整：模式位仍在 + 历史仍含 marker。
+    let reattached = connect_retry(name)
+        .attach(&PaneId(pane.into()))
+        .expect("re-attach 应成功");
+    let preamble2 = String::from_utf8_lossy(&reattached.mode_preamble).into_owned();
+    let history2 = String::from_utf8_lossy(&reattached.history).into_owned();
+    assert!(
+        preamble2.contains("[?1049h"),
+        "重 attach 前导仍应含 alt-screen 模式位（画面完整），实际: {preamble2:?}"
+    );
+    assert!(
+        history2.contains("COMPLETION_MARKER"),
+        "重 attach 历史仍应含 marker（画面完整）"
+    );
+
+    ctl.request(MuxOp::KillTree {
+        pane_id: PaneId(pane.into()),
+    })
+    .unwrap();
+    sh.shutdown();
+}
+
 /// 原始连接（绕过 Client 握手，供安全测试构造对抗帧）。
 fn raw_connect(name: &str) -> conmux::pipe::PipeStream {
     let deadline = Instant::now() + Duration::from_secs(5);
