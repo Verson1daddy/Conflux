@@ -29,6 +29,7 @@ fn run(args: &[String]) -> i32 {
         Some("kill") => cmd_kill(&args[1..]),
         Some("resize") => cmd_resize(&args[1..]),
         Some("respawn") => cmd_respawn(&args[1..]),
+        Some("attach") => cmd_attach(&args[1..]),
         Some("kill-server") => cmd_kill_server(),
         Some("-h") | Some("--help") | Some("help") | None => {
             usage();
@@ -56,9 +57,10 @@ fn usage() {
   conmux kill -t PANE                    整树终结 pane\n\
   conmux resize -t PANE -x COLS -y ROWS  调整 pane 尺寸\n\
   conmux respawn -t PANE [-d DIR] [--size RxC] [-- CMD...]  同 ID 重起\n\
+  conmux attach -t PANE                  接入 pane（重放画面 + 转发键入；Ctrl+] 脱离）\n\
   conmux kill-server                     终结 daemon 及全部会话\n\
 \n\
-其余子命令（连接当前用户 daemon，不存在则自动拉起）。attach/detach 见后续里程碑。"
+其余子命令（连接当前用户 daemon，不存在则自动拉起）。"
     );
 }
 
@@ -317,6 +319,81 @@ mod cmds {
         })
     }
 
+    /// `conmux attach -t PANE`：接入 pane——重放画面（preamble+history+缓冲）→ 渲染 live 输出
+    /// + 转发键入（唯一写链 UserDirect）。`Ctrl+]` 脱离（pane 与进程存活）。raw console（非控制台
+    /// 环境如重定向时跳过 raw 设置，仍流式输出 + 转发）。
+    pub fn cmd_attach(args: &[String]) -> i32 {
+        use conmux::client::AttachEvent;
+        use std::io::Write;
+
+        let Some(pane) = flag_value(args, "-t") else {
+            return fail("attach 需 -t PANE");
+        };
+        let client = match Client::connect_or_spawn() {
+            Ok(c) => c,
+            Err(e) => return fail(&format!("连接 daemon 失败: {e}")),
+        };
+        let attached = match client.attach(&PaneId(pane.clone())) {
+            Ok(a) => a,
+            Err(e) => return fail(&format!("attach 失败: {e}")),
+        };
+
+        // 重建画面：preamble → history → 缓冲帧（原始 VT 字节）。
+        {
+            let mut out = std::io::stdout();
+            let _ = out.write_all(&attached.mode_preamble);
+            let _ = out.write_all(&attached.history);
+            for (_, data) in &attached.buffered {
+                let _ = out.write_all(data);
+            }
+            let _ = out.flush();
+        }
+
+        let restore = raw_console::enable();
+
+        let (mut reader, mut sender) = attached.session.into_split();
+        // 渲染线程：live 输出直写 stdout。
+        let render = std::thread::spawn(move || {
+            let mut out = std::io::stdout();
+            while let Some(ev) = reader.recv_output() {
+                match ev {
+                    AttachEvent::Output { data, .. } => {
+                        let _ = out.write_all(&data);
+                        let _ = out.flush();
+                    }
+                    AttachEvent::Exited { .. } => break,
+                }
+            }
+        });
+
+        // 主线程：stdin → Send；Ctrl+](0x1d) 脱离。
+        let stdin_h = raw_console::stdin_handle();
+        let mut buf = [0u8; 1024];
+        loop {
+            let n = raw_console::read(stdin_h, &mut buf);
+            if n == 0 {
+                break; // EOF / 错误 → 脱离
+            }
+            let bytes = &buf[..n];
+            if let Some(cut) = bytes.iter().position(|&b| b == 0x1d) {
+                if cut > 0 {
+                    let _ = sender.send_input(&bytes[..cut]);
+                }
+                break; // Ctrl+] → 脱离
+            }
+            if sender.send_input(bytes).is_err() {
+                break;
+            }
+        }
+
+        restore();
+        // 不 join render（其 recv_output 阻塞）：进程退出即关连接，daemon 见 EOF 清订阅、pane 存活。
+        drop(sender);
+        let _ = &render; // 渲染线程随进程退出终结
+        eprintln!("\r\n[conmux detached — pane 仍在 daemon 中运行]");
+        0
+    }
+
     /// `conmux kill-server`：终结 daemon 及全部会话。
     pub fn cmd_kill_server() -> i32 {
         with_client(|c| match c.request(MuxOp::KillServer)? {
@@ -401,5 +478,66 @@ mod cmds {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0)
+    }
+
+    /// raw console FFI（attach 用）：stdin 关行编辑/回显、stdout 启 VT 处理；恢复闭包还原。
+    mod raw_console {
+        use windows_sys::Win32::Foundation::HANDLE;
+        use windows_sys::Win32::Storage::FileSystem::ReadFile;
+        use windows_sys::Win32::System::Console::{
+            GetConsoleMode, GetStdHandle, SetConsoleMode, ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT,
+            ENABLE_PROCESSED_INPUT, ENABLE_VIRTUAL_TERMINAL_INPUT,
+            ENABLE_VIRTUAL_TERMINAL_PROCESSING, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+        };
+
+        pub fn stdin_handle() -> HANDLE {
+            unsafe { GetStdHandle(STD_INPUT_HANDLE) }
+        }
+
+        /// 同步读 stdin：raw 模式返回键入原始字节；重定向时读文件/管道字节。返回字节数（0=EOF/错误）。
+        pub fn read(handle: HANDLE, buf: &mut [u8]) -> usize {
+            let mut n: u32 = 0;
+            let ok = unsafe {
+                ReadFile(
+                    handle,
+                    buf.as_mut_ptr().cast(),
+                    buf.len() as u32,
+                    &mut n,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok == 0 {
+                0
+            } else {
+                n as usize
+            }
+        }
+
+        /// 启用 raw console，返回恢复闭包。非控制台（重定向）的句柄跳过，恢复对其 no-op。
+        pub fn enable() -> impl FnOnce() {
+            let in_h = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+            let out_h = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+            let mut in_mode: u32 = 0;
+            let mut out_mode: u32 = 0;
+            let in_ok = unsafe { GetConsoleMode(in_h, &mut in_mode) } != 0;
+            let out_ok = unsafe { GetConsoleMode(out_h, &mut out_mode) } != 0;
+            if out_ok {
+                unsafe { SetConsoleMode(out_h, out_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) };
+            }
+            if in_ok {
+                let raw = (in_mode
+                    & !(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT))
+                    | ENABLE_VIRTUAL_TERMINAL_INPUT;
+                unsafe { SetConsoleMode(in_h, raw) };
+            }
+            move || {
+                if in_ok {
+                    unsafe { SetConsoleMode(in_h, in_mode) };
+                }
+                if out_ok {
+                    unsafe { SetConsoleMode(out_h, out_mode) };
+                }
+            }
+        }
     }
 }

@@ -5,6 +5,21 @@
 ## [Unreleased]
 
 ### Added
+- **M2b attach 流**（detach/attach 无缝重连——"关窗不死"承重墙主体）：
+  - **seq 入 scrollback 锁域 + `PaneHost::attach_snapshot`**（D-6）：`PaneSnapshot{mode_preamble,
+    history, last_seq, pane_state}` 原子取 (history, last_seq)，锁内仅 memcpy+读 seq（H-1，
+    base64/JSON 锁外）。
+  - **daemon 连接模型**：每连接 reader+writer 双线程（**重叠 I/O FILE_FLAG_OVERLAPPED**——根治
+    同步句柄读写串行化死锁）+ 连接注册表 + FanoutSink 按订阅非阻塞投递 + 有界外发队列 8 MiB 背压
+    断连（D-7）。
+  - **协议 op**：`Subscribe`/`Unsubscribe`/`Attach` 落地（dispatcher 维护每连接订阅集；Attach =
+    先注册订阅、后取快照，失败回滚）。
+  - **`Client::attach`**：D-6 客户端拼接契约（缓冲快照前 live 帧 → 按 seq 升序去重 seq>last_seq）
+    + `AttachSession`（recv_output / send_input）+ into_split（渲染半/注入半）。
+  - **CLI `attach -t PANE`**：raw console（stdin 关行/回显 + stdout VT 处理 + VT 输入）+ 画面重放
+    （preamble+history+缓冲）+ 渲染线程 + stdin→Send 转发 + `Ctrl+]` 脱离。
+  - 验收：seq 连续性集成测试（真实 ConPTY，attach 期间注入驱动输出，断言 live seq 严格连续无丢无重
+    + 再 attach 历史完整）；CLI attach 历史重放烟测。**注**：full 交互（键入/Ctrl+]/live TUI）待真实终端手验。
 - **M2a daemon IPC 地基**（命名管道 + 单二进制 CLI，"关窗不死"承重墙的第一阶段）：
   - **协议增补**（承诺面，D-4/D-8）：`MuxOp` 增 `Respawn`/`Subscribe`/`Unsubscribe`/`Attach`/
     `ListThemes`/`SetTheme`/`KillServer`；`MuxPayload` 增 `Subscribed`/`Unsubscribed`/
