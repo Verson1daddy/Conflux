@@ -241,6 +241,12 @@ impl Daemon {
 
     /// 服务循环：accept → 每连接 reader 线程（reader 内再起 writer 线程）。阻塞至 shutdown。
     pub fn serve(mut self) {
+        // D-2a 兜底：poll_exit sweep 线程——补 ConPTY 不返 EOF 时读泵漏发的 PaneExited，
+        // 使 attach 客户端的退出态可达。随 running=false 自然退出（最迟一个 sweep 间隔）。
+        {
+            let shared = Arc::clone(&self.shared);
+            std::thread::spawn(move || run_exit_sweep(shared));
+        }
         while self.shared.running.load(Ordering::SeqCst) {
             match self.listener.accept() {
                 Ok(stream) => {
@@ -576,6 +582,58 @@ fn broadcast_theme_changed(shared: &Arc<DaemonShared>, id: &str) {
     }
 }
 
+/// poll_exit sweep 间隔（D-2a daemon 兜底）。
+const EXIT_SWEEP_INTERVAL: Duration = Duration::from_millis(1000);
+
+/// poll_exit sweep（D-2a daemon 兜底）：ConPTY reader 在 child 退出后**可能不返回 EOF**
+/// （pane.rs 实测），读泵的 `PaneExited` 因此可能永不发——attach 客户端（GUI/CLI）的退出态
+/// 不可达（conflux in-process 靠前端轮询 is_process_exited→poll_exit 兜住，daemon 路径此前无人
+/// 驱动 poll_exit）。本 sweep 周期 `poll_exit` 各 pane（进程句柄查，不依赖 reader EOF），首次
+/// 转 Exited 即经 fanout 广播 `PaneExited` 给订阅者。`swept` 去重 + 清理已移除 pane 防膨胀；
+/// 与读泵 EOF 路径的潜在重复由客户端幂等消化（attach 循环遇首个 Exited 即停）。
+fn run_exit_sweep(shared: Arc<DaemonShared>) {
+    let mut swept: HashSet<PaneId> = HashSet::new();
+    while shared.running.load(Ordering::SeqCst) {
+        std::thread::sleep(EXIT_SWEEP_INTERVAL);
+        if !shared.running.load(Ordering::SeqCst) {
+            break;
+        }
+        sweep_exits_once(&shared, &mut swept);
+    }
+}
+
+/// 一趟 sweep：poll_exit 各 pane，首次转 Exited 广播 PaneExited（swept 去重 + 清理已移除）。
+fn sweep_exits_once(shared: &Arc<DaemonShared>, swept: &mut HashSet<PaneId>) {
+    let panes = shared.host.list_panes();
+    let live: HashSet<PaneId> = panes.iter().map(|s| s.pane_id.clone()).collect();
+    for state in &panes {
+        if swept.contains(&state.pane_id) {
+            continue;
+        }
+        // poll_exit：进程句柄查（绕开不可靠的 reader EOF）。Ok(Some(code)) ⇒ 已退出。
+        if let Ok(Some(code)) = shared.host.poll_exit(&state.pane_id) {
+            swept.insert(state.pane_id.clone());
+            broadcast_pane_exited(shared, &state.pane_id, Some(code));
+        }
+    }
+    swept.retain(|p| live.contains(p)); // pane 被移除（kill/respawn）后清理，防 swept 无限增长
+}
+
+/// 向订阅该 pane 的连接广播 PaneExited（与 FanoutSink::on_notify 同投递语义）。
+fn broadcast_pane_exited(shared: &Arc<DaemonShared>, pane_id: &PaneId, exit_code: Option<i32>) {
+    let notify = MuxNotify::PaneExited {
+        pane_id: pane_id.clone(),
+        exit_code,
+    };
+    let bytes = notify_bytes(&notify);
+    let conns = shared.conns.lock().unwrap_or_else(recover);
+    for conn in conns.values() {
+        if conn.is_subscribed(pane_id) {
+            conn.enqueue(WireFrame::Notify(notify.clone()), bytes);
+        }
+    }
+}
+
 fn b64(bytes: &[u8]) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(bytes)
@@ -865,6 +923,70 @@ mod tests {
                 ..
             }))
         ));
+    }
+
+    /// D-2a：daemon poll_exit sweep 在 pane 进程退出后（即便 reader 不返 EOF）广播 PaneExited
+    /// 给订阅者；已广播的 pane 不重复（swept 去重）。real ConPTY 快退进程（cmd /c exit 7）。
+    #[test]
+    fn exit_sweep_broadcasts_pane_exited_to_subscribers() {
+        let shared = test_shared();
+        let pane_id = PaneId("sweep-exit".into());
+        shared
+            .host
+            .spawn(crate::pane::SpawnRequest {
+                pane_id: pane_id.clone(),
+                command: crate::pane::CommandSpec {
+                    program: "cmd.exe".into(),
+                    args: vec!["/c".into(), "exit 7".into()],
+                    cwd: None,
+                    env: vec![],
+                },
+                size: PaneSize { rows: 24, cols: 80 },
+                adapter_id: "shell".into(),
+                display_name: None,
+                created_at: 0,
+            })
+            .expect("spawn quick-exit pane");
+
+        // 订阅该 pane 的连接（sweep 广播只投订阅者）。
+        let (conn, rx) = test_conn();
+        conn.subscriptions.lock().unwrap().insert(pane_id.clone());
+        shared.conns.lock().unwrap().insert(1, Arc::clone(&conn));
+
+        // 轮询 sweep 直到检测到进程退出（cmd /c exit 7 瞬退；3s 容忍 spawn 抖动）。
+        let mut swept = HashSet::new();
+        let mut got: Option<Option<i32>> = None;
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(100));
+            sweep_exits_once(&shared, &mut swept);
+            for f in drain_frames(&rx) {
+                if let WireFrame::Notify(MuxNotify::PaneExited {
+                    pane_id: pid,
+                    exit_code,
+                }) = f
+                {
+                    assert_eq!(pid, pane_id, "广播的 pane_id 应匹配");
+                    got = Some(exit_code);
+                }
+            }
+            if got.is_some() {
+                break;
+            }
+        }
+        assert_eq!(
+            got,
+            Some(Some(7)),
+            "sweep 应广播 PaneExited(exit_code=Some(7))"
+        );
+
+        // 幂等：再 sweep 不重复广播（swept 去重）。
+        sweep_exits_once(&shared, &mut swept);
+        assert!(
+            drain_frames(&rx).is_empty(),
+            "已广播退出的 pane 不应被重复广播"
+        );
+
+        let _ = shared.host.kill(&pane_id);
     }
 
     /// D-7：同连接 <500ms 内两次 Attach 同 pane，第二次回 Busy（限速防快照放大）。
