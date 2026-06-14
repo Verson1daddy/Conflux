@@ -8,6 +8,8 @@ import {
 import { WindowFrame } from "./chrome/WindowFrame";
 import { TopBar } from "./chrome/TopBar";
 import { StatusBar } from "./chrome/StatusBar";
+import { AwareHeader } from "./chrome/AwareHeader";
+import { SessionObserver } from "./observe/session-observer";
 import {
   applyChromeVars,
   cycleStyle,
@@ -40,6 +42,20 @@ export default function App() {
   const exitedRef = useRef(false);
   // 当前风格（订阅 store；驱动 chrome 重渲染）。
   const style = useStyle();
+
+  // M3-ext：会话观测者（与 XtermTerminal 并行挂在同一 daemon pane 上，不干扰终端渲染）。
+  // 单例（绑 INSTANCE_ID=conmux-default），随 App 生命周期 start/stop；
+  // 订阅 conmux://pty-output 喂 parser/OSC7 → 维护 AwareState 驱动 AwareHeader。
+  const observerRef = useRef<SessionObserver | null>(null);
+  if (observerRef.current === null) {
+    observerRef.current = new SessionObserver(INSTANCE_ID);
+  }
+  const observer = observerRef.current;
+
+  useEffect(() => {
+    const stop = observer.start();
+    return stop;
+  }, [observer]);
 
   // 启动一次：先加载终端预置（chrome 换肤要按 terminal_theme_id 取 TerminalTheme
   // 喂 xterm），再加载风格列表；两者就绪后把当前风格的终端预置设进 terminal-core。
@@ -89,6 +105,9 @@ export default function App() {
   return (
     <WindowFrame>
       <TopBar sessions={sessions} />
+
+      {/* aware-header（M3-ext）：缩点条与 pane 之间，显诚实观测的会话运行信息 + LLM 元数据。 */}
+      <AwareHeader observer={observer} />
 
       {/* pane（body）：fill surface.base、padding [14,16]、flex 占满；内嵌真实 daemon pane。 */}
       <div
