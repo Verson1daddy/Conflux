@@ -47,16 +47,35 @@ export async function listTerminalThemes(): Promise<TerminalTheme[]> {
 }
 
 // ===== PTY 事件（按实例过滤）=====
+//
+// D-2 通道参数化（conmux M②）：默认值保持 conflux 进程内 PTY 事件总线名，
+// 因此 conflux 不调 setter ⇒ 行为零变更。conmux-app 在渲染前调
+// `setPtyEventChannels({ output, exited })` 把通道切到 daemon 客户端 emit 的
+// `conmux://...` 通道——Rust 侧据此 emit，前端 listen 同名才能收到。
+// 命令名不参数化：每个 app 自有 Tauri 命名空间，同名命令互不冲突。
 
-const PTY_OUTPUT_CHANNEL = "conflux://pty-output";
-const PROCESS_EXITED_CHANNEL = "conflux://process-exited";
+let ptyOutputChannel = "conflux://pty-output";
+let processExitedChannel = "conflux://process-exited";
+
+/**
+ * 覆盖 PTY 事件通道名（D-2）。在任何 `onPtyOutputForInstance` /
+ * `onProcessExitedForInstance` 调用之前设置（典型：app 入口渲染前）。
+ * 不调用则维持 conflux 默认通道（零影响）。
+ */
+export function setPtyEventChannels(channels: {
+  output: string;
+  exited: string;
+}): void {
+  ptyOutputChannel = channels.output;
+  processExitedChannel = channels.exited;
+}
 
 /** 监听指定实例的 PTY 输出事件（data 为 base64；按 instance_id 过滤）。 */
 export async function onPtyOutputForInstance(
   instanceId: string,
   callback: (payload: PtyOutputPayload) => void
 ): Promise<UnlistenFn> {
-  return listen<PtyOutputPayload>(PTY_OUTPUT_CHANNEL, (tauriEvent) => {
+  return listen<PtyOutputPayload>(ptyOutputChannel, (tauriEvent) => {
     if (tauriEvent.payload.instance_id === instanceId) {
       callback(tauriEvent.payload);
     }
@@ -68,7 +87,7 @@ export async function onProcessExitedForInstance(
   instanceId: string,
   callback: (payload: ProcessExitedPayload) => void
 ): Promise<UnlistenFn> {
-  return listen<ProcessExitedPayload>(PROCESS_EXITED_CHANNEL, (tauriEvent) => {
+  return listen<ProcessExitedPayload>(processExitedChannel, (tauriEvent) => {
     if (tauriEvent.payload.instance_id === instanceId) {
       callback(tauriEvent.payload);
     }

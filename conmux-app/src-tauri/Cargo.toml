@@ -17,9 +17,11 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["devtools"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# M② 读线程 emit 前把裸 PTY 字节 base64（前端 decodePtyChunk 用 atob）。
+base64 = "0.22"
 
-# 机制层：本里程碑仅引用 PROTOCOL_VERSION 验证 GUI↔机制层 Rust 依赖边；
-# Milestone ② daemon GUI 客户端将深度消费（attach/capture/inject）。
+# 机制层：M② daemon GUI 客户端深度消费（client::{Client,Attached,...} +
+# daemon::{Daemon,DaemonConfig} + Spawn/attach/resize/inject）。
 conmux = { path = "../../crates/conmux" }
 
 [features]
