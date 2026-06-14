@@ -16,7 +16,6 @@ import type {
   CoordinationCommandPayload,
   PtyOutputPayload,
   StdinInjectedPayload,
-  ProcessExitedPayload,
   IslandMode,
   AttentionItem,
   JumpBackTarget,
@@ -297,26 +296,12 @@ export async function onStdinInjected(
 
 // ===== 按实例过滤的监听辅助函数 =====
 
-/**
- * 监听指定实例的 PTY 输出事件
- * 在 onPtyOutput 基础上按 instance_id 过滤，减少不必要的回调
- * @param instanceId 目标实例 ID
- * @param callback 接收该实例的 PtyOutputPayload
- * @returns UnlistenFn 取消订阅函数
- */
-export async function onPtyOutputForInstance(
-  instanceId: string,
-  callback: (payload: PtyOutputPayload) => void
-): Promise<UnlistenFn> {
-  return listen<PtyOutputPayload>(
-    EVENT_CHANNELS.PtyOutput,
-    (tauriEvent) => {
-      if (tauriEvent.payload.instance_id === instanceId) {
-        callback(tauriEvent.payload);
-      }
-    }
-  );
-}
+// onPtyOutputForInstance / onProcessExitedForInstance 实现已迁至
+// @conmux/terminal-core/ipc（终端 PTY 事件，单一真源）；此处再导出保持旧路径。
+export {
+  onPtyOutputForInstance,
+  onProcessExitedForInstance,
+} from "@conmux/terminal-core/ipc";
 
 /**
  * 监听指定实例的状态变化事件
@@ -339,25 +324,4 @@ export async function onAgentStatusChangedForInstance(
   );
 }
 
-/**
- * C2-T1 Exit Overlay · 监听指定实例的 PTY 进程退出事件
- *
- * XtermTerminal 订阅此事件以弹出 ExitOverlay。按 instance_id 过滤使得
- * 每个卡片只处理自己 PTY 的 exit，不干扰其他卡片。
- * @param instanceId 目标实例 ID
- * @param callback 接收该实例的 ProcessExitedPayload
- * @returns UnlistenFn 取消订阅函数
- */
-export async function onProcessExitedForInstance(
-  instanceId: string,
-  callback: (payload: ProcessExitedPayload) => void
-): Promise<UnlistenFn> {
-  return listen<ProcessExitedPayload>(
-    EVENT_CHANNELS.ProcessExited,
-    (tauriEvent) => {
-      if (tauriEvent.payload.instance_id === instanceId) {
-        callback(tauriEvent.payload);
-      }
-    }
-  );
-}
+// onProcessExitedForInstance 见上方与 onPtyOutputForInstance 合并的 re-export。

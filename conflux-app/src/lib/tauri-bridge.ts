@@ -36,7 +36,6 @@ import type {
   AttentionItem,
   ResolveKind,
   JumpBackTarget,
-  TerminalTheme,
 } from "../types";
 
 // ===== Agent 实例管理 =====
@@ -120,36 +119,16 @@ export async function getAgentTree(instanceId: InstanceId): Promise<AgentTree> {
   });
 }
 
-/**
- * 拉取 PTY 实例的 OutputBuffer 历史（base64 编码）
- *
- * 让刚 mount 的 xterm 能重放已经被后端捕获的历史输出，避免预览卡片和
- * 展开态的内容不同步（expanded 态挂得比卡片晚，若不拉历史就永远看不到
- * mount 前到达的 PTY chunks）。
- * 对应 Rust: get_pty_history(instance_id) -> String (base64)
- */
-export async function getPtyHistory(
-  instanceId: InstanceId
-): Promise<string> {
-  return invoke<string>("get_pty_history", {
-    instanceId,
-  });
-}
-
-/**
- * C2-T1 备用 exit 检测 · 轮询 fallback
- *
- * Windows ConPTY 在 child exit 后 reader 有时不返回 EOF，导致
- * ProcessExited 事件永远不 emit。前端用 ~2s 间隔调此命令检查。
- * 对应 Rust: is_process_exited(instance_id) -> bool
- */
-export async function isProcessExited(
-  instanceId: InstanceId
-): Promise<boolean> {
-  return invoke<boolean>("is_process_exited", {
-    instanceId,
-  });
-}
+// ===== 终端 PTY 命令（实现已迁至 @conmux/terminal-core/ipc，单一真源；此处再导出）=====
+// getPtyHistory / isProcessExited / injectStdin / resizePty / listTerminalThemes
+// 经共享包 re-export，保持 conflux 旧导入路径不破。
+export {
+  getPtyHistory,
+  isProcessExited,
+  injectStdin,
+  resizePty,
+  listTerminalThemes,
+} from "@conmux/terminal-core/ipc";
 
 /**
  * C2-T1 Exit Overlay · Respawn 模式枚举（对应 Rust RespawnMode）
@@ -196,21 +175,6 @@ export async function setAgentMode(
 // 对应 Rust commands/agent.rs（PTY 部分）
 
 /**
- * 向 Agent 实例的 stdin 注入内容——用户直接输入通道。
- * MF-2: 注入源由后端固定为 UserDirect，前端不再传 source（防自标特权源）。
- * 对应 Rust: inject_stdin(instance_id, input)
- */
-export async function injectStdin(
-  instanceId: InstanceId,
-  input: string
-): Promise<void> {
-  return invoke<void>("inject_stdin", {
-    instanceId,
-    input,
-  });
-}
-
-/**
  * 讨论消息注入——讨论用户消息通道。
  * MF-2: 注入源由后端固定为 DiscussionUserMessage，前端不再传 source。
  * 对应 Rust: inject_discussion_message(instance_id, input)
@@ -222,22 +186,6 @@ export async function injectDiscussionMessage(
   return invoke<void>("inject_discussion_message", {
     instanceId,
     input,
-  });
-}
-
-/**
- * 调整 PTY 终端尺寸
- * 对应 Rust: resize_pty(instance_id, cols, rows)
- */
-export async function resizePty(
-  instanceId: InstanceId,
-  cols: number,
-  rows: number
-): Promise<void> {
-  return invoke<void>("resize_pty", {
-    instanceId,
-    cols,
-    rows,
   });
 }
 
@@ -719,9 +667,4 @@ export async function getJumpBackTarget(
   });
 }
 
-// ===== 终端主题（D7 预置，conmux 属主） =====
-
-/** 列出 conmux 内置终端主题预置。对应 Rust: list_terminal_themes */
-export async function listTerminalThemes(): Promise<TerminalTheme[]> {
-  return invoke<TerminalTheme[]>("list_terminal_themes");
-}
+// 终端主题预置列表 listTerminalThemes 已并入上方 PTY 命令 re-export（来自 terminal-core/ipc）。

@@ -13,6 +13,11 @@ import type {
   InjectionSource,
 } from "./agent";
 import type { DiscussionMessageData } from "./discussion";
+// 终端 PTY 事件 payload 真源在 @conmux/terminal-core（终端域类型，agent 无关）。
+import type {
+  PtyOutputPayload,
+  ProcessExitedPayload,
+} from "@conmux/terminal-core/pty-types";
 
 // ===== 事件 Payload 接口 =====
 
@@ -104,20 +109,7 @@ export interface CoordinationCommandPayload {
   timestamp: number;
 }
 
-/**
- * PTY 原始输出事件 payload — 对应 Rust ConfluxEvent::PtyOutput
- * 注意：data 为 base64 编码字符串（MED-05 修复）
- */
-export interface PtyOutputPayload {
-  /** 输出来源实例 ID */
-  instance_id: InstanceId;
-  /** base64 编码的原始输出数据（MED-05 修复） */
-  data: string;
-  /** per-pane 单调序号（V1-core mux +seq：连续性对账 / V2 重放；旧事件可空） */
-  seq?: number | null;
-  /** 时间戳（Unix 时间戳 ms） */
-  timestamp: number;
-}
+// PtyOutputPayload 已迁至 @conmux/terminal-core/pty-types（见顶部 import + 文件末尾 re-export）。
 
 /** stdin 注入审计事件 payload — 对应 Rust ConfluxEvent::StdinInjected（附录 B1） */
 export interface StdinInjectedPayload {
@@ -133,27 +125,7 @@ export interface StdinInjectedPayload {
   timestamp: number;
 }
 
-/**
- * PTY 子进程退出事件 payload — 对应 Rust ConfluxEvent::ProcessExited
- *
- * 由 PtyManager 的读取线程在检测到 EOF 时发送。
- * XtermTerminal 订阅此事件以弹出 ExitOverlay，让用户选择 Restart /
- * Open Shell / Close Card。
- *
- * 字段详情见 Rust 侧 `src-tauri/src/core/event.rs::ConfluxEvent::ProcessExited`。
- */
-export interface ProcessExitedPayload {
-  /** 退出的实例 ID */
-  instance_id: InstanceId;
-  /** 所属 adapter ID（Restart 时复用；shell 模式下后端会在 respawn 后写入 "__shell__"） */
-  adapter_id: string;
-  /** 退出码；null = 无法获取（读取线程粗粒度版先置 null，后续精细化） */
-  exit_code: number | null;
-  /** 信号描述："pipe_broken" | null — null = 正常退出 */
-  signal: string | null;
-  /** 时间戳（Unix 时间戳 ms） */
-  timestamp: number;
-}
+// ProcessExitedPayload 已迁至 @conmux/terminal-core/pty-types（见顶部 import + 文件末尾 re-export）。
 
 // ===== ConfluxEvent 联合类型 =====
 
@@ -181,3 +153,6 @@ export type ConfluxEvent =
  * 用于事件过滤和类型守卫
  */
 export type ConfluxEventType = ConfluxEvent["type"];
+
+// 再导出终端 PTY payload，使 @/types 桶（export ... from "./events"）继续可见。
+export type { PtyOutputPayload, ProcessExitedPayload };
