@@ -16,6 +16,8 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "paths": {
+      "@conmux/terminal-core": ["../packages/terminal-core/src/index.ts"],
+      "@conmux/terminal-core/*": ["../packages/terminal-core/src/*"],
       "@/*": ["./src/*"]
     }
   },

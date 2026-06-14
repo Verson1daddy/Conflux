@@ -6,6 +6,8 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
+      // 共享终端切片包（源码消费，先于 "@" 匹配避免前缀冲突）。
+      "@conmux/terminal-core": path.resolve(__dirname, "../packages/terminal-core/src"),
       "@": path.resolve(__dirname, "./src"),
     },
   },
