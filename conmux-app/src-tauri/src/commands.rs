@@ -101,3 +101,12 @@ pub async fn is_process_exited(
 pub async fn list_terminal_themes() -> Result<Vec<conmux::TerminalTheme>, String> {
     Ok(conmux::builtin_terminal_themes())
 }
+
+/// 列出 conmux 内置风格（M③：chrome 语义 token + 配对终端预置 id）。
+/// 直读机制层 `builtin_styles()`——与 list_terminal_themes 同范式（编译期静态、
+/// 不走 daemon IPC）。conmux-app 前端据此换 chrome CSS 变量 + 取配对 TerminalTheme
+/// 喂 xterm。conflux 不消费 Style（只用 TerminalTheme），故不受影响。
+#[tauri::command]
+pub async fn list_styles() -> Result<Vec<conmux::Style>, String> {
+    Ok(conmux::builtin_styles())
+}

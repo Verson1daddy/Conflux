@@ -115,4 +115,6 @@ pub use pane::{CommandSpec, PaneHost, PaneSnapshot, SpawnRequest};
 pub use protocol::{MuxOp, MuxPayload, MuxReply, MuxRequest, WireFrame, PROTOCOL_VERSION};
 pub use wire::{read_frame, write_frame, WireError, MAX_FRAME_BYTES};
 pub use theme::{builtin_terminal_themes, TerminalTheme, ThemeAppearance, DEFAULT_TERMINAL_THEME_ID};
+// M③ Style 注册表（chrome 语义 token + 配对终端预置；TerminalTheme 结构未动）。
+pub use theme::{builtin_styles, ChromeTokens, Style, DEFAULT_STYLE_ID};
 pub use types::{InjectionSource, PaneId, PaneLifecycle, PaneSize, PaneState, ScrollbackInfo};

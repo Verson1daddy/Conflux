@@ -264,6 +264,7 @@ pub fn run() {
             commands::get_pty_history,
             commands::is_process_exited,
             commands::list_terminal_themes,
+            commands::list_styles,
         ])
         .run(tauri::generate_context!())
         .expect("error while running conmux-app");

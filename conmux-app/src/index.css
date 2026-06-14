@@ -6,6 +6,56 @@ body,
   margin: 0;
 }
 
+/* ===== chrome 语义 CSS 变量（M③：绑 conmux ChromeTokens 14 字段）=====
+   默认值 = B · Paper Terminal（DEFAULT_STYLE_ID，F1 §2 B 列）；JS 启动后
+   applyChromeVars 用当前选中风格覆盖（换肤 = 改这组变量 + 喂 xterm 配对预置）。
+   初始默认避免首帧白屏/闪烁。 */
+:root {
+  --cx-surface-base: #f6f1e7;
+  --cx-surface-chrome: #ede5d4;
+  --cx-surface-raised: #fbf7ee;
+  --cx-line-hairline: #ddd3c0;
+  --cx-line-soft: #e6decd;
+  --cx-text-primary: #23201a;
+  --cx-text-content: #2b2720;
+  --cx-text-muted: #8a8170;
+  --cx-text-faint: #a89e8a;
+  --cx-accent-signal: #b5503c;
+  --cx-status-running: #6e7b52;
+  --cx-status-warn: #c08a2e;
+  --cx-status-idle: #b9ae98;
+  --cx-status-attention: #b5503c;
+}
+
+body {
+  background: var(--cx-surface-base);
+}
+
+/* ===== 缩点 dot attention 脉冲（M③：前端本地启发式占位，非控制面真路由 MF-3）===== */
+.cx-dot {
+  display: inline-block;
+}
+.cx-dot-attention {
+  animation: cx-pulse 1.6s ease-in-out infinite;
+}
+@keyframes cx-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--cx-accent-signal);
+    opacity: 1;
+  }
+  50% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--cx-accent-signal) 35%, transparent);
+    opacity: 0.7;
+  }
+}
+/* reduced-motion fallback：关脉冲动画，仍保留 attention 强调色（无闪烁）。 */
+@media (prefers-reduced-motion: reduce) {
+  .cx-dot-attention {
+    animation: none;
+  }
+}
+
 /* XtermTerminal 用到的最小工具类（conmux-app 暂未引入 Tailwind；只补 demo 所需）。 */
 .relative {
   position: relative;
