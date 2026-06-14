@@ -323,6 +323,9 @@ function AgentCardImpl({
   const isPulsing = useWorkspaceStore((s) => s.pulseCardId === card.instance_id);
   // 退出态（Q3'）：footer 动作条 + pane 降透明
   const { exitState, handleExitAction } = useExitActions(card.instance_id);
+  // 终端 PTY 退出态归属 conflux（agentStore）；XtermTerminal 经回调上报，
+  // adapterId 供其轮询兜底合成退出 payload（事件路径用后端真值）。
+  const cardAdapterId = useAgentStore((s) => s.instances.get(card.instance_id)?.adapter_id);
   // pane 容器底色跟随终端主题（切主题实时同步，无缝无框）
   const paneBackground = useTerminalTheme().background;
   const setExpandedCard = useAgentStore((s) => s.setExpandedCard);
@@ -1026,6 +1029,13 @@ function AgentCardImpl({
                 replayHistory
                 allowPreviewResizeSync={!isDemo && !isCardExpanded && !showBack}
                 cardWidth={card.size.width}
+                onPtyExit={(p) =>
+                  useAgentStore.getState().setExitState(card.instance_id, p)
+                }
+                isExitDetected={() =>
+                  useAgentStore.getState().exitStates.has(card.instance_id)
+                }
+                adapterId={cardAdapterId}
               />
             </Suspense>
           </div>

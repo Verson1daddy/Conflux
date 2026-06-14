@@ -11,3 +11,5 @@ export * from "./exit-guard";
 export * from "./ipc";
 export * from "./terminal-theme";
 export { useTerminalTheme } from "./useTerminalTheme";
+export { XtermTerminal } from "./XtermTerminal";
+export type { XtermTerminalProps } from "./XtermTerminal";

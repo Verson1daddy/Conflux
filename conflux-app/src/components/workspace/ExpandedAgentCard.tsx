@@ -562,6 +562,13 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
                   interactive
                   subscribeToPty={!isDemo}
                   cardWidth={embedded ? undefined : 800}
+                  onPtyExit={(p) =>
+                    useAgentStore.getState().setExitState(instanceId, p)
+                  }
+                  isExitDetected={() =>
+                    useAgentStore.getState().exitStates.has(instanceId)
+                  }
+                  adapterId={instance?.adapter_id}
                 />
               </Suspense>
             </div>
