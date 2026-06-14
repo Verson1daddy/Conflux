@@ -1,0 +1,27 @@
+[package]
+name = "conmux-app"
+version = "0.1.0"
+description = "conmux — Windows CLI 大本营 GUI 壳（Milestone ① 骨架）"
+authors = ["dllpang"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "conmux_app_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["devtools"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 机制层：本里程碑仅引用 PROTOCOL_VERSION 验证 GUI↔机制层 Rust 依赖边；
+# Milestone ② daemon GUI 客户端将深度消费（attach/capture/inject）。
+conmux = { path = "../../crates/conmux" }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

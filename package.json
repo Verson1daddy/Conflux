@@ -4,10 +4,11 @@
   "version": "0.0.0",
   "workspaces": [
     "conflux-app",
+    "conmux-app",
     "packages/*"
   ],
   "scripts": {
-    "dep:check": "depcruise \"conflux-app/src/**/*.ts\" \"conflux-app/src/**/*.tsx\" \"packages/terminal-core/src/**/*.ts\" \"packages/terminal-core/src/**/*.tsx\" --config .dependency-cruiser.cjs"
+    "dep:check": "depcruise \"conflux-app/src/**/*.ts\" \"conflux-app/src/**/*.tsx\" \"conmux-app/src/**/*.ts\" \"conmux-app/src/**/*.tsx\" \"packages/terminal-core/src/**/*.ts\" \"packages/terminal-core/src/**/*.tsx\" --config .dependency-cruiser.cjs"
   },
   "devDependencies": {
     "dependency-cruiser": "^17.4.3"

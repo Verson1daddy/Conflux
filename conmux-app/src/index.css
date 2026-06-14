@@ -1,0 +1,27 @@
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+/* XtermTerminal 用到的最小工具类（conmux-app 暂未引入 Tailwind；只补 demo 所需）。 */
+.relative {
+  position: relative;
+}
+.absolute {
+  position: absolute;
+}
+.inset-0 {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+}
+.w-full {
+  width: 100%;
+}
+.h-full {
+  height: 100%;
+}
