@@ -1,12 +1,11 @@
-// ===== 状态栏（bottom，M③ F1 契约 §3）=====
+// ===== 状态栏（bottom，F1 视觉契约 §3）=====
 //
 // 结构（跨风格不变，颜色走 CSS 变量）：
 //   height 30 · fill surface.chrome · padding [0,14] · gap 14 · 顶发丝线 1px。
 //   运行点（ellipse 7 status.running）→ DAEMON / N PANES / UTF-8（JetBrains Mono 10
 //   text.faint letterSpacing1 大写）→ flex spacer → WIN ⇄ WSL（同字体 accent.signal）。
 //
-// 换肤入口（§5）：状态栏右侧放一个 style 切换钮（点循环 A→B→C，localStorage 持久 +
-// 即时应用）。命令面板 = M⑤，本轮不做。
+// M④：换肤钮移至缩点条 TopBar（per 契约 §2）；状态栏专注 daemon/pane 计数 + 边界语义。
 
 import type { FC } from "react";
 
@@ -20,22 +19,13 @@ const META_TEXT: React.CSSProperties = {
 };
 
 interface StatusBarProps {
-  /** 运行中的 pane 数（M③ 单 pane = 1；退出后 = 0）。 */
+  /** 运行中的 pane 数（M④ 多会话 = 当前活跃会话数）。 */
   paneCount: number;
   /** daemon 连接态（降级时 false → 运行点变暗）。 */
   daemonConnected: boolean;
-  /** 当前风格名（切换钮展示）。 */
-  styleName: string;
-  /** 点切换钮：循环到下一风格。 */
-  onCycleStyle: () => void;
 }
 
-const StatusBar: FC<StatusBarProps> = ({
-  paneCount,
-  daemonConnected,
-  styleName,
-  onCycleStyle,
-}) => (
+const StatusBar: FC<StatusBarProps> = ({ paneCount, daemonConnected }) => (
   <div
     data-testid="conmux-statusbar"
     style={{
@@ -63,36 +53,18 @@ const StatusBar: FC<StatusBarProps> = ({
       }}
     />
     <span style={META_TEXT}>DAEMON</span>
-    <span style={META_TEXT}>{paneCount} PANES</span>
+    <span style={META_TEXT} data-testid="conmux-pane-count">
+      {paneCount} PANES
+    </span>
     <span style={META_TEXT}>UTF-8</span>
 
     {/* flex spacer */}
     <div style={{ flex: 1 }} />
 
-    {/* WIN ⇄ WSL（M③ 单 pane 本地 powershell；跨边界语义预留 accent） */}
+    {/* WIN ⇄ WSL（M④ 本地 powershell；跨边界语义预留 accent） */}
     <span style={{ ...META_TEXT, color: "var(--cx-accent-signal)" }}>
       WIN ⇄ WSL
     </span>
-
-    {/* 换肤切换钮（点循环 A→B→C）。命令面板 = M⑤。 */}
-    <button
-      type="button"
-      data-testid="conmux-style-cycle"
-      onClick={onCycleStyle}
-      title="切换风格（A → B → C）"
-      style={{
-        ...META_TEXT,
-        color: "var(--cx-text-muted)",
-        background: "transparent",
-        border: "1px solid var(--cx-line-soft)",
-        borderRadius: 6,
-        padding: "2px 8px",
-        cursor: "pointer",
-        lineHeight: 1.4,
-      }}
-    >
-      ◐ {styleName}
-    </button>
   </div>
 );
 
