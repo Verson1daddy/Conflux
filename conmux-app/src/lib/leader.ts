@@ -37,6 +37,16 @@ export interface UseLeaderKeyboardOptions {
   setPaletteOpen: (open: boolean) => void;
   /** armed 态变化回调（App 据此持有 leaderArmed state 传 StatusBar 徽章）。 */
   onArmedChange: (armed: boolean) => void;
+  /** leader+h → 开 Home overlay（M⑤d §1：App toggle homeOverlayOpen）。 */
+  openHomeOverlay: () => void;
+  /** leader+s → 切风格（M⑤d §1：App 传 lib/style cycleStyle，缩点条换肤钮同款）。 */
+  cycleStyle: () => void;
+  /**
+   * 是否抑制 leader 待命（M⑤d §1 / D-2）：App 传 `() => homeOverlayOpen`。
+   * 为真时未 armed 段对 Ctrl+Space 放行不 arm——Home overlay 自有键盘，
+   * 不该再起待命。更保守（不增拦截面），veto 安全只增不减。
+   */
+  isBlocked?: () => boolean;
 }
 
 /** activeElement 是否为 conmux 自有输入框（非 xterm 的 INPUT/TEXTAREA）→ 抑制 leader（D-4）。 */
@@ -184,6 +194,20 @@ export function useLeaderKeyboard(opts: UseLeaderKeyboardOptions): void {
             disarm();
             return;
           }
+          case "h":
+          case "H": {
+            // leader+h → 开 Home overlay（M⑤d §1）。App toggle homeOverlayOpen。
+            optsRef.current.openHomeOverlay();
+            disarm();
+            return;
+          }
+          case "s":
+          case "S": {
+            // leader+s → 切风格（M⑤d §1 / D-4），复用 App cycleStyle。
+            optsRef.current.cycleStyle();
+            disarm();
+            return;
+          }
           case "Escape": {
             // 仅退待命（无命令）。
             disarm();
@@ -198,6 +222,19 @@ export function useLeaderKeyboard(opts: UseLeaderKeyboardOptions): void {
       }
 
       // ---- 未 armed ----
+      // M⑤d §1 / D-2：Home overlay 开时 Ctrl+Space 应"无操作"（overlay 自有键盘）。
+      // overlay 开时终端在 scrim 之下不可交互，故此处吞掉 Ctrl+Space（preventDefault+
+      // stopPropagation）：既不 arm，也不让 NUL 漏进底层终端，闭合 overlay 焦点 rAF 落定前
+      // 的一帧竞态（红队 M⑤d LOW-1）。其余键放行给 overlay 自己的键盘。
+      // 注意：仅 overlay 开时吞 Ctrl+Space；overlay 关时此分支不入，veto 透传完全不变。
+      if (optsRef.current.isBlocked?.()) {
+        if (isLeaderKey(e)) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        return;
+      }
+
       // Ctrl+Space → arm（preventDefault + stopPropagation，避免终端收到 NUL）。
       if (isLeaderKey(e)) {
         // D-4：焦点在 conmux 自有输入框（命令面板/Home 加项打字含 Ctrl+Space）→ 不 arm，放行。

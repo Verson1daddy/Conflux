@@ -66,6 +66,13 @@ export default function App() {
   // ===== leader 待命态（M⑤c §3）：armed 时 StatusBar 显 ⌨ LEADER 徽章 =====
   const [leaderArmed, setLeaderArmed] = useState(false);
 
+  // ===== Home overlay（M⑤d §2）：leader+h 在「有会话」时把 Home 作为叠层开在活跃会话之上 =====
+  // 有自己的键盘（↑↓⏎esc），开时经 isBlocked 抑制 leader 待命（不增拦截面，veto 安全只增不减）。
+  const [homeOverlayOpen, setHomeOverlayOpen] = useState(false);
+  // ref 镜像：leader 机 isBlocked 回调读最新态（listener 一次装配，闭包不刷新）。
+  const homeOverlayOpenRef = useRef(homeOverlayOpen);
+  homeOverlayOpenRef.current = homeOverlayOpen;
+
   // ===== 会话 store 订阅 =====
   const sessions = useSyncExternalStore(subscribeSessions, getSessions);
   const activeId = useSyncExternalStore(subscribeSessions, getActiveId);
@@ -160,9 +167,26 @@ export default function App() {
   // 默认全透传（veto 级：仅 Ctrl+Space 被 conmux 取走）；armed 时下一个键解释为命令（切会话 /
   // 开面板 / leader-leader 送 NUL）后退待命。读 lib/sessions live 态，setPaletteOpen / armed
   // 徽章经 App state（hook 内部 ref 镜像最新回调，listener 一次装配无 stale）。
+  // M⑤d 增量：leader+h→toggle Home overlay · leader+s→cycleStyle · isBlocked→overlay 开时抑制待命。
+  //
+  // leader+h → toggle Home overlay（M⑤d §1/§2，仅「有会话」时开；0 会话 landing 已在）。
+  // 读 sessions live 态（getSessions，避免 stale）：开态总可关；关态仅 sessions>0 才开（D-1 互斥）。
+  const toggleHomeOverlay = useCallback(() => {
+    setHomeOverlayOpen((open) => {
+      if (open) return false; // 已开 → 关。
+      return getSessions().length > 0; // 关 → 仅有会话才开（0 会话 landing 已在）。
+    });
+  }, []);
+
   useLeaderKeyboard({
     setPaletteOpen: (open) => setPaletteOpen(open),
     onArmedChange: setLeaderArmed,
+    // leader+h → 开/关 Home overlay（M⑤d §1）。
+    openHomeOverlay: toggleHomeOverlay,
+    // leader+s → 切风格（M⑤d §1/D-4），复用缩点条换肤钮同款 cycleStyle。
+    cycleStyle,
+    // Home overlay 开时抑制 leader 待命（M⑤d §1/D-2）：overlay 自有键盘，Ctrl+Space 放行不 arm。
+    isBlocked: () => homeOverlayOpenRef.current,
   });
 
   // ===== Home `n` 键 → 新建默认会话（M⑤b §4，仅 0 会话 Home 时；v1 先鼠标点 + n/Ctrl+K）=====
@@ -184,6 +208,13 @@ export default function App() {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [sessions.length]);
+
+  // overlay 防卡（M⑤d §2/§4）：sessions 降到 0 时自动关 Home overlay——
+  // 否则 overlay 渲染条件（sessions>0）不满足致内容消失但 state 仍 true（isBlocked 仍抑制 leader、
+  // 与 landing 键盘并存），关掉回到 landing Home 干净态。
+  useEffect(() => {
+    if (sessions.length === 0 && homeOverlayOpen) setHomeOverlayOpen(false);
+  }, [sessions.length, homeOverlayOpen]);
 
   // ===== 退出态（per-session）=====
   const handlePtyExit = useCallback(
@@ -233,6 +264,12 @@ export default function App() {
   // ===== 交互回调 =====
   const handleSelect = useCallback((instanceId: string) => {
     setActive(instanceId);
+  }, []);
+
+  // Home overlay 点 RUNNING 行（M⑤d §2）：切到该会话 + 关叠层（焦点回终端）。
+  const handleSelectRunning = useCallback((instanceId: string) => {
+    setActive(instanceId);
+    setHomeOverlayOpen(false);
   }, []);
 
   const handleCreate = useCallback(() => {
@@ -387,6 +424,24 @@ export default function App() {
         <CommandPalette
           open
           onClose={() => setPaletteOpen(false)}
+        />
+      )}
+
+      {/* Home overlay（M⑤d §2）：leader+h 在「有会话」时把 Home 作为叠层开在活跃会话之上
+          （fixed scrim + 居中 card，DOM 末位覆盖全窗，zIndex 1000）。与 landing（0 会话）互斥：
+          仅 sessions.length>0 才渲（0 会话时 landing Home 已在 body）。RUNNING 段恒渲且每行可点 →
+          切会话 + 关叠层。esc / 点 scrim / leader+h 再按 关闭。 */}
+      {homeOverlayOpen && sessions.length > 0 && (
+        <Home
+          overlay
+          sessionCount={sessions.length}
+          daemonConnected={sessions.length > 0}
+          running={homeRunning}
+          onNewDefault={handleCreate}
+          onLaunch={handleLaunch}
+          onReopenRecent={handleReopenRecent}
+          onClose={() => setHomeOverlayOpen(false)}
+          onSelectRunning={handleSelectRunning}
         />
       )}
     </WindowFrame>

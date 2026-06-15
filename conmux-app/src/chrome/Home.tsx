@@ -1,20 +1,33 @@
-// ===== Home 仪表盘（M⑤b F1 契约 §4，.pen 6Faub B 风格）=====
+// ===== Home 仪表盘（M⑤b F1 契约 §4 · M⑤d overlay + 全键盘，.pen 6Faub B 风格）=====
 //
-// 0 会话时替换 M④「无会话」兜底（D-2）：显 RECENT（最近关闭可重开）+ QUICK LAUNCH
-// （用户注册的快捷启动项 chips，点→起为新会话，D-1）+ RUNNING（仅 sessions.length>0 渲，
-// 0 会话 Home 时隐，D-6——避免常空段；有会话开 Home = M⑤c overview 才显）。
+// 两模式同一组件（M⑤d §2）：
+//   - landing（overlay=false，默认）：0 会话时 App 渲，position:absolute inset:0 填 body；
+//     RUNNING 段仍按 D-6（sessions>0 才渲；0 会话 Home 隐——避免常空段）。
+//   - overlay（overlay=true）：leader+h 在「有会话」时把 Home 作为可关闭叠层开在活跃会话之上
+//     （fixed scrim + 居中 raised card，同命令面板）。RUNNING 段恒渲染（有会话才会开 overlay，
+//     故非空）且每行可点 → onSelectRunning(instanceId)（切到该会话 + 关叠层）。
 //
-// 全走 --cx-* 变量随风格自适应（明暗皆可）。键盘：v1 先鼠标点 + `n`（新建默认会话）/
-// `Ctrl+K`（命令面板，已全局）；↑↓+⏎ 完整键盘导航留 M⑤c。
+// 全键盘导航（M⑤d §3）：把可选项拍平成有序列表 items =
+//   [...recent(reopen), ...quick(launch), ...(overlay? running(select): [])]；
+//   selectedIndex state，↑↓ wrap 移、⏎ 激活当前项（按类型 reopen/launch/select）、
+//   esc → overlay 模式 onClose（landing 模式 esc 无操作）。＋加项不入键盘流（鼠标点即可）。
+//   选中视觉复用命令面板（`▸` 前缀 + `--cx-surface-chrome` 底）；选中行 data-home-selected="true"。
+//   键盘 handler 挂 Home 容器（overlay autoFocus / landing tabIndex 可聚焦）；不与 leader 机冲突
+//   （overlay 时 leader 被 isBlocked 抑制；landing 时无 leader 待命，Home 容器捕获 ↑↓⏎）。
+//
+// 全走 --cx-* 变量随风格自适应（明暗皆可）。纯前端，零 Rust/conflux 改动。
 //
 // 数据：launch-registry（QUICK LAUNCH，store + subscribe）+ sessions store（RECENT / RUNNING）。
 // RUNNING activity 来自各会话 observer 的 AwareState（由 App 经 props 注入；无则略）。
 
 import {
+  useEffect,
+  useRef,
   useState,
   useSyncExternalStore,
   type CSSProperties,
   type FC,
+  type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import {
   addEntry,
@@ -55,7 +68,7 @@ export interface HomeProps {
   sessionCount: number;
   /** daemon 连接态（header 右上 daemon ●）。 */
   daemonConnected: boolean;
-  /** RUNNING 行（仅 sessions.length>0 才有；0 会话 Home 时为 []）。 */
+  /** RUNNING 行（overlay 模式恒渲染；landing 模式仅 sessions.length>0 才有，0 会话时 []）。 */
   running: HomeRunningRow[];
   /** 新建默认会话（QUICK LAUNCH 无关的「n」/兜底入口）。 */
   onNewDefault: () => void;
@@ -63,7 +76,22 @@ export interface HomeProps {
   onLaunch: (entry: LaunchEntry) => void;
   /** 重开 RECENT 条目。 */
   onReopenRecent: (entry: RecentEntry) => void;
+  /**
+   * overlay 叠层模式（M⑤d §2）：默认 false = landing（0 会话时 App 渲）；
+   * true = leader+h 叠层（fixed scrim + 居中 card，覆盖活跃会话）。
+   */
+  overlay?: boolean;
+  /** overlay 关闭（esc / 点 scrim / 激活某项后）。landing 模式无意义。 */
+  onClose?: () => void;
+  /** 点 RUNNING 行 → 切会话（App 传 setActive 包装 + onClose）。仅 overlay 模式渲可点行。 */
+  onSelectRunning?: (instanceId: string) => void;
 }
+
+/** 拍平后的可选项（键盘导航单元）。＋加项不入此列表（鼠标点）。 */
+type HomeItem =
+  | { kind: "recent"; entry: RecentEntry }
+  | { kind: "launch"; entry: LaunchEntry }
+  | { kind: "running"; row: HomeRunningRow };
 
 /** 段头（`── LABEL ──────…`，mono 12 faint）。 */
 const SectionHeader: FC<{ label: string }> = ({ label }) => (
@@ -124,6 +152,23 @@ function relTime(closedAt: number): string {
   return `${day}d ago`;
 }
 
+/** 选中行的 `▸` 前缀（仅 selected 渲，复用命令面板视觉）。 */
+const SelMarker: FC<{ on: boolean }> = ({ on }) =>
+  on ? (
+    <span
+      aria-hidden
+      style={{
+        fontFamily: MONO,
+        fontSize: 13,
+        lineHeight: 1,
+        color: "var(--cx-accent-signal)",
+        flex: "0 0 auto",
+      }}
+    >
+      ▸
+    </span>
+  ) : null;
+
 const Home: FC<HomeProps> = ({
   sessionCount,
   daemonConnected,
@@ -131,20 +176,52 @@ const Home: FC<HomeProps> = ({
   onNewDefault,
   onLaunch,
   onReopenRecent,
+  overlay = false,
+  onClose,
+  onSelectRunning,
 }) => {
   // 订阅注册表 + 会话 store（RECENT 随会话关闭变动 → 重渲）。
   const entries = useSyncExternalStore(subscribeLaunchEntries, getLaunchEntries);
   // RECENT 与 sessions 同 store（同一 notify 广播）。
   const recent = useSyncExternalStore(subscribeSessions, getRecent);
-  // sessions 用于 RUNNING 段渲染判定（与 props.running 一致来源；订阅触发重渲）。
+  // sessions 用于 landing 模式 RUNNING 段渲染判定（D-6；overlay 模式恒渲）。
   const sessions = useSyncExternalStore(subscribeSessions, getSessions);
-  const hasRunning = sessions.length > 0;
+  // RUNNING 段是否渲染：overlay 模式恒渲（有会话才会开）；landing 模式按 D-6（sessions>0）。
+  const showRunning = overlay || sessions.length > 0;
+  // RUNNING 行是否进键盘流 + 可点：仅 overlay 模式（landing 模式 RUNNING 只读概览）。
+  const runningInteractive = overlay;
 
   // ＋加项内联表单（v1：name + command + cwd 可选；提交即写注册表，store 广播刷新 chips）。
   const [addOpen, setAddOpen] = useState(false);
   const [addName, setAddName] = useState("");
   const [addCommand, setAddCommand] = useState("");
   const [addCwd, setAddCwd] = useState("");
+
+  // ===== 全键盘导航：拍平可选项（M⑤d §3）=====
+  // 顺序 = [...recent(reopen), ...quick(launch), ...(overlay? running(select): [])]。
+  const items: HomeItem[] = [
+    ...recent.map((entry): HomeItem => ({ kind: "recent", entry })),
+    ...entries.map((entry): HomeItem => ({ kind: "launch", entry })),
+    ...(runningInteractive
+      ? running.map((row): HomeItem => ({ kind: "running", row }))
+      : []),
+  ];
+  const [selectedIndex, setSelectedIndex] = useState(0);
+
+  // items 长度变（增删启动项 / 会话变动）→ clamp selectedIndex 回有效范围。
+  useEffect(() => {
+    if (selectedIndex >= items.length) {
+      setSelectedIndex(items.length > 0 ? items.length - 1 : 0);
+    }
+  }, [items.length, selectedIndex]);
+
+  // 两模式都聚焦容器（接管 ↑↓⏎esc；不依赖 input 焦点）：overlay 开时；landing 0 会话首进时
+  // 即可键盘导航无需先点（红队 M⑤d LOW-2）。0 会话 landing 时无终端竞争焦点，安全。
+  const containerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => containerRef.current?.focus());
+    return () => cancelAnimationFrame(id);
+  }, [overlay]);
 
   const submitAdd = (): void => {
     const name = addName.trim();
@@ -157,19 +234,58 @@ const Home: FC<HomeProps> = ({
     setAddOpen(false);
   };
 
-  return (
-    <div
-      data-testid="conmux-home"
-      style={{
-        position: "absolute",
-        inset: 0,
-        display: "flex",
-        flexDirection: "column",
-        background: "var(--cx-surface-base)",
-        boxSizing: "border-box",
-        overflow: "hidden",
-      }}
-    >
+  /** 激活当前选中项（⏎ / 行点击）。按类型分派；激活后 overlay 模式关闭叠层。 */
+  const activateItem = (item: HomeItem): void => {
+    switch (item.kind) {
+      case "recent":
+        onReopenRecent(item.entry);
+        break;
+      case "launch":
+        onLaunch(item.entry);
+        break;
+      case "running":
+        onSelectRunning?.(item.row.instanceId);
+        break;
+    }
+    if (overlay) onClose?.();
+  };
+
+  /** 容器键盘仲裁（↑↓ wrap 移选、⏎ 激活、esc → overlay onClose）。 */
+  const handleKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
+    // 焦点在加项表单输入框时不抢键（让打字正常；加项表单自有 ⏎/esc 处理）。
+    const tgt = e.target as HTMLElement | null;
+    const tag = tgt?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tgt?.isContentEditable) return;
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (items.length > 0) setSelectedIndex((i) => (i + 1) % items.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      if (items.length > 0) {
+        setSelectedIndex((i) => (i - 1 + items.length) % items.length);
+      }
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const item = items[selectedIndex];
+      if (item) activateItem(item);
+    } else if (e.key === "Escape") {
+      if (overlay) {
+        e.preventDefault();
+        onClose?.();
+      }
+      // landing 模式 esc 无操作（无叠层可关）。
+    }
+  };
+
+  // recent / quick / running 段在拍平列表中的起始下标（用于行渲染时算 selected）。
+  const recentBase = 0;
+  const launchBase = recent.length;
+  const runningBase = recent.length + entries.length;
+
+  // ===== Home 内容（两模式共用）=====
+  const content = (
+    <>
       {/* ===== header（conmux 字标 + HOME + 右 N 会话 · daemon ●）===== */}
       <div
         style={{
@@ -235,7 +351,7 @@ const Home: FC<HomeProps> = ({
         </span>
       </div>
 
-      {/* ===== body（vertical gap 9, padding [14,18], 可滚）===== */}
+      {/* ===== body（vertical gap 18, padding [14,18], 可滚）===== */}
       <div
         style={{
           flex: 1,
@@ -266,82 +382,87 @@ const Home: FC<HomeProps> = ({
               无最近会话
             </div>
           ) : (
-            recent.map((r, idx) => (
-              <button
-                key={`${r.command}|${r.cwd ?? ""}|${idx}`}
-                type="button"
-                data-testid="conmux-home-recent-item"
-                data-recent-idx={idx}
-                onClick={() => onReopenRecent(r)}
-                title={`重开 ${r.name}（${r.command}）`}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 9,
-                  width: "100%",
-                  padding: "6px 8px",
-                  border: "none",
-                  borderRadius: 6,
-                  background: "transparent",
-                  cursor: "pointer",
-                  textAlign: "left",
-                  boxSizing: "border-box",
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "var(--cx-surface-chrome)";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "transparent";
-                }}
-              >
-                <span
+            recent.map((r, idx) => {
+              const flatIdx = recentBase + idx;
+              const isSel = flatIdx === selectedIndex;
+              return (
+                <button
+                  key={`${r.command}|${r.cwd ?? ""}|${idx}`}
+                  type="button"
+                  data-testid="conmux-home-recent-item"
+                  data-recent-idx={idx}
+                  data-home-selected={isSel ? "true" : "false"}
+                  onClick={() => activateItem({ kind: "recent", entry: r })}
+                  onMouseEnter={() => setSelectedIndex(flatIdx)}
+                  title={`重开 ${r.name}（${r.command}）`}
                   style={{
-                    width: 7,
-                    height: 7,
-                    borderRadius: "50%",
-                    background: "var(--cx-text-faint)",
-                    flex: "0 0 auto",
-                  }}
-                />
-                <span
-                  style={{
-                    fontFamily: MONO,
-                    fontSize: 13,
-                    color: "var(--cx-text-content)",
-                    flex: "0 0 auto",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 9,
+                    width: "100%",
+                    padding: isSel ? "6px 8px" : "6px 8px 6px 8px",
+                    border: "none",
+                    borderRadius: 6,
+                    background: isSel
+                      ? "var(--cx-surface-chrome)"
+                      : "transparent",
+                    cursor: "pointer",
+                    textAlign: "left",
+                    boxSizing: "border-box",
                   }}
                 >
-                  {r.name}
-                </span>
-                {r.cwd && (
+                  <SelMarker on={isSel} />
+                  {!isSel && (
+                    <span
+                      style={{
+                        width: 7,
+                        height: 7,
+                        borderRadius: "50%",
+                        background: "var(--cx-text-faint)",
+                        flex: "0 0 auto",
+                      }}
+                    />
+                  )}
+                  <span
+                    style={{
+                      fontFamily: MONO,
+                      fontSize: 13,
+                      color: "var(--cx-text-content)",
+                      flex: "0 0 auto",
+                    }}
+                  >
+                    {r.name}
+                  </span>
+                  {r.cwd && (
+                    <span
+                      style={{
+                        fontFamily: MONO,
+                        fontSize: 11,
+                        color: "var(--cx-text-faint)",
+                        flex: 1,
+                        minWidth: 0,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      · {r.cwd}
+                    </span>
+                  )}
+                  <span style={{ flex: r.cwd ? "0 0 auto" : 1 }} />
                   <span
                     style={{
                       fontFamily: MONO,
                       fontSize: 11,
                       color: "var(--cx-text-faint)",
-                      flex: 1,
-                      minWidth: 0,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
+                      flex: "0 0 auto",
                     }}
                   >
-                    · {r.cwd}
+                    {relTime(r.closedAt)}
                   </span>
-                )}
-                <span style={{ flex: r.cwd ? "0 0 auto" : 1 }} />
-                <span
-                  style={{
-                    fontFamily: MONO,
-                    fontSize: 11,
-                    color: "var(--cx-text-faint)",
-                    flex: "0 0 auto",
-                  }}
-                >
-                  {relTime(r.closedAt)}
-                </span>
-              </button>
-            ))
+                </button>
+              );
+            })
           )}
         </section>
 
@@ -360,15 +481,19 @@ const Home: FC<HomeProps> = ({
               paddingLeft: 4,
             }}
           >
-            {entries.map((entry) => {
+            {entries.map((entry, idx) => {
               const { program } = parseCommand(entry.command);
+              const flatIdx = launchBase + idx;
+              const isSel = flatIdx === selectedIndex;
               return (
                 <button
                   key={entry.id}
                   type="button"
                   data-testid="conmux-home-quick-item"
                   data-entry-id={entry.id}
-                  onClick={() => onLaunch(entry)}
+                  data-home-selected={isSel ? "true" : "false"}
+                  onClick={() => activateItem({ kind: "launch", entry })}
+                  onMouseEnter={() => setSelectedIndex(flatIdx)}
                   title={`启动 ${entry.name}（${program || entry.command}）`}
                   style={{
                     display: "inline-flex",
@@ -377,17 +502,18 @@ const Home: FC<HomeProps> = ({
                     height: 30,
                     padding: "0 12px",
                     borderRadius: 6,
-                    border: "1px solid var(--cx-line-soft)",
-                    background: "var(--cx-surface-raised)",
+                    border: isSel
+                      ? "1px solid var(--cx-accent-signal)"
+                      : "1px solid var(--cx-line-soft)",
+                    background: isSel
+                      ? "var(--cx-surface-chrome)"
+                      : "var(--cx-surface-raised)",
                     cursor: "pointer",
                     boxSizing: "border-box",
                     whiteSpace: "nowrap",
                   }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.borderColor = "var(--cx-accent-signal)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.borderColor = "var(--cx-line-soft)";
+                  onMouseLeave={() => {
+                    /* hover 视觉交给 selectedIndex（onMouseEnter 设选中），无需手动还原 */
                   }}
                 >
                   <span
@@ -399,7 +525,7 @@ const Home: FC<HomeProps> = ({
                       flex: "0 0 auto",
                     }}
                   >
-                    ›
+                    {isSel ? "▸" : "›"}
                   </span>
                   <span
                     style={{
@@ -413,7 +539,7 @@ const Home: FC<HomeProps> = ({
                 </button>
               );
             })}
-            {/* ＋ 加项入口（toggle 内联表单） */}
+            {/* ＋ 加项入口（toggle 内联表单）。不入键盘流（鼠标点）。 */}
             <button
               type="button"
               data-testid="conmux-home-add"
@@ -461,9 +587,11 @@ const Home: FC<HomeProps> = ({
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
+                  e.stopPropagation();
                   submitAdd();
                 } else if (e.key === "Escape") {
                   e.preventDefault();
+                  e.stopPropagation();
                   setAddOpen(false);
                 }
               }}
@@ -525,63 +653,91 @@ const Home: FC<HomeProps> = ({
           )}
         </section>
 
-        {/* ── RUNNING ──（仅 sessions.length>0 渲，0 会话 Home 时隐，D-6）== */}
-        {hasRunning && (
+        {/* ── RUNNING ──（overlay 模式恒渲 + 可点；landing 模式仅 sessions>0 渲且只读，D-6）== */}
+        {showRunning && (
           <section
             data-testid="conmux-home-running"
             style={{ display: "flex", flexDirection: "column", gap: 9 }}
           >
             <SectionHeader label="RUNNING" />
-            {running.map((row) => (
-              <div
-                key={row.instanceId}
-                data-testid="conmux-home-running-item"
-                data-instance-id={row.instanceId}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 9,
-                  padding: "4px 8px",
-                  boxSizing: "border-box",
-                }}
-              >
-                <span
+            {running.map((row, idx) => {
+              const flatIdx = runningBase + idx;
+              const isSel = runningInteractive && flatIdx === selectedIndex;
+              return (
+                <div
+                  key={row.instanceId}
+                  data-testid="conmux-home-running-item"
+                  data-instance-id={row.instanceId}
+                  data-home-selected={isSel ? "true" : "false"}
+                  role={runningInteractive ? "button" : undefined}
+                  tabIndex={runningInteractive ? -1 : undefined}
+                  onClick={
+                    runningInteractive
+                      ? () => activateItem({ kind: "running", row })
+                      : undefined
+                  }
+                  onMouseEnter={
+                    runningInteractive
+                      ? () => setSelectedIndex(flatIdx)
+                      : undefined
+                  }
+                  title={
+                    runningInteractive ? `切到 ${row.name}` : undefined
+                  }
                   style={{
-                    width: 7,
-                    height: 7,
-                    borderRadius: "50%",
-                    background: STATUS_VAR[row.status],
-                    flex: "0 0 auto",
-                  }}
-                />
-                <span
-                  style={{
-                    fontFamily: MONO,
-                    fontSize: 13,
-                    color: "var(--cx-text-content)",
-                    flex: "0 0 auto",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 9,
+                    padding: "4px 8px",
+                    borderRadius: 6,
+                    background: isSel
+                      ? "var(--cx-surface-chrome)"
+                      : "transparent",
+                    cursor: runningInteractive ? "pointer" : "default",
+                    boxSizing: "border-box",
                   }}
                 >
-                  {row.name}
-                </span>
-                {row.activity && (
+                  <SelMarker on={isSel} />
+                  {!isSel && (
+                    <span
+                      style={{
+                        width: 7,
+                        height: 7,
+                        borderRadius: "50%",
+                        background: STATUS_VAR[row.status],
+                        flex: "0 0 auto",
+                      }}
+                    />
+                  )}
                   <span
                     style={{
                       fontFamily: MONO,
-                      fontSize: 11,
-                      color: "var(--cx-text-faint)",
-                      flex: 1,
-                      minWidth: 0,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
+                      fontSize: 13,
+                      color: "var(--cx-text-content)",
+                      flex: "0 0 auto",
                     }}
                   >
-                    · {row.activity}
+                    {row.name}
                   </span>
-                )}
-              </div>
-            ))}
+                  {row.activity && (
+                    <span
+                      style={{
+                        fontFamily: MONO,
+                        fontSize: 11,
+                        color: "var(--cx-text-faint)",
+                        flex: 1,
+                        minWidth: 0,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      · {row.activity}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
           </section>
         )}
       </div>
@@ -620,9 +776,87 @@ const Home: FC<HomeProps> = ({
             letterSpacing: "inherit",
           }}
         >
-          Ctrl+K 命令面板 ⏎ 打开 · n 新建 · 全键盘
+          ↑↓ 选择 · ⏎ 打开 · n 新建 · Ctrl+K 命令面板
+          {overlay ? " · esc 关闭" : ""}
         </button>
       </div>
+    </>
+  );
+
+  // ===== overlay 模式：fixed scrim + 居中 raised card（同命令面板，M⑤d §2）=====
+  if (overlay) {
+    return (
+      <div
+        data-testid="conmux-home-scrim"
+        onMouseDown={(e) => {
+          // 仅点 scrim 本体（非 card 内）才关闭。
+          if (e.target === e.currentTarget) onClose?.();
+        }}
+        style={{
+          position: "fixed",
+          inset: 0,
+          zIndex: 1000,
+          background: "rgba(0,0,0,0.45)",
+          backdropFilter: "blur(2px)",
+          WebkitBackdropFilter: "blur(2px)",
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "center",
+          paddingTop: "10vh",
+          boxSizing: "border-box",
+        }}
+      >
+        <div
+          ref={containerRef}
+          data-testid="conmux-home"
+          data-overlay="true"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Home 概览"
+          tabIndex={-1}
+          onKeyDown={handleKeyDown}
+          onMouseDown={(e) => e.stopPropagation()}
+          style={{
+            width: 560,
+            maxWidth: "92vw",
+            maxHeight: "80vh",
+            display: "flex",
+            flexDirection: "column",
+            borderRadius: 12,
+            background: "var(--cx-surface-base)",
+            border: "1px solid var(--cx-line-hairline)",
+            boxShadow: "0 12px 32px #00000055",
+            overflow: "hidden",
+            outline: "none",
+            boxSizing: "border-box",
+          }}
+        >
+          {content}
+        </div>
+      </div>
+    );
+  }
+
+  // ===== landing 模式：position:absolute inset:0 填 body（不变）=====
+  return (
+    <div
+      ref={containerRef}
+      data-testid="conmux-home"
+      data-overlay="false"
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
+      style={{
+        position: "absolute",
+        inset: 0,
+        display: "flex",
+        flexDirection: "column",
+        background: "var(--cx-surface-base)",
+        boxSizing: "border-box",
+        overflow: "hidden",
+        outline: "none",
+      }}
+    >
+      {content}
     </div>
   );
 };
