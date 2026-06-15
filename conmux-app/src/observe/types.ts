@@ -17,6 +17,25 @@
 export type ObserveStatus = "running" | "idle" | "exited";
 
 /**
+ * 观测到的子 agent 节点（M3-ext-2 F1 §1，深 agent 观测 v2）。
+ *
+ * 诚实铁律（§0）：每个节点必须能在 strippedBuffer 16KB 窗口里找到对应派发行
+ * （`● <type>(<description>)`）；窗口外滚走的不补、不造。status 取折叠行字面，
+ * 解析不到 → 缺省 "running" + detail=null（在跑但状态未知，绝不编造）。
+ * claude 渲 main→subagents **一层** → 扁平数组（不臆造更深嵌套）。
+ */
+export interface SubagentNode {
+  /** agent 类型（派发行 `● Type(` 的 Type）：Explore / Plan / general-purpose / 自定义。 */
+  type: string;
+  /** 描述（派发行括号内文本，e.g. "List files in current folder"）。 */
+  description: string;
+  /** running = 派发中/状态未知；done = 折叠行含 Done。 */
+  status: "running" | "done";
+  /** done 折叠行原文（e.g. "Done (1 tool use · 18.9k tokens · 16s)"）；解析不到 = null。 */
+  detail: string | null;
+}
+
+/**
  * aware-header 可诚实观测的会话运行状态。
  * null 字段一律由 UI 渲染为 `—`（诚实「拿不到」），绝不用占位假数填充。
  */
@@ -46,6 +65,11 @@ export interface AwareState {
   isAgent: boolean;
   /** 当前生效的 parser id（'shell' | 'claude' | ...）。 */
   parserId: string;
+  /**
+   * 观测到的子 agent（M3-ext-2 §1）。`[]` = 当前无可观测子 agent（诚实空，UI 不渲染树）。
+   * 只含 strippedBuffer 窗口内真实出现的派发行；shell 态恒 `[]`（无 subagent）。
+   */
+  subagents: SubagentNode[];
 }
 
 /** 观测起始的初始状态（全 null / running / 0ms，诚实空态）。 */
@@ -62,5 +86,6 @@ export function initialAwareState(): AwareState {
     cost: null,
     isAgent: false,
     parserId: "shell",
+    subagents: [],
   };
 }

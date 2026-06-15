@@ -30,6 +30,28 @@ const TICK_MS = 1000;
 /** 喂 parser 的最近原始输出缓冲上限（字符；够覆盖 banner / 状态行跨块拼接）。 */
 const RAW_BUFFER_MAX = 16384;
 
+/** subagents 数组值相等（避免每块新引用 → 每帧无谓 commit）。逐项比四字段。 */
+function subagentsEqual(
+  a: AwareState["subagents"],
+  b: AwareState["subagents"]
+): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (
+      x.type !== y.type ||
+      x.description !== y.description ||
+      x.status !== y.status ||
+      x.detail !== y.detail
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export class SessionObserver {
   private readonly instanceId: string;
   private state: AwareState = initialAwareState();
@@ -160,7 +182,17 @@ export class SessionObserver {
     const patch = parser.parse(stripped, this.strippedBuffer);
     for (const key of Object.keys(patch) as (keyof typeof patch)[]) {
       const v = patch[key];
-      if (v !== undefined && v !== next[key]) {
+      if (v === undefined) continue;
+      // subagents 是数组——每次 parse 都是新引用，用值比较避免每块无谓 commit
+      // （[] !== [] 恒真会导致每个输出块都重渲；§D-4 允许信息态 flicker，但仍按值收敛）。
+      if (key === "subagents") {
+        if (!subagentsEqual(next.subagents, v as AwareState["subagents"])) {
+          next.subagents = v as AwareState["subagents"];
+          dirty = true;
+        }
+        continue;
+      }
+      if (v !== next[key]) {
         // @ts-expect-error patch 的 key 是 AwareState 的子集，赋值类型已由 patch 类型约束。
         next[key] = v;
         dirty = true;

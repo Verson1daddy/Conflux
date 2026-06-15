@@ -16,6 +16,7 @@ import { WindowFrame } from "./chrome/WindowFrame";
 import { TopBar } from "./chrome/TopBar";
 import { StatusBar } from "./chrome/StatusBar";
 import { AwareHeader } from "./chrome/AwareHeader";
+import { SubagentTree } from "./chrome/SubagentTree";
 import { SessionObserver } from "./observe/session-observer";
 import {
   applyChromeVars,
@@ -200,6 +201,10 @@ export default function App() {
 
       {/* aware-header（M3-ext）：显当前 active 会话的诚实观测态。无会话时不渲染。 */}
       {activeObserver && <AwareHeader observer={activeObserver} />}
+
+      {/* subagent 树（M3-ext-2）：当前 active 会话真实观测到的子 agent 派发树。
+          subagents=[] 时组件自渲 null（诚实空，不占位）；仅 active 会话。 */}
+      {activeObserver && <SubagentTree observer={activeObserver} />}
 
       {/* pane（body）：fill surface.base、flex 占满。padding [14,16] 落在每个 pane 层
           （mount-all 各 pane 绝对定位叠放，padding 在 pane 内以免与 body 重复）。

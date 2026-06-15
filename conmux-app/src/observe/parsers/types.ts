@@ -17,6 +17,9 @@ export type AwareStatePatch = Partial<
     | "tokensUsed"
     | "tokensTotal"
     | "contextPct"
+    // M3-ext-2：放行 subagents 维度的唯一改动点（session-observer 泛型 merge
+    // 自动传播，observer 零改）。parser 写空/非空数组皆可（[] = 当前无）。
+    | "subagents"
   >
 >;
 
