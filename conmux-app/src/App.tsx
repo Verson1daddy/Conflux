@@ -40,6 +40,7 @@ import {
   type SessionEntry,
 } from "./lib/sessions";
 import { parseCommand, type LaunchEntry } from "./lib/launch-registry";
+import { useLeaderKeyboard } from "./lib/leader";
 import {
   deriveStatusFromAware,
   type SessionState,
@@ -61,6 +62,9 @@ export default function App() {
   // ===== 命令面板（M⑤a，Ctrl+K 开关）=====
   // 唯一全局键 Ctrl+K（spec §1.1 / D-1）：拦截 toggle；面板关时键照常透传终端（不加别的全局拦截）。
   const [paletteOpen, setPaletteOpen] = useState(false);
+
+  // ===== leader 待命态（M⑤c §3）：armed 时 StatusBar 显 ⌨ LEADER 徽章 =====
+  const [leaderArmed, setLeaderArmed] = useState(false);
 
   // ===== 会话 store 订阅 =====
   const sessions = useSyncExternalStore(subscribeSessions, getSessions);
@@ -151,6 +155,15 @@ export default function App() {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
+
+  // ===== leader 键盘仲裁（M⑤c §1）：capture 阶段 document keydown，tmux 式 Ctrl+Space 前缀 =====
+  // 默认全透传（veto 级：仅 Ctrl+Space 被 conmux 取走）；armed 时下一个键解释为命令（切会话 /
+  // 开面板 / leader-leader 送 NUL）后退待命。读 lib/sessions live 态，setPaletteOpen / armed
+  // 徽章经 App state（hook 内部 ref 镜像最新回调，listener 一次装配无 stale）。
+  useLeaderKeyboard({
+    setPaletteOpen: (open) => setPaletteOpen(open),
+    onArmedChange: setLeaderArmed,
+  });
 
   // ===== Home `n` 键 → 新建默认会话（M⑤b §4，仅 0 会话 Home 时；v1 先鼠标点 + n/Ctrl+K）=====
   // 仅当 0 会话（Home 在屏）且焦点不在输入框（加项表单输入 'n' 应正常打字）时拦截。
@@ -365,6 +378,7 @@ export default function App() {
       <StatusBar
         paneCount={sessions.length}
         daemonConnected={sessions.length > 0}
+        leaderArmed={leaderArmed}
       />
 
       {/* 命令面板（M⑤a）：Ctrl+K 开（fixed scrim 覆盖全窗，DOM 末位不影响壳布局）。

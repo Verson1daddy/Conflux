@@ -23,9 +23,15 @@ interface StatusBarProps {
   paneCount: number;
   /** daemon 连接态（降级时 false → 运行点变暗）。 */
   daemonConnected: boolean;
+  /** leader 待命态（M⑤c，armed 时显 ⌨ LEADER 徽章；让用户知道处于待命，不吞键无感）。 */
+  leaderArmed?: boolean;
 }
 
-const StatusBar: FC<StatusBarProps> = ({ paneCount, daemonConnected }) => (
+const StatusBar: FC<StatusBarProps> = ({
+  paneCount,
+  daemonConnected,
+  leaderArmed = false,
+}) => (
   <div
     data-testid="conmux-statusbar"
     style={{
@@ -52,6 +58,24 @@ const StatusBar: FC<StatusBarProps> = ({ paneCount, daemonConnected }) => (
         flex: "0 0 auto",
       }}
     />
+    {/* leader 待命徽章（M⑤c §3）：armed 时显 ⌨ LEADER（accent + 轻脉冲，复用 .cx-dot-attention
+        的 cx-pulse keyframe + reduced-motion fallback）；非 armed 不渲染。 */}
+    {leaderArmed && (
+      <span
+        data-testid="conmux-leader-badge"
+        className="cx-leader-badge"
+        style={{
+          ...META_TEXT,
+          color: "var(--cx-accent-signal)",
+          border: "1px solid var(--cx-accent-signal)",
+          borderRadius: 4,
+          padding: "1px 6px",
+          flex: "0 0 auto",
+        }}
+      >
+        ⌨ LEADER
+      </span>
+    )}
     <span style={META_TEXT}>DAEMON</span>
     <span style={META_TEXT} data-testid="conmux-pane-count">
       {paneCount} PANES

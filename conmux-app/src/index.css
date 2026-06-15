@@ -56,6 +56,16 @@ body {
   }
 }
 
+/* ===== M⑤c leader 待命徽章（⌨ LEADER）轻脉冲（复用 cx-pulse keyframe）===== */
+.cx-leader-badge {
+  animation: cx-pulse 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cx-leader-badge {
+    animation: none;
+  }
+}
+
 /* XtermTerminal 用到的最小工具类（conmux-app 暂未引入 Tailwind；只补 demo 所需）。 */
 .relative {
   position: relative;
