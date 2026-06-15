@@ -17,6 +17,7 @@ import { TopBar } from "./chrome/TopBar";
 import { StatusBar } from "./chrome/StatusBar";
 import { AwareHeader } from "./chrome/AwareHeader";
 import { SubagentTree } from "./chrome/SubagentTree";
+import { CommandPalette } from "./chrome/CommandPalette";
 import { SessionObserver } from "./observe/session-observer";
 import {
   applyChromeVars,
@@ -52,6 +53,10 @@ const ADAPTER_ID = "pwsh";
 export default function App() {
   // 当前风格（订阅 store；驱动 chrome 重渲染）。
   const style = useStyle();
+
+  // ===== 命令面板（M⑤a，Ctrl+K 开关）=====
+  // 唯一全局键 Ctrl+K（spec §1.1 / D-1）：拦截 toggle；面板关时键照常透传终端（不加别的全局拦截）。
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   // ===== 会话 store 订阅 =====
   const sessions = useSyncExternalStore(subscribeSessions, getSessions);
@@ -128,6 +133,20 @@ export default function App() {
     applyChromeVars(style);
     setTerminalTheme(style.terminal_theme_id);
   }, [style]);
+
+  // ===== 全局 Ctrl+K → toggle 命令面板（M⑤a，spec §1.1 唯一默认全局键 / D-1）=====
+  // 承认 tradeoff：全局拦截 Ctrl+K 会盖掉终端 readline kill-line（无冲突替代 leader+: 留 M⑤c）。
+  // 仅此一个全局拦截；面板关时其余键照常透传终端。
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   // ===== 退出态（per-session）=====
   const handlePtyExit = useCallback(
@@ -295,6 +314,15 @@ export default function App() {
         paneCount={sessions.length}
         daemonConnected={sessions.length > 0}
       />
+
+      {/* 命令面板（M⑤a）：Ctrl+K 开（fixed scrim 覆盖全窗，DOM 末位不影响壳布局）。
+          关时不挂载（条件渲染——卸载触发预览还原闭环兜底）。 */}
+      {paletteOpen && (
+        <CommandPalette
+          open
+          onClose={() => setPaletteOpen(false)}
+        />
+      )}
     </WindowFrame>
   );
 }
