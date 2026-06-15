@@ -160,7 +160,8 @@ fn connect_and_setup(app: &tauri::AppHandle) -> Result<ConmuxState, String> {
     };
 
     // setup：启动时 create 初始 conmux-default 会话（powershell），保持 M② 行为。
-    spawn_session_into(app, &state, DEFAULT_PANE_ID, DEFAULT_PROGRAM)
+    // M⑤b：默认会话无 args / cwd（&[] / None），与现状一致（不破默认会话 "conmux"）。
+    spawn_session_into(app, &state, DEFAULT_PANE_ID, DEFAULT_PROGRAM, &[], None)
         .map_err(|e| format!("初始会话创建失败: {e}"))?;
 
     Ok(state)
@@ -170,6 +171,9 @@ fn connect_and_setup(app: &tauri::AppHandle) -> Result<ConmuxState, String> {
 /// create_session 共用）。控制连接已确证 daemon 在跑——attach 用 `Client::connect`（具名管道，
 /// 省第二次 connect_or_spawn 的翻倍退避，D-4）；取名失败回退 connect_or_spawn。
 ///
+/// M⑤b：增 `args` + `cwd` 形参，透传进 `CommandSpec`（兑现 `wsl -d Ubuntu`、
+/// `claude --resume` 等带参 / 指定目录启动，D-4）。`args=&[]` / `cwd=None` 即现状行为。
+///
 /// 失败 ⇒ Err（调用方决定降级 / 返错）。成功 ⇒ SessionHandle 已入 state.sessions。
 #[cfg(windows)]
 pub(crate) fn spawn_session_into(
@@ -177,6 +181,8 @@ pub(crate) fn spawn_session_into(
     state: &ConmuxState,
     pane_id: &str,
     program: &str,
+    args: &[String],
+    cwd: Option<&str>,
 ) -> Result<SessionInfo, String> {
     use conmux::pane::{CommandSpec, SpawnRequest};
     use conmux::protocol::{MuxOp, MuxPayload};
@@ -194,8 +200,8 @@ pub(crate) fn spawn_session_into(
             pane_id: PaneId(pane_id.to_string()),
             command: CommandSpec {
                 program: program.to_string(),
-                args: Vec::new(),
-                cwd: None,
+                args: args.to_vec(),
+                cwd: cwd.map(|c| c.to_string()),
                 env: Vec::new(),
             },
             size: PaneSize { rows: 30, cols: 120 },

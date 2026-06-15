@@ -18,6 +18,7 @@ import { StatusBar } from "./chrome/StatusBar";
 import { AwareHeader } from "./chrome/AwareHeader";
 import { SubagentTree } from "./chrome/SubagentTree";
 import { CommandPalette } from "./chrome/CommandPalette";
+import { Home, type HomeRunningRow } from "./chrome/Home";
 import { SessionObserver } from "./observe/session-observer";
 import {
   applyChromeVars,
@@ -32,10 +33,13 @@ import {
   getSessions,
   initSessions,
   removeSession,
+  reopenRecent,
   setActive,
   subscribeSessions,
+  type RecentEntry,
   type SessionEntry,
 } from "./lib/sessions";
+import { parseCommand, type LaunchEntry } from "./lib/launch-registry";
 import {
   deriveStatusFromAware,
   type SessionState,
@@ -148,6 +152,26 @@ export default function App() {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  // ===== Home `n` 键 → 新建默认会话（M⑤b §4，仅 0 会话 Home 时；v1 先鼠标点 + n/Ctrl+K）=====
+  // 仅当 0 会话（Home 在屏）且焦点不在输入框（加项表单输入 'n' 应正常打字）时拦截。
+  useEffect(() => {
+    if (sessions.length !== 0) return; // 有会话时不拦 n（透传终端）。
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || t?.isContentEditable) return;
+      if (e.key === "n" || e.key === "N") {
+        e.preventDefault();
+        void createSession().catch((err) => {
+          console.error("[conmux] 新建会话失败:", err);
+        });
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [sessions.length]);
+
   // ===== 退出态（per-session）=====
   const handlePtyExit = useCallback(
     (instanceId: string, payload: ProcessExitedPayload) => {
@@ -167,15 +191,29 @@ export default function App() {
   );
 
   // ===== 缩点条会话项（status 由各会话观测者 AwareState 派生）=====
+  // M⑤b：显示名优先 launchName（快捷启动的会话显其名，如 "WSL"/"claude"）；
+  // 默认会话无 launchName → 回退 deriveName（仍 "conmux"，不破 M④）。
   const sessionStates: SessionState[] = sessions.map((s: SessionEntry) => {
     const obs = observersRef.current.get(s.instanceId);
     const aware = obs?.getSnapshot();
     const status = aware ? deriveStatusFromAware(aware) : "running";
     return {
       instanceId: s.instanceId,
-      name: s.name,
+      name: s.launchName ?? s.name,
       status,
       active: s.instanceId === activeId,
+    };
+  });
+
+  // ===== Home RUNNING 行（仅 0 会话时 Home 隐 RUNNING；此处恒构建供 M⑤c 复用）=====
+  const homeRunning: HomeRunningRow[] = sessions.map((s: SessionEntry) => {
+    const obs = observersRef.current.get(s.instanceId);
+    const aware = obs?.getSnapshot();
+    return {
+      instanceId: s.instanceId,
+      name: s.launchName ?? s.name,
+      status: aware ? deriveStatusFromAware(aware) : "running",
+      activity: aware?.activity ?? null,
     };
   });
 
@@ -188,6 +226,26 @@ export default function App() {
     void createSession().catch((e) => {
       // create 失败 fail-soft（不崩 UI）：记 console，缩点条不变。
       console.error("[conmux] 新建会话失败:", e);
+    });
+  }, []);
+
+  // Home QUICK LAUNCH chip → parse 命令 → 起为新会话（D-1，携带 launchName）。
+  const handleLaunch = useCallback((entry: LaunchEntry) => {
+    const { program, args } = parseCommand(entry.command);
+    void createSession({
+      name: entry.name,
+      program,
+      args,
+      ...(entry.cwd ? { cwd: entry.cwd } : {}),
+    }).catch((e) => {
+      console.error("[conmux] 快捷启动失败:", e);
+    });
+  }, []);
+
+  // Home RECENT → 重开（parse 原命令 → 起为新会话，携带 launchName/cwd）。
+  const handleReopenRecent = useCallback((entry: RecentEntry) => {
+    void reopenRecent(entry).catch((e) => {
+      console.error("[conmux] 重开会话失败:", e);
     });
   }, []);
 
@@ -290,23 +348,17 @@ export default function App() {
             </div>
           );
         })}
-        {/* 无会话兜底（降级态 / 全部关闭）：诚实提示，不留空白。 */}
+        {/* 0 会话（降级态 / 全部关闭）→ Home 仪表盘（M⑤b D-2，替换 M④「无会话」兜底）：
+            RECENT 重开 + QUICK LAUNCH 快捷启动 + 加项；不留空白、可一键起会话。 */}
         {sessions.length === 0 && (
-          <div
-            data-testid="conmux-no-session"
-            style={{
-              position: "absolute",
-              inset: 0,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontFamily: "'JetBrains Mono', monospace",
-              fontSize: 12,
-              color: "var(--cx-text-faint)",
-            }}
-          >
-            无会话 — 点击「+」新建
-          </div>
+          <Home
+            sessionCount={sessions.length}
+            daemonConnected={sessions.length > 0}
+            running={homeRunning}
+            onNewDefault={handleCreate}
+            onLaunch={handleLaunch}
+            onReopenRecent={handleReopenRecent}
+          />
         )}
       </div>
 

@@ -126,21 +126,28 @@ pub async fn is_process_exited(
 
 /// 新建会话（D-2 默认 powershell）：后端生成 paneId（D-3）→ Spawn → attach → 起读线程
 /// → 存 SessionHandle → 返回 SessionInfo（前端据此加入 store + setActive）。
+///
+/// M⑤b：扩展收 `args`（带参 CLI / `wsl -d Ubuntu`，D-4）+ `cwd`（启动工作目录）。
+/// 二者经 SpawnRequest.CommandSpec 透传（conmux crate 已支持）。兼容：
+/// `args=None → 空 Vec`、`cwd=None → None`（行为同现状，powershell 默认会话不受影响）。
 #[tauri::command]
 pub async fn create_session(
     state: State<'_, ConmuxState>,
     #[allow(unused_variables)] app: tauri::AppHandle,
     program: Option<String>,
+    args: Option<Vec<String>>,
+    cwd: Option<String>,
 ) -> Result<SessionInfo, String> {
     #[cfg(windows)]
     {
         let pane_id = state.next_pane_id();
         let program = program.unwrap_or_else(|| crate::DEFAULT_PROGRAM.to_string());
-        crate::spawn_session_into(&app, &state, &pane_id, &program)
+        let args = args.unwrap_or_default();
+        crate::spawn_session_into(&app, &state, &pane_id, &program, &args, cwd.as_deref())
     }
     #[cfg(not(windows))]
     {
-        let _ = (&state, program);
+        let _ = (&state, program, args, cwd);
         Err("conmux daemon 客户端仅支持 Windows".to_string())
     }
 }
