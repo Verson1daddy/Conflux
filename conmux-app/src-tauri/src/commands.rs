@@ -255,3 +255,192 @@ pub async fn list_terminal_themes() -> Result<Vec<conmux::TerminalTheme>, String
 pub async fn list_styles() -> Result<Vec<conmux::Style>, String> {
     Ok(conmux::builtin_styles())
 }
+
+// ===== M⑥ 富观测：读 Claude Code 会话 JSONL + 枚举已安装 skills =====
+//
+// 纯本地读文件，不接任何 provider 凭据（授信前审门不触发，D-9）。两命令均**无 State 依赖**
+// （M-2：cwd 由前端传入，不改 SessionHandle / ConmuxState / spawn）。降级语义优先：
+// cwd 空 / 目录不存在 / 文件不存在 → 返回空结果，**不 Err、不 panic**（§4）。
+// path-traversal 已规避：cwd 经 sanitize（非字母数字全替 `-`），不含 `..` / 分隔符（D-13）。
+
+/// 用户主目录（home）：Windows `%USERPROFILE%`，其它平台 `$HOME`（§2.1）。拿不到 → None。
+fn home_dir() -> Option<std::path::PathBuf> {
+    let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(key).map(std::path::PathBuf::from)
+}
+
+/// cwd → project 目录名（§2.1）：每个非 `[A-Za-z0-9]` 字符替换为 `-`（不合并连续）。
+/// e.g. `D:\Trae_rela_pro\Conflux` → `D--Trae-rela-pro-Conflux`。
+fn sanitize_cwd(cwd: &str) -> String {
+    cwd.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+/// 选目录下 mtime 最新的 `.jsonl`，返回 (路径, mtime_ms)。无则 None。
+fn newest_jsonl(dir: &std::path::Path) -> Option<(std::path::PathBuf, f64)> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut best: Option<(std::path::PathBuf, std::time::SystemTime)> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let modified = match entry.metadata().and_then(|m| m.modified()) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        match &best {
+            Some((_, bm)) if *bm >= modified => {}
+            _ => best = Some((path, modified)),
+        }
+    }
+    let (path, mtime) = best?;
+    let mtime_ms = mtime
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as f64)
+        .unwrap_or(0.0);
+    Some((path, mtime_ms))
+}
+
+/// 从 `offset` 字节读到 EOF，按 `\n` 切完整行（最后无换行结尾的半行不返回，offset 停在
+/// 最后一个完整 `\n` 后，下次补读，§2.3）。返回 (完整行集, 新 offset)。
+fn read_complete_lines(path: &std::path::Path, offset: u64) -> std::io::Result<(Vec<String>, u64)> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path)?;
+    let len = f.metadata()?.len();
+    // offset 超出文件长度（文件被截断 / 轮换）→ 从头读（容错）。
+    let start = if offset > len { 0 } else { offset };
+    f.seek(SeekFrom::Start(start))?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf)?;
+    // 找最后一个 `\n`；其后的半行不返回（下次补读）。
+    let last_nl = buf.iter().rposition(|&b| b == b'\n');
+    let complete_end = match last_nl {
+        Some(idx) => idx + 1, // 含换行符
+        None => 0,            // 无完整行
+    };
+    let complete = &buf[..complete_end];
+    let new_offset = start + complete_end as u64;
+    // 按 `\n` 切；空尾段过滤。lossy UTF-8（半个多字节序列不抛）。
+    let text = String::from_utf8_lossy(complete);
+    let lines: Vec<String> = text
+        .split('\n')
+        .filter(|l| !l.is_empty())
+        .map(|l| l.to_string())
+        .collect();
+    Ok((lines, new_offset))
+}
+
+/// 读 Claude Code 会话 JSONL 尾部增量（M⑥ §2/§4，**无 State**）。
+/// §2.1 sanitize cwd → `<home>/.claude/projects/<sanitized>/` → 选最新 `.jsonl` →
+/// 从 `offset` 读到 EOF（半行不返回）→ 返回 `{lines, offset, file, mtimeMs}` JSON 字符串。
+///
+/// 降级语义优先（不 Err、不 panic）：cwd 空 / home 拿不到 / 目录不存在 / 无 jsonl /
+/// 读失败 → 返回 `{"lines":[],"offset":0}`。坏行 / 半行不在此打日志（L-3，前端 parser try/catch）。
+#[tauri::command]
+pub async fn read_claude_jsonl(cwd: String, offset: u64) -> Result<String, String> {
+    let empty = || r#"{"lines":[],"offset":0}"#.to_string();
+    if cwd.trim().is_empty() {
+        return Ok(empty());
+    }
+    let home = match home_dir() {
+        Some(h) => h,
+        None => return Ok(empty()),
+    };
+    let dir = home
+        .join(".claude")
+        .join("projects")
+        .join(sanitize_cwd(&cwd));
+    let (path, mtime_ms) = match newest_jsonl(&dir) {
+        Some(v) => v,
+        None => return Ok(empty()),
+    };
+    let (lines, new_offset) = match read_complete_lines(&path, offset) {
+        Ok(v) => v,
+        Err(_) => return Ok(empty()),
+    };
+    let file = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string();
+    // serde_json::to_string 自动转义控制字符（NUL/ESC 在对话明文里 → \u00xx），输出无裸控制字符。
+    let payload = serde_json::json!({
+        "lines": lines,
+        "offset": new_offset,
+        "file": file,
+        "mtimeMs": mtime_ms,
+    });
+    serde_json::to_string(&payload).map_err(|e| format!("序列化失败: {e}"))
+}
+
+/// 枚举用户级已安装 skills（M⑥ §4，**无 State**，v1 仅用户级、项目级推迟）。
+/// `<home>/.claude/skills/*/SKILL.md` → 行级取 frontmatter `name`/`description`
+/// （非完整 YAML）：`name` 取 `^name:\s*(.+)$` trim 去引号，**缺 name → 目录名兜底**；
+/// `description` 同法、失败 → 空串（不阻断计数）。返回 `[{name,description}]` JSON。
+/// 读失败 / 目录不存在 → 返回 `[]`。
+#[tauri::command]
+pub async fn list_available_skills() -> Result<String, String> {
+    let empty = || "[]".to_string();
+    let home = match home_dir() {
+        Some(h) => h,
+        None => return Ok(empty()),
+    };
+    let skills_dir = home.join(".claude").join("skills");
+    let entries = match std::fs::read_dir(&skills_dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(empty()),
+    };
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    for entry in entries.flatten() {
+        let dir_path = entry.path();
+        if !dir_path.is_dir() {
+            continue;
+        }
+        let skill_md = dir_path.join("SKILL.md");
+        let dir_name = dir_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        // 跳过空目录名（不应发生，防御）。
+        if dir_name.is_empty() {
+            continue;
+        }
+        let content = std::fs::read_to_string(&skill_md).unwrap_or_default();
+        let name = extract_frontmatter_field(&content, "name").unwrap_or(dir_name);
+        let description = extract_frontmatter_field(&content, "description").unwrap_or_default();
+        out.push(serde_json::json!({ "name": name, "description": description }));
+    }
+    // 稳定排序（read_dir 序不定）：按 name 升序，前端计数 / 列表确定。
+    out.sort_by(|a, b| {
+        let an = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let bn = b.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        an.cmp(bn)
+    });
+    serde_json::to_string(&out).map_err(|e| format!("序列化失败: {e}"))
+}
+
+/// 行级取 frontmatter `<field>:` 首个匹配的值（trim + 去包裹引号）；无 → None。
+/// 非完整 YAML 解析（S-4）：只扫顶层 `^<field>:\s*(.+)$` 形态。
+fn extract_frontmatter_field(content: &str, field: &str) -> Option<String> {
+    let prefix = format!("{field}:");
+    for line in content.lines() {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix(&prefix) {
+            let val = rest.trim();
+            if val.is_empty() {
+                return None;
+            }
+            // 去包裹引号（单 / 双）。
+            let unquoted = val
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+                .or_else(|| val.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+                .unwrap_or(val);
+            return Some(unquoted.trim().to_string());
+        }
+    }
+    None
+}

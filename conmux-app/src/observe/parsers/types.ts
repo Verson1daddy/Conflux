@@ -20,6 +20,11 @@ export type AwareStatePatch = Partial<
     // M3-ext-2：放行 subagents 维度的唯一改动点（session-observer 泛型 merge
     // 自动传播，observer 零改）。parser 写空/非空数组皆可（[] = 当前无）。
     | "subagents"
+    // M⑥ 富观测：JSONL 源经 applyExternalPatch 喂入的新字段（同泛型 merge 自动传播）。
+    | "sessionTokensIn"
+    | "sessionTokensOut"
+    | "activeWorkflow"
+    | "recentSkill"
   >
 >;
 

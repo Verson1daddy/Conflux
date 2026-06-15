@@ -17,11 +17,19 @@ import {
   onPtyOutputForInstance,
   onProcessExitedForInstance,
 } from "@conmux/terminal-core";
+import { invoke } from "@tauri-apps/api/core";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { type AwareState, initialAwareState } from "./types";
+import type { AwareStatePatch } from "./parsers/types";
 import { ParserRegistry } from "./registry";
 import { parseOsc7Cwd } from "./osc7";
 import { stripAnsi } from "./ansi";
+import {
+  type JsonlAccum,
+  initJsonlAccum,
+  isClaudeModel,
+  parseJsonlLines,
+} from "./parsers/jsonl";
 
 /** 静默多久判定为 idle（最近一次输出至今 > 此值 → idle）。 */
 const IDLE_MS = 2500;
@@ -29,6 +37,24 @@ const IDLE_MS = 2500;
 const TICK_MS = 1000;
 /** 喂 parser 的最近原始输出缓冲上限（字符；够覆盖 banner / 状态行跨块拼接）。 */
 const RAW_BUFFER_MAX = 16384;
+
+/** JSONL 源轮询节拍（claude 会话升级后懒启）。 */
+const JSONL_POLL_MS = 2500;
+/**
+ * 活跃度门阈值（S-1）：JSONL 文件 mtime（或末行 timestamp）距今 > 此值 → 视为陈旧 /
+ * 非活跃，不喂 ctx 实时字段（防死文件冒充实时）。
+ * 漂移点（未实测标定）：单 cwd 目录可累积数十历史会话 jsonl（实测一目录 49 个），
+ * 60s 阈值未做实测校准，真实场景可能漂移，后续按 e2e 表现调。
+ */
+const JSONL_STALE_MS = 60_000;
+
+/** read_claude_jsonl 返回的 JSON 形态（§2.3）。 */
+interface JsonlReadResult {
+  lines: string[];
+  offset: number;
+  file?: string;
+  mtimeMs?: number;
+}
 
 /** subagents 数组值相等（避免每块新引用 → 每帧无谓 commit）。逐项比四字段。 */
 function subagentsEqual(
@@ -54,6 +80,16 @@ function subagentsEqual(
 
 export class SessionObserver {
   private readonly instanceId: string;
+  /**
+   * 启动工作目录（M⑥ §5）：OSC7 未捕获时的 JSONL cwd fallback。App 在 new 时传该会话
+   * SessionEntry.cwd。可选（向后兼容旧无参 / 默认会话无 cwd）。
+   */
+  private readonly launchCwd: string | null;
+  /**
+   * 启动意图（M⑥ D-10）：launchCommand 含 claude → JSONL 源不等脆弱 PTY sniff 直接启
+   * （当前 claude alt-screen TUI 不触发 sniff）。App 据 SessionEntry.launchCommand 传入。
+   */
+  private readonly launchIsClaude: boolean;
   private state: AwareState = initialAwareState();
   private readonly registry = new ParserRegistry();
 
@@ -72,10 +108,20 @@ export class SessionObserver {
   // 解析可能晚于新 start，比对代际可把过期句柄就地解绑而非覆盖活句柄（防泄漏）。
   private generation = 0;
 
+  // ===== JSONL 源（M⑥，仅 claude 会话升级后懒启）=====
+  private jsonlTimer: ReturnType<typeof setInterval> | null = null;
+  private jsonlStarted = false; // 懒启幂等（升级到 claude 后只启一次）。
+  private jsonlOffset = 0; // 上次读到的字节 offset（前端持有，无状态后端，D-7）。
+  private jsonlFile: string | null = null; // 当前会话 JSONL basename（变 → 重置 offset/accum）。
+  private jsonlAccum: JsonlAccum = initJsonlAccum();
+  private jsonlPolling = false; // 单飞：避免轮询重入（前一轮 invoke 未回时跳过本轮）。
+
   private readonly decoder = new TextDecoder("utf-8", { fatal: false });
 
-  constructor(instanceId: string) {
+  constructor(instanceId: string, launchCwd?: string, launchIsClaude?: boolean) {
     this.instanceId = instanceId;
+    this.launchCwd = launchCwd ?? null;
+    this.launchIsClaude = launchIsClaude ?? false;
   }
 
   /** 启动观测（幂等）。返回的函数停止并清理订阅 / 定时器。 */
@@ -103,6 +149,12 @@ export class SessionObserver {
 
     // 节拍：刷新 elapsed + 翻转 idle（无新输出也要走）。
     this.tickTimer = setInterval(() => this.tick(), TICK_MS);
+
+    // 启动意图（D-10）：launchCommand 含 claude → 不等脆弱 PTY sniff，直接启 JSONL 源
+    // （当前 claude alt-screen TUI 不触发 sniff；JSONL 读到 fresh claude jsonl 即权威置
+    // isAgent）。无启动意图的会话仍可经 PTY sniff 升级时懒启（onOutput → startJsonlSource）。
+    if (this.launchIsClaude) this.startJsonlSource();
+
     return () => this.stop();
   }
 
@@ -116,6 +168,11 @@ export class SessionObserver {
       clearInterval(this.tickTimer);
       this.tickTimer = null;
     }
+    if (this.jsonlTimer !== null) {
+      clearInterval(this.jsonlTimer);
+      this.jsonlTimer = null;
+    }
+    this.jsonlStarted = false;
   }
 
   // ===== useSyncExternalStore 接口 =====
@@ -176,11 +233,24 @@ export class SessionObserver {
       next.parserId = parser.id;
       next.isAgent = parser.isAgent;
       dirty = true;
+      // claude 会话升级 → 懒启 JSONL 富观测源（D-10：仅 claude，其它 CLI 零变）。
+      if (parser.id === "claude") this.startJsonlSource();
     }
 
     // 喂 parser 去 ANSI 文本（只写它能诚实确定的字段）。
     const patch = parser.parse(stripped, this.strippedBuffer);
-    for (const key of Object.keys(patch) as (keyof typeof patch)[]) {
+    if (this.mergePatch(next, patch)) dirty = true;
+
+    if (dirty) this.commit(next);
+  }
+
+  /**
+   * 把 patch 合并进 next（值比较收敛；subagents 按值比，引用恒变不误触发 commit）。
+   * @returns 是否有任一字段实际变化（驱动调用方 dirty）。
+   */
+  private mergePatch(next: AwareState, patch: AwareStatePatch): boolean {
+    let dirty = false;
+    for (const key of Object.keys(patch) as (keyof AwareStatePatch)[]) {
       const v = patch[key];
       if (v === undefined) continue;
       // subagents 是数组——每次 parse 都是新引用，用值比较避免每块无谓 commit
@@ -198,7 +268,36 @@ export class SessionObserver {
         dirty = true;
       }
     }
+    return dirty;
+  }
 
+  /**
+   * 外部源（M⑥ JSONL）喂入 patch：复用 onOutput 的 patch-merge 子路径，保持 observer 为
+   * AwareState 单一属主。退出态不复活（不改 status）。
+   */
+  applyExternalPatch(patch: AwareStatePatch): void {
+    const next: AwareState = { ...this.state };
+    if (this.mergePatch(next, patch)) this.commit(next);
+  }
+
+  /**
+   * JSONL 自检激活（M⑥ D-10）：读到 fresh claude jsonl（model 是 claude 族）→ **权威**置
+   * `isAgent=true` + `parserId="claude"` + 合并 patch（model/token/ctx/skill/workflow）。
+   * 绕开脆弱 PTY 文本 sniff（当前 claude alt-screen TUI 不触发它）——JSONL 结构化真值更可靠。
+   * 退出态不复活（不改 status）；单一属主仍是 observer。
+   */
+  applyJsonlClaudeState(patch: AwareStatePatch): void {
+    const next: AwareState = { ...this.state };
+    let dirty = false;
+    if (!next.isAgent) {
+      next.isAgent = true;
+      dirty = true;
+    }
+    if (next.parserId !== "claude") {
+      next.parserId = "claude";
+      dirty = true;
+    }
+    if (this.mergePatch(next, patch)) dirty = true;
     if (dirty) this.commit(next);
   }
 
@@ -230,6 +329,85 @@ export class SessionObserver {
     }
 
     if (dirty) this.commit(next);
+  }
+
+  // ===== JSONL 富观测源（M⑥，仅 claude 会话）=====
+
+  /**
+   * 懒启 JSONL 轮询（claude 升级后调用一次，幂等）。非 claude 会话从不调用 → 永不轮询
+   * （shell/WSL 零变，D-10）。stop() 清 timer。
+   */
+  private startJsonlSource(): void {
+    if (this.jsonlStarted || !this.started) return;
+    this.jsonlStarted = true;
+    // 立即跑一轮（不等首个节拍），后续按节拍。
+    void this.pollJsonl();
+    this.jsonlTimer = setInterval(() => {
+      void this.pollJsonl();
+    }, JSONL_POLL_MS);
+  }
+
+  /**
+   * 一轮 JSONL 增量读 + 解析 + 喂入（§5）：
+   *   cwd = AwareState.cwd（OSC7 实时）?? launchCwd（启动 cwd）；空则跳过不 invoke（诚实降级）。
+   *   invoke read_claude_jsonl(cwd, offset) → 检 file 变化（新会话）则重置 offset/accum →
+   *   活跃度门（mtime 距今 > JSONL_STALE_MS 则不喂 ctx 实时字段，S-1）→ parseJsonlLines →
+   *   applyExternalPatch + 更新 offset。单飞防重入；错误吞掉（降级，不崩）。
+   */
+  private async pollJsonl(): Promise<void> {
+    if (!this.started || this.jsonlPolling) return;
+    const cwd = this.state.cwd ?? this.launchCwd;
+    if (cwd == null || cwd.length === 0) return; // cwd 未知 → 诚实降级（不 invoke），新字段保「—」。
+
+    this.jsonlPolling = true;
+    try {
+      const raw = await invoke<string>("read_claude_jsonl", {
+        cwd,
+        offset: this.jsonlOffset,
+      });
+      if (!this.started) return; // 轮询期间被停 → 丢弃。
+      const result = JSON.parse(raw) as JsonlReadResult;
+      const lines = Array.isArray(result.lines) ? result.lines : [];
+      const nextOffset =
+        typeof result.offset === "number" ? result.offset : this.jsonlOffset;
+      const file = typeof result.file === "string" ? result.file : null;
+      const mtimeMs =
+        typeof result.mtimeMs === "number" ? result.mtimeMs : null;
+
+      // 文件切换（新会话 id）→ 重置 offset/accum，从头读新文件（D-7）。
+      if (file !== null && this.jsonlFile !== null && file !== this.jsonlFile) {
+        this.jsonlOffset = 0;
+        this.jsonlAccum = initJsonlAccum();
+        this.jsonlFile = file;
+        // 本轮 lines 是按旧 offset 读的旧文件尾段——丢弃，下一轮从 0 读新文件。
+        return;
+      }
+      if (file !== null) this.jsonlFile = file;
+
+      // 活跃度门（S-1 + 红队 P2 SHOULD-FIX）：文件陈旧（mtime 距今 > 阈值）→ 仍解析
+      // 累加 accum（保持会话累计正确，文件回到活跃即恢复显示），但**不喂任何 JSONL 派生
+      // 字段**到 live 头条。死会话文件不冒充当前会话的实时 / 最近语义——只剥 ctx 不够：
+      // 实测 6 天前死会话 EOF 残留 recentSkill，若只剥 ctx 会渲染「◆ xxx（最近）」源自死
+      // 文件，与"最近"冲突（gate 已判该文件非 live）。Σ↑↓ 同理（死会话累计冒充当前）。
+      const stale = mtimeMs !== null && Date.now() - mtimeMs > JSONL_STALE_MS;
+
+      if (lines.length > 0) {
+        const { patch } = parseJsonlLines(lines, this.jsonlAccum);
+        if (!stale) {
+          // fresh claude jsonl（model 是 claude 族）→ JSONL **权威**置 isAgent/parserId +
+          // 喂字段（绕开脆弱 PTY sniff，D-10：当前 claude alt-screen TUI 不触发 sniff）。
+          // 非 claude model / 还无真实消息 → 仅喂 patch，不擅自置 agent（诚实）。
+          if (isClaudeModel(patch.model)) this.applyJsonlClaudeState(patch);
+          else this.applyExternalPatch(patch);
+        }
+        // 陈旧 → 仅推进 accum（parseJsonlLines 已推进），不喂 UI（全剥）。
+      }
+      this.jsonlOffset = nextOffset;
+    } catch {
+      // read_claude_jsonl 失败 / JSON 损坏 → 降级（保上一态，不崩、不 log 行内容 L-3）。
+    } finally {
+      this.jsonlPolling = false;
+    }
   }
 
   private commit(next: AwareState): void {

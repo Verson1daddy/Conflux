@@ -6,7 +6,9 @@
 // .pen XK1nU 视觉契约：fill surface.raised · padding [10,16] · 底发丝线 1px · gap 7。
 //   B1（8g1rN）：状态点(status.*) + 「{活动 ?? 泛化} · {耗时} · {cwd ?? —}」JetBrains Mono 12 text.content
 //   B6（4ai9a）：ctx 标签(text.muted) + 进度条(contextPct) + {pct% / —} · {model / —} ·
-//                {tokens / —} · ${cost / —}（text.muted）
+//                {tokens / —} · Σ↑/Σ↓（来自 JSONL 富观测，M⑥）
+//   M⑥ 富观测（claude 会话）：cost slot 已退役（D-4，订阅边际≈$0 不显金额误导）；ctx/tokens/
+//     model 由 JSONL 权威源喂真值；新增 activeWorkflow / recentSkill / Σ↑Σ↓ / skills 计数。
 //   非 agent（shell）态：B6 整行淡化 + 标「非 agent 会话」（无 LLM 元数据可诚实展示）。
 //
 // 全走 chrome CSS 变量（--cx-*，M③ 已建）；零硬编色。
@@ -100,7 +102,17 @@ const B1Row: FC<{ s: AwareState }> = ({ s }) => {
 
 const EM_DASH = "—";
 
-const B6Row: FC<{ s: AwareState }> = ({ s }) => {
+/** Σ tokens → 人读紧凑（12,345 → "12.3k"，<1000 原值）。 */
+function formatCompact(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${(n / 1_000_000).toFixed(2)}M`;
+}
+
+const B6Row: FC<{ s: AwareState; skillCount: number | null }> = ({
+  s,
+  skillCount,
+}) => {
   const isShell = !s.isAgent;
   const pctText = s.contextPct != null ? `${s.contextPct}%` : EM_DASH;
   const tokensText =
@@ -109,8 +121,11 @@ const B6Row: FC<{ s: AwareState }> = ({ s }) => {
         ? `${s.tokensUsed.toLocaleString()}/${s.tokensTotal.toLocaleString()} tok`
         : `${s.tokensUsed.toLocaleString()} tok`
       : EM_DASH;
-  // cost 恒 null（§0：不接、不算、不编）→ 恒显 —。
-  const costText = s.cost != null ? String(s.cost) : EM_DASH;
+  // M⑥：cost slot 退役（D-4，订阅边际≈$0 不显金额误导）；改显 Σ↑/Σ↓ 会话累计（JSONL 真值）。
+  const sessionText =
+    s.sessionTokensIn != null && s.sessionTokensOut != null
+      ? `Σ↑${formatCompact(s.sessionTokensIn)} ↓${formatCompact(s.sessionTokensOut)}`
+      : EM_DASH;
   const barFill =
     s.contextPct != null ? Math.max(0, Math.min(100, s.contextPct)) : 0;
 
@@ -168,20 +183,68 @@ const B6Row: FC<{ s: AwareState }> = ({ s }) => {
         {tokensText}
       </span>
       <span>·</span>
-      <span data-testid="aware-cost" style={{ flex: "0 0 auto" }}>
-        ${costText}
+      <span data-testid="aware-session" style={{ flex: "0 0 auto" }}>
+        {sessionText}
       </span>
+      {/* skills 计数（App 级 list_available_skills，已安装非已加载；null → 不渲染占位）。 */}
+      {!isShell && skillCount != null && (
+        <>
+          <span>·</span>
+          <span data-testid="conmux-skills-count" style={{ flex: "0 0 auto" }}>
+            skills: {skillCount}
+          </span>
+        </>
+      )}
     </div>
   );
 };
 
 /**
- * aware-header：订阅 observer（useSyncExternalStore），渲染 B1 + B6。
- * 颜色全走 chrome CSS 变量；拿不到的字段显 `—`（诚实）。
+ * B7 行（M⑥ 富观测）：activeWorkflow / recentSkill。仅 agent 且至少一项有值时渲染
+ * （否则不占位）。诚实文案：workflow 标「运行中」、skill 标「最近」（D-6，非伪 live）。
  */
-export const AwareHeader: FC<{ observer: SessionObserver }> = ({
-  observer,
-}) => {
+const B7Row: FC<{ s: AwareState }> = ({ s }) => {
+  if (s.isAgent !== true) return null;
+  if (s.activeWorkflow == null && s.recentSkill == null) return null;
+  return (
+    <div
+      data-testid="aware-b7"
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        fontFamily: MONO,
+        fontSize: 11,
+        lineHeight: 1.3,
+        color: "var(--cx-text-muted)",
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+      }}
+    >
+      {s.activeWorkflow != null && (
+        <span data-testid="aware-workflow" style={{ flex: "0 0 auto" }}>
+          ⚙ {s.activeWorkflow}（运行中）
+        </span>
+      )}
+      {s.activeWorkflow != null && s.recentSkill != null && <span>·</span>}
+      {s.recentSkill != null && (
+        <span data-testid="aware-skill" style={{ flex: "0 0 auto" }}>
+          ◆ {s.recentSkill}（最近）
+        </span>
+      )}
+    </div>
+  );
+};
+
+/**
+ * aware-header：订阅 observer（useSyncExternalStore），渲染 B1 + B6 + B7（M⑥）。
+ * 颜色全走 chrome CSS 变量；拿不到的字段显 `—`（诚实）。
+ * skillCount = App 级 list_available_skills 计数（null = 未拉到 / 拉取中 → 不渲染）。
+ */
+export const AwareHeader: FC<{
+  observer: SessionObserver;
+  skillCount?: number | null;
+}> = ({ observer, skillCount = null }) => {
   const s = useSyncExternalStore(observer.subscribe, observer.getSnapshot);
   return (
     <div
@@ -198,7 +261,8 @@ export const AwareHeader: FC<{ observer: SessionObserver }> = ({
       }}
     >
       <B1Row s={s} />
-      <B6Row s={s} />
+      <B6Row s={s} skillCount={skillCount} />
+      <B7Row s={s} />
     </div>
   );
 };

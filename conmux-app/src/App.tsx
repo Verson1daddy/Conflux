@@ -6,6 +6,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   XtermTerminal,
   initTerminalThemes,
@@ -68,6 +69,11 @@ export default function App() {
   // ===== leader 待命态（M⑤c §3）：armed 时 StatusBar 显 ⌨ LEADER 徽章 =====
   const [leaderArmed, setLeaderArmed] = useState(false);
 
+  // ===== 可用 skills 计数（M⑥ §5/D-5，会话无关，App 级一次性拉取）=====
+  // null = 未拉到（拉取中 / 失败）→ AwareHeader 不渲染计数（诚实降级）。
+  // 文案标"已安装"非"已加载"（磁盘枚举 = 机器上安装的 skills）。
+  const [skillCount, setSkillCount] = useState<number | null>(null);
+
   // ===== Home overlay（M⑤d §2）：leader+h 在「有会话」时把 Home 作为叠层开在活跃会话之上 =====
   // 有自己的键盘（↑↓⏎esc），开时经 isBlocked 抑制 leader 待命（不增拦截面，veto 安全只增不减）。
   const [homeOverlayOpen, setHomeOverlayOpen] = useState(false);
@@ -110,10 +116,13 @@ export default function App() {
       }
     }
     // 为新会话建观测者并启动 + 订阅（dot 状态变化触发 bump）。
+    // M⑥：传 launchCwd（SessionEntry.cwd，启动 cwd）作 JSONL 源 cwd（OSC7 未捕获时）；
+    // launchIsClaude（launchCommand 含 claude）= 启动意图，绕开脆弱 PTY sniff 直接启 JSONL 源（D-10）。
     const unsubs: Array<() => void> = [];
     for (const s of sessions) {
       if (!map.has(s.instanceId)) {
-        const obs = new SessionObserver(s.instanceId);
+        const launchIsClaude = /\bclaude\b/i.test(s.launchCommand ?? "");
+        const obs = new SessionObserver(s.instanceId, s.cwd, launchIsClaude);
         map.set(s.instanceId, obs);
         obs.start();
       }
@@ -157,6 +166,25 @@ export default function App() {
     applyChromeVars(style);
     setTerminalTheme(style.terminal_theme_id);
   }, [style]);
+
+  // ===== 启动：一次性拉可用 skills（M⑥ §5/D-5，会话无关）=====
+  // 后端 list_available_skills 返 [{name,description}] JSON 串；只用计数。失败 → 保 null
+  // （AwareHeader 不渲染计数，诚实降级，不崩）。
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const raw = await invoke<string>("list_available_skills");
+        const parsed: unknown = JSON.parse(raw);
+        if (!cancelled && Array.isArray(parsed)) setSkillCount(parsed.length);
+      } catch {
+        // 命令缺失 / 非 Windows / 目录不存在 → 保 null（不显计数）。
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // ===== 全局 Ctrl+K → toggle 命令面板（M⑤a，spec §1.1 唯一默认全局键 / D-1）=====
   // 承认 tradeoff：全局拦截 Ctrl+K 会盖掉终端 readline kill-line（无冲突替代 leader+: 留 M⑤c）。
@@ -335,8 +363,11 @@ export default function App() {
         onCycleStyle={cycleStyle}
       />
 
-      {/* aware-header（M3-ext）：显当前 active 会话的诚实观测态。无会话时不渲染。 */}
-      {activeObserver && <AwareHeader observer={activeObserver} />}
+      {/* aware-header（M3-ext / M⑥）：显当前 active 会话的诚实观测态 + skills 计数。
+          无会话时不渲染。skillCount = App 级一次性拉取（会话无关）。 */}
+      {activeObserver && (
+        <AwareHeader observer={activeObserver} skillCount={skillCount} />
+      )}
 
       {/* subagent 树（M3-ext-2）：当前 active 会话真实观测到的子 agent 派发树。
           subagents=[] 时组件自渲 null（诚实空，不占位）；仅 active 会话。 */}

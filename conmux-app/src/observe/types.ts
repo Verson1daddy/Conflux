@@ -57,10 +57,27 @@ export interface AwareState {
   /** 上下文占用百分比（agent 真打印才解析）；否则 null。 */
   contextPct: number | null;
   /**
-   * cost：v1 恒 null（→ UI 显 `—`）。
-   * 终端不打印、无 provider API/凭据；不接、不算、不编（§0 铁律）。
+   * cost：M⑥ 砍（订阅边际≈$0，显金额误导）。类型保留 `null` 减小 diff，
+   * AwareHeader B6 已移除 cost slot 渲染（D-4）。
    */
   cost: null;
+  /**
+   * 本会话累计输入处理 tokens（Σ over 真实 assistant 消息的 input + cache_read +
+   * cache_creation）。来源 = Claude Code 会话 JSONL（M⑥ §3）；无真实消息 → null。
+   */
+  sessionTokensIn: number | null;
+  /** 本会话累计生成 tokens（Σ output_tokens）。来源同上；无真实消息 → null。 */
+  sessionTokensOut: number | null;
+  /**
+   * 正在跑的 workflow meta.name（JSONL Workflow tool 跟踪到完成前 active；
+   * 解析不到名但在跑 → "workflow" 兜底；完成清空）。无 → null（M⑥ §3/D-12）。
+   */
+  activeWorkflow: string | null;
+  /**
+   * 最近一次 Skill tool_use 的 input.skill（标"最近调用"，非伪 live——skill 同步加载、
+   * 非长跑进程）。来源 = JSONL（M⑥ §3/D-6）；无 → null。
+   */
+  recentSkill: string | null;
   /** 是否已嗅探升级到非 shell 的 agent parser（驱动 B6 行显隐 / 淡化）。 */
   isAgent: boolean;
   /** 当前生效的 parser id（'shell' | 'claude' | ...）。 */
@@ -84,6 +101,10 @@ export function initialAwareState(): AwareState {
     tokensTotal: null,
     contextPct: null,
     cost: null,
+    sessionTokensIn: null,
+    sessionTokensOut: null,
+    activeWorkflow: null,
+    recentSkill: null,
     isAgent: false,
     parserId: "shell",
     subagents: [],
