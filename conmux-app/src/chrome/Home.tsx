@@ -33,7 +33,9 @@ import {
   addEntry,
   getLaunchEntries,
   parseCommand,
+  removeEntry,
   subscribeLaunchEntries,
+  updateEntry,
   type LaunchEntry,
 } from "../lib/launch-registry";
 import {
@@ -140,6 +142,27 @@ function addInputStyle(width: number): CSSProperties {
   };
 }
 
+/** chip 次级钮（编辑 ✎ / 删除 ×）共用样式（M⑤h；active=正被编辑时高亮）。 */
+function chipSecondaryStyle(active: boolean): CSSProperties {
+  return {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: 20,
+    height: 20,
+    padding: 0,
+    borderRadius: 4,
+    border: "none",
+    background: active ? "var(--cx-surface-chrome)" : "transparent",
+    color: active ? "var(--cx-accent-signal)" : "var(--cx-text-faint)",
+    fontFamily: MONO,
+    fontSize: 12,
+    lineHeight: 1,
+    cursor: "pointer",
+    boxSizing: "border-box",
+  };
+}
+
 /** 相对时间（"Nm ago" / "Nh ago" / "now"）。closedAt 为 ms 时间戳。 */
 function relTime(closedAt: number): string {
   const diff = Math.max(0, Date.now() - closedAt);
@@ -192,7 +215,10 @@ const Home: FC<HomeProps> = ({
   const runningInteractive = overlay;
 
   // ＋加项内联表单（v1：name + command + cwd 可选；提交即写注册表，store 广播刷新 chips）。
+  // M⑤h：同一表单复用为编辑（editId 非 null = 编辑该项，预填 name/command/cwd → updateEntry；
+  // null = 新增 → addEntry）。
   const [addOpen, setAddOpen] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
   const [addName, setAddName] = useState("");
   const [addCommand, setAddCommand] = useState("");
   const [addCwd, setAddCwd] = useState("");
@@ -223,15 +249,36 @@ const Home: FC<HomeProps> = ({
     return () => cancelAnimationFrame(id);
   }, [overlay]);
 
+  /** 关闭并清空加项 / 编辑表单。 */
+  const closeForm = (): void => {
+    setAddOpen(false);
+    setEditId(null);
+    setAddName("");
+    setAddCommand("");
+    setAddCwd("");
+  };
+
+  /** 打开编辑表单（预填该项 name/command/cwd；提交走 updateEntry）。 */
+  const openEdit = (entry: LaunchEntry): void => {
+    setEditId(entry.id);
+    setAddName(entry.name);
+    setAddCommand(entry.command);
+    setAddCwd(entry.cwd ?? "");
+    setAddOpen(true);
+  };
+
   const submitAdd = (): void => {
     const name = addName.trim();
     const command = addCommand.trim();
     if (name === "" || command === "") return; // 必填校验（诚实：不建空目标）。
-    addEntry({ name, command, ...(addCwd.trim() ? { cwd: addCwd.trim() } : {}) });
-    setAddName("");
-    setAddCommand("");
-    setAddCwd("");
-    setAddOpen(false);
+    const cwd = addCwd.trim();
+    if (editId !== null) {
+      // 编辑：cwd 空串 → updateEntry 删 cwd（继承当前目录）；非空 → 设。
+      updateEntry(editId, { name, command, cwd });
+    } else {
+      addEntry({ name, command, ...(cwd ? { cwd } : {}) });
+    }
+    closeForm();
   };
 
   /** 激活当前选中项（⏎ / 行点击）。按类型分派；激活后 overlay 模式关闭叠层。 */
@@ -485,22 +532,21 @@ const Home: FC<HomeProps> = ({
               const { program } = parseCommand(entry.command);
               const flatIdx = launchBase + idx;
               const isSel = flatIdx === selectedIndex;
+              const editing = editId === entry.id;
               return (
-                <button
+                // chip 容器（M⑤h）：主体 launch 钮 + 次级 编辑/删除 钮（次级钮 stopPropagation，
+                // 不触发启动）。容器随 selectedIndex 高亮（hover/键盘选中视觉随主体）。
+                <div
                   key={entry.id}
-                  type="button"
-                  data-testid="conmux-home-quick-item"
+                  data-testid="conmux-home-quick-chip"
                   data-entry-id={entry.id}
-                  data-home-selected={isSel ? "true" : "false"}
-                  onClick={() => activateItem({ kind: "launch", entry })}
                   onMouseEnter={() => setSelectedIndex(flatIdx)}
-                  title={`启动 ${entry.name}（${program || entry.command}）`}
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
-                    gap: 7,
+                    gap: 4,
                     height: 30,
-                    padding: "0 12px",
+                    paddingRight: 4,
                     borderRadius: 6,
                     border: isSel
                       ? "1px solid var(--cx-accent-signal)"
@@ -508,35 +554,85 @@ const Home: FC<HomeProps> = ({
                     background: isSel
                       ? "var(--cx-surface-chrome)"
                       : "var(--cx-surface-raised)",
-                    cursor: "pointer",
                     boxSizing: "border-box",
                     whiteSpace: "nowrap",
                   }}
-                  onMouseLeave={() => {
-                    /* hover 视觉交给 selectedIndex（onMouseEnter 设选中），无需手动还原 */
-                  }}
                 >
-                  <span
+                  {/* 主体：启动该项（点 chip 主体 = 启动，不变）。 */}
+                  <button
+                    type="button"
+                    data-testid="conmux-home-quick-item"
+                    data-entry-id={entry.id}
+                    data-home-selected={isSel ? "true" : "false"}
+                    onClick={() => activateItem({ kind: "launch", entry })}
+                    title={`启动 ${entry.name}（${program || entry.command}）`}
                     style={{
-                      fontFamily: MONO,
-                      fontSize: 14,
-                      lineHeight: 1,
-                      color: "var(--cx-accent-signal)",
-                      flex: "0 0 auto",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 7,
+                      height: 28,
+                      padding: "0 4px 0 12px",
+                      border: "none",
+                      background: "transparent",
+                      cursor: "pointer",
+                      boxSizing: "border-box",
+                      whiteSpace: "nowrap",
                     }}
                   >
-                    {isSel ? "▸" : "›"}
-                  </span>
-                  <span
-                    style={{
-                      fontFamily: MONO,
-                      fontSize: 13,
-                      color: "var(--cx-text-content)",
+                    <span
+                      style={{
+                        fontFamily: MONO,
+                        fontSize: 14,
+                        lineHeight: 1,
+                        color: "var(--cx-accent-signal)",
+                        flex: "0 0 auto",
+                      }}
+                    >
+                      {isSel ? "▸" : "›"}
+                    </span>
+                    <span
+                      style={{
+                        fontFamily: MONO,
+                        fontSize: 13,
+                        color: "var(--cx-text-content)",
+                      }}
+                    >
+                      {entry.name}
+                    </span>
+                  </button>
+                  {/* 次级：编辑（✎）—— 复用加项内联表单（预填 → updateEntry）。 */}
+                  <button
+                    type="button"
+                    data-testid="conmux-home-quick-edit"
+                    data-entry-id={entry.id}
+                    aria-label={`编辑 ${entry.name}`}
+                    title={`编辑 ${entry.name}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openEdit(entry);
                     }}
+                    style={chipSecondaryStyle(editing)}
                   >
-                    {entry.name}
-                  </span>
-                </button>
+                    ✎
+                  </button>
+                  {/* 次级：删除（×）—— removeEntry（种子项也可删，M⑤b 设计）。 */}
+                  <button
+                    type="button"
+                    data-testid="conmux-home-quick-remove"
+                    data-entry-id={entry.id}
+                    aria-label={`删除 ${entry.name}`}
+                    title={`删除 ${entry.name}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      // 删除正被编辑的项时一并收掉表单（避免编辑悬空项）。
+                      if (editId === entry.id) closeForm();
+                      removeEntry(entry.id);
+                    }}
+                    style={chipSecondaryStyle(false)}
+                  >
+                    ×
+                  </button>
+                </div>
               );
             })}
             {/* ＋ 加项入口（toggle 内联表单）。不入键盘流（鼠标点）。 */}
@@ -546,7 +642,17 @@ const Home: FC<HomeProps> = ({
               aria-label="新增启动项"
               aria-expanded={addOpen}
               title="新增启动项"
-              onClick={() => setAddOpen((v) => !v)}
+              onClick={() => {
+                // 开 → 关（清表单含编辑态）；关 → 开「新增」（清残留编辑预填）。
+                if (addOpen) closeForm();
+                else {
+                  setEditId(null);
+                  setAddName("");
+                  setAddCommand("");
+                  setAddCwd("");
+                  setAddOpen(true);
+                }
+              }}
               style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -568,10 +674,12 @@ const Home: FC<HomeProps> = ({
             </button>
           </div>
 
-          {/* 内联加项表单（name + command 必填 · cwd 可选；⏎ 提交、esc 取消）。 */}
+          {/* 内联加项 / 编辑表单（name + command 必填 · cwd 可选；⏎ 提交、esc 取消）。
+              M⑤h：editId 非 null 时为编辑（预填该项，提交走 updateEntry）。 */}
           {addOpen && (
             <div
               data-testid="conmux-home-add-form"
+              data-edit-id={editId ?? undefined}
               style={{
                 display: "flex",
                 flexWrap: "wrap",
@@ -592,7 +700,7 @@ const Home: FC<HomeProps> = ({
                 } else if (e.key === "Escape") {
                   e.preventDefault();
                   e.stopPropagation();
-                  setAddOpen(false);
+                  closeForm();
                 }
               }}
             >
@@ -647,7 +755,7 @@ const Home: FC<HomeProps> = ({
                   whiteSpace: "nowrap",
                 }}
               >
-                添加
+                {editId !== null ? "保存" : "添加"}
               </button>
             </div>
           )}

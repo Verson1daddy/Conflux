@@ -56,6 +56,12 @@ export interface RecentEntry {
 
 let sessions: SessionEntry[] = [];
 let activeId: string | null = null;
+/**
+ * daemon 控制连接态（M⑤h 真信号）：启动 invoke `is_daemon_connected` 拉一次后写入。
+ * 拉失败 / 非 Windows → false（降级，不崩）。比 `sessions.length>0` 代理诚实——
+ * 0 会话时 daemon 仍在跑（control 连接独立于会话），点应亮。
+ */
+let daemonConnected = false;
 const listeners = new Set<() => void>();
 
 /** 默认会话 paneId（后端 DEFAULT_PANE_ID）；用于派生展示名。 */
@@ -93,6 +99,25 @@ export function getSessions(): SessionEntry[] {
 
 export function getActiveId(): string | null {
   return activeId;
+}
+
+/** daemon 控制连接态（真信号；启动 initDaemonConnected 拉取后有效，否则 false）。 */
+export function getDaemonConnected(): boolean {
+  return daemonConnected;
+}
+
+/**
+ * 启动拉取 daemon 连接态（真信号）：invoke `is_daemon_connected` 写 store + 广播。
+ * 拉失败（命令缺失 / 非 Windows / 降级态）→ false（不抛，不阻塞 GUI）。幂等可重拉。
+ */
+export async function initDaemonConnected(): Promise<void> {
+  try {
+    const ok = await invoke<boolean>("is_daemon_connected");
+    daemonConnected = ok === true;
+  } catch {
+    daemonConnected = false;
+  }
+  notify();
 }
 
 // ===== useSyncExternalStore 接口 =====
@@ -173,8 +198,11 @@ export async function createSession(spec?: CreateSpec): Promise<SessionEntry> {
   return entry;
 }
 
-/** 由 program + args 重建命令原文（RECENT 重开时再 parse；含空格的词加引号）。 */
-function rebuildCommand(program: string, args?: string[]): string {
+/**
+ * 由 program + args 重建命令原文（RECENT 重开时再 parse；含空格的词加引号）。
+ * 导出供 M⑤h 单测验证 parse↔rebuild 往返（纯函数，无副作用）。
+ */
+export function rebuildCommand(program: string, args?: string[]): string {
   const quote = (w: string): string => (/\s/.test(w) ? `"${w}"` : w);
   const parts = [program, ...(args ?? [])].map(quote);
   return parts.join(" ");
@@ -221,16 +249,32 @@ let recent: RecentEntry[] = loadRecent();
 function loadRecent(): RecentEntry[] {
   try {
     const raw = localStorage.getItem(RECENT_KEY);
-    if (raw === null) return [];
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isRecentEntry).slice(0, RECENT_CAP);
+    return parseRecentJson(raw, RECENT_CAP);
   } catch {
     return [];
   }
 }
 
-function isRecentEntry(v: unknown): v is RecentEntry {
+/**
+ * RECENT 的纯解析核心（导出供 M⑤h 单测损坏容错验证）：
+ * null（无存储）/ 非数组 / 损坏 JSON → []；数组则过滤损坏条目 + capped。
+ */
+export function parseRecentJson(
+  raw: string | null,
+  cap: number
+): RecentEntry[] {
+  if (raw === null) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isRecentEntry).slice(0, cap);
+  } catch {
+    return [];
+  }
+}
+
+/** RECENT 条目运行时类型守卫（导出供 M⑤h 单测；纯函数，拒绝损坏条目）。 */
+export function isRecentEntry(v: unknown): v is RecentEntry {
   if (typeof v !== "object" || v === null) return false;
   const o = v as Record<string, unknown>;
   return (
@@ -239,6 +283,20 @@ function isRecentEntry(v: unknown): v is RecentEntry {
     typeof o.closedAt === "number" &&
     (o.cwd === undefined || typeof o.cwd === "string")
   );
+}
+
+/**
+ * RECENT push 的纯核心（导出供 M⑤h 单测）：去重（同 command+cwd 取新）、最近优先、capped。
+ * 不触模块单例 / localStorage——pushRecent 仅在此之上加持久化 + notify（行为不变）。
+ */
+export function applyRecentPush(
+  list: RecentEntry[],
+  entry: RecentEntry,
+  cap: number
+): RecentEntry[] {
+  const sameKey = (e: RecentEntry): boolean =>
+    e.command === entry.command && (e.cwd ?? "") === (entry.cwd ?? "");
+  return [entry, ...list.filter((e) => !sameKey(e))].slice(0, cap);
 }
 
 function persistRecent(): void {
@@ -251,9 +309,7 @@ function persistRecent(): void {
 
 /** push 到 RECENT（去重：同 command+cwd 取最近一次；最近优先；capped）。 */
 function pushRecent(entry: RecentEntry): void {
-  const sameKey = (e: RecentEntry): boolean =>
-    e.command === entry.command && (e.cwd ?? "") === (entry.cwd ?? "");
-  recent = [entry, ...recent.filter((e) => !sameKey(e))].slice(0, RECENT_CAP);
+  recent = applyRecentPush(recent, entry, RECENT_CAP);
   persistRecent();
   notify();
 }

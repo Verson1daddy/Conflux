@@ -223,6 +223,23 @@ pub async fn kill_session(
     }
 }
 
+/// daemon 控制连接是否就绪（M⑤h 真信号）：Windows 读 `state.control` 是否为 `Some`
+/// （connect_and_setup 成功才填，降级态 / KillServer 后为 None）。非 Windows 恒 false
+/// （无命名管道 / ConPTY，永降级）。比前端 `sessions.length>0` 代理诚实——0 会话时
+/// daemon 仍在跑（control 连接独立于会话），点应亮。永不抛（前端拉失败也按 false 降级）。
+#[tauri::command]
+pub async fn is_daemon_connected(state: State<'_, ConmuxState>) -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        Ok(lock(&state.control).is_some())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = &state;
+        Ok(false)
+    }
+}
+
 /// 列出 conmux 内置终端主题预置（conmux 是主题数据唯一属主）。
 /// 直读机制层注册表——无需走 daemon IPC（主题预置是编译期静态数据）。
 #[tauri::command]

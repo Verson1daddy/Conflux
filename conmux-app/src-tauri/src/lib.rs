@@ -360,6 +360,7 @@ pub fn run() {
             commands::resize_pty,
             commands::get_pty_history,
             commands::is_process_exited,
+            commands::is_daemon_connected,
             commands::list_terminal_themes,
             commands::list_styles,
             commands::create_session,

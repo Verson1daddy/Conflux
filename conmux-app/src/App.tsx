@@ -30,7 +30,9 @@ import { useStyle } from "./lib/useStyle";
 import {
   createSession,
   getActiveId,
+  getDaemonConnected,
   getSessions,
+  initDaemonConnected,
   initSessions,
   removeSession,
   reopenRecent,
@@ -76,6 +78,12 @@ export default function App() {
   // ===== 会话 store 订阅 =====
   const sessions = useSyncExternalStore(subscribeSessions, getSessions);
   const activeId = useSyncExternalStore(subscribeSessions, getActiveId);
+  // daemon 连接真信号（M⑤h）：启动 invoke is_daemon_connected 拉一次写 store；
+  // 同一 notify 广播驱动重渲染（拉失败 / 非 Windows → false 降级）。
+  const daemonConnected = useSyncExternalStore(
+    subscribeSessions,
+    getDaemonConnected
+  );
 
   // ===== per-session 观测者（M3-ext，feed dot 状态 + aware-header）=====
   // ref Map：instanceId → SessionObserver。随 sessions list 增删同步 start/stop。
@@ -134,6 +142,7 @@ export default function App() {
       await initTerminalThemes();
       await initStyles();
       await initSessions(); // list_sessions → 构建缩点条 + active = 第一个
+      await initDaemonConnected(); // is_daemon_connected → daemon 点真信号（独立于会话数）
       if (cancelled) return;
       const current = getCurrentStyle();
       setTerminalTheme(current.terminal_theme_id);
@@ -403,7 +412,7 @@ export default function App() {
         {sessions.length === 0 && (
           <Home
             sessionCount={sessions.length}
-            daemonConnected={sessions.length > 0}
+            daemonConnected={daemonConnected}
             running={homeRunning}
             onNewDefault={handleCreate}
             onLaunch={handleLaunch}
@@ -414,7 +423,7 @@ export default function App() {
 
       <StatusBar
         paneCount={sessions.length}
-        daemonConnected={sessions.length > 0}
+        daemonConnected={daemonConnected}
         leaderArmed={leaderArmed}
       />
 
@@ -435,7 +444,7 @@ export default function App() {
         <Home
           overlay
           sessionCount={sessions.length}
-          daemonConnected={sessions.length > 0}
+          daemonConnected={daemonConnected}
           running={homeRunning}
           onNewDefault={handleCreate}
           onLaunch={handleLaunch}
