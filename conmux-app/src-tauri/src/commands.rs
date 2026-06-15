@@ -124,6 +124,49 @@ pub async fn is_process_exited(
     }
 }
 
+/// 在 PATH × PATHEXT 上解析 program → 首个存在文件路径（finding-3）。含路径分隔符则直接判该路径。
+#[cfg(windows)]
+fn resolve_on_path(program: &str) -> Option<std::path::PathBuf> {
+    use std::path::Path;
+    if program.contains('\\') || program.contains('/') {
+        let p = Path::new(program);
+        return if p.is_file() { Some(p.to_path_buf()) } else { None };
+    }
+    let path_var = std::env::var_os("PATH")?;
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    for dir in std::env::split_paths(&path_var) {
+        let bare = dir.join(program); // 原名（可能已含 .exe，或无后缀 shim 脚本）。
+        if bare.is_file() {
+            return Some(bare);
+        }
+        for ext in pathext.split(';').filter(|s| !s.is_empty()) {
+            let cand = dir.join(format!("{program}{ext}"));
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    None
+}
+
+/// 快捷启动 program 是否需 shell 包裹（finding-3）：解析到非 `.exe`（npm shim 的 .cmd /
+/// 无后缀脚本等）→ CreateProcess 不能直接跑 → 需 `cmd /c` 让 shell 解析。`.exe` / 显式
+/// .exe 后缀 / 未解析 → 直起（不动 wsl.exe/powershell.exe 等真 exe 的 M⑤b 直起行为）。
+#[cfg(windows)]
+fn needs_shell_wrap(program: &str) -> bool {
+    if program.to_ascii_lowercase().ends_with(".exe") {
+        return false;
+    }
+    match resolve_on_path(program) {
+        Some(p) => !p
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("exe"))
+            .unwrap_or(false),
+        None => false, // 未解析 → 不包裹（让自然失败，不掩盖拼写错）。
+    }
+}
+
 /// 新建会话（D-2 默认 powershell）：后端生成 paneId（D-3）→ Spawn → attach → 起读线程
 /// → 存 SessionHandle → 返回 SessionInfo（前端据此加入 store + setActive）。
 ///
@@ -143,6 +186,16 @@ pub async fn create_session(
         let pane_id = state.next_pane_id();
         let program = program.unwrap_or_else(|| crate::DEFAULT_PROGRAM.to_string());
         let args = args.unwrap_or_default();
+        // finding-3：claude 等 npm shim（.cmd/无后缀脚本）不能被 CreateProcess 直接 spawn
+        // （快捷启动 "claude" → 0 PANES）。解析到非 .exe → 包 `cmd /c` 让 shell 解析 shim；
+        // wsl.exe/powershell.exe 等真 exe 仍直起（不动 M⑤b 直起行为）。
+        let (program, args) = if needs_shell_wrap(&program) {
+            let mut wrapped = vec!["/c".to_string(), program];
+            wrapped.extend(args);
+            ("cmd".to_string(), wrapped)
+        } else {
+            (program, args)
+        };
         crate::spawn_session_into(&app, &state, &pane_id, &program, &args, cwd.as_deref())
     }
     #[cfg(not(windows))]
