@@ -1,5 +1,10 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+// 字体（@fontsource）：chrome 字标/Home 标题用 Fraunces（衬线编辑气质，B Paper 招牌）；
+// 终端 + chrome 读数用 JetBrains Mono Variable。全代码已按名引用，此前未加载 → fallback
+// Georgia/Cascadia/Consolas，此处补齐像素级保真（与 conflux 同款同版本）。
+import "@fontsource-variable/fraunces/index.css";
+import "@fontsource-variable/jetbrains-mono/index.css";
 import { setPtyEventChannels } from "@conmux/terminal-core";
 import App from "./App";
 import "./index.css";
