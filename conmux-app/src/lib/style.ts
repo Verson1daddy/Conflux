@@ -54,7 +54,7 @@ const FALLBACK_STYLE: Style = {
   id: DEFAULT_STYLE_ID,
   name: "纸感终端",
   appearance: "light",
-  terminal_theme_id: "b-light-paper",
+  terminal_theme_id: "b-paper-term",
   chrome: {
     surface_base: "#F6F1E7",
     surface_chrome: "#EDE5D4",

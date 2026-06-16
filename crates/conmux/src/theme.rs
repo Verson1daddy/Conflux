@@ -163,7 +163,51 @@ fn light(
     }
 }
 
-/// 内置六预置（样稿 ①–⑥ 原样）。
+/// bespoke 预置构造器（配色模型 A · 2026-06-16 用户裁决「全 bespoke」）。
+/// 与 `dark()`/`light()` 不同：所有 16 ANSI + cursor + selection 按风格**独立给值**，
+/// **不复用 `DarkSem`/`LightSem` 共享语义前景**——风格 = 一整套绑死的调色包，切风格
+/// 连背景/正文/ANSI/chrome 一起换，字色为各自背景手工调（F1 §2「每风格独立配色」硬约束）。
+#[allow(clippy::too_many_arguments)]
+fn bespoke(
+    id: &str,
+    name: &str,
+    appearance: ThemeAppearance,
+    background: &str,
+    foreground: &str,
+    cursor: &str,
+    selection: &str,
+    normal: [&str; 8],
+    bright: [&str; 8],
+) -> TerminalTheme {
+    TerminalTheme {
+        id: id.to_string(),
+        name: name.to_string(),
+        appearance,
+        background: background.to_string(),
+        foreground: foreground.to_string(),
+        cursor: cursor.to_string(),
+        selection_background: selection.to_string(),
+        black: normal[0].to_string(),
+        red: normal[1].to_string(),
+        green: normal[2].to_string(),
+        yellow: normal[3].to_string(),
+        blue: normal[4].to_string(),
+        magenta: normal[5].to_string(),
+        cyan: normal[6].to_string(),
+        white: normal[7].to_string(),
+        bright_black: bright[0].to_string(),
+        bright_red: bright[1].to_string(),
+        bright_green: bright[2].to_string(),
+        bright_yellow: bright[3].to_string(),
+        bright_blue: bright[4].to_string(),
+        bright_magenta: bright[5].to_string(),
+        bright_cyan: bright[6].to_string(),
+        bright_white: bright[7].to_string(),
+    }
+}
+
+/// 内置预置：样稿 ①–⑥ 原样（背景基调档，conflux Settings 选择器消费 + 可选风格）
+/// + 三 bespoke 风格配色（A/B/C 各自完整 16 色，配色模型 A）。共 9 个。
 pub fn builtin_terminal_themes() -> Vec<TerminalTheme> {
     vec![
         dark("b-dark-ink", "暗 · 蓝墨", "#1E2030", "#CAD3F5", "#363A4F", "#363A4F", "#B8C0E0", "#494D64", "#CAD3F5"),
@@ -172,6 +216,33 @@ pub fn builtin_terminal_themes() -> Vec<TerminalTheme> {
         dark("b-dark-warm-charcoal", "暗 · 暖炭", "#1B1A17", "#D8D4CC", "#322F2A", "#322E28", "#C9C4BB", "#4D4840", "#E8E4DC"),
         light("b-light-paper", "亮 · 暖纸白", "#FAF6F0", "#4C4F69", "#E9E3D9", "#5C5F77", "#BCC0CC", "#6C6F85", "#DCE0E8"),
         light("b-light-cool-white", "亮 · 中性冷白", "#F6F7F9", "#494C5E", "#E4E7EB", "#5A5D72", "#BABEC8", "#6A6D80", "#DADDE4"),
+        // ── 三 bespoke 风格配色（F1 §2 收口；配色模型 A，每风格 16 色独立为自身背景设计）──
+        bespoke(
+            "b-paper-term",
+            "纸感终端配色（bespoke · 暖纸墨色）",
+            ThemeAppearance::Light,
+            "#F6F1E7", "#2B2720", "#B5503C", "#E2D6BE",
+            ["#2B2720", "#B5503C", "#5E6B42", "#A9772B", "#3F6385", "#8A5A6E", "#4A7E80", "#6B6354"],
+            // bright_black/bright_yellow 压深保纸面正文/注释可读（红队 SHOULD-FIX，2026-06-16）；
+            // bright_white #BCB2A0 留低对比 = 亮主题填充色惯例（Latte/Solarized Light 同）。
+            ["#82796A", "#C85A44", "#6B7A4D", "#97681F", "#4A7299", "#9C667C", "#568E8F", "#BCB2A0"],
+        ),
+        bespoke(
+            "a-control-desk-term",
+            "监理台配色（bespoke · 石墨冷调）",
+            ThemeAppearance::Dark,
+            "#0E0F12", "#C7CBD1", "#3DD6C4", "#2C4A47",
+            ["#1A1D22", "#E5707A", "#6FD0A8", "#E0B057", "#6FAEE0", "#B39AE0", "#48C9C0", "#C7CBD1"],
+            ["#3A4049", "#F08A92", "#88E0BC", "#EDC273", "#8AC0EC", "#C4B0EC", "#62DAD2", "#E6E9EE"],
+        ),
+        bespoke(
+            "c-phosphor-term",
+            "微辉配色（bespoke · 多色荧光）",
+            ThemeAppearance::Dark,
+            "#0A1018", "#C6D2E0", "#7FDCA0", "#16324A",
+            ["#16202E", "#F0907A", "#6FD699", "#E6C27A", "#6FB6E0", "#C49AE0", "#5FD6C8", "#C6D2E0"],
+            ["#3A4C60", "#F5A892", "#9CECB8", "#EFD08F", "#8AC8EC", "#D4B0EC", "#7FE6DA", "#DCE7D8"],
+        ),
     ]
 }
 
@@ -180,8 +251,10 @@ pub fn builtin_terminal_themes() -> Vec<TerminalTheme> {
 // 架构决策（M③ F1 契约 §0）：`Style = ChromeTokens + 配对 TerminalTheme`（复合）。
 // - `TerminalTheme` 结构**零改动**（conflux 9 文件双链不破，MF-2 满足）。
 // - conmux 新增 chrome 语义 token（app 壳：缩点条 / 状态栏 / 窗框）+ Style 复合体。
-// - `Style.terminal_theme_id` 指向**现有 6 预置之一**（用户已验收样稿配色）——M③
-//   不臆造新终端 ANSI；bespoke A/C 终端配色列为后续 pass。
+// - `Style.terminal_theme_id` 指向 `builtin_terminal_themes()` 中的预置：M③ 初版借用
+//   样稿配色（不臆造 ANSI）；**bespoke pass（2026-06-16，配色模型 A）已收口**——三风格
+//   各指向自身的 bespoke 预置（`{a-control-desk,b-paper,c-phosphor}-term`），每套 16 色
+//   为自身背景独立设计，详见 `builtin_terminal_themes()` 的 bespoke 段 + F1 视觉契约 §2。
 // - conmux-app 消费整个 Style：chrome → CSS 变量；terminal_theme_id → 取对应
 //   TerminalTheme 喂 xterm（复用 terminal-core 的 setTerminalTheme/useTerminalTheme 链）。
 //   conflux 只用 TerminalTheme（不知道 Style 存在），故不受影响。
@@ -224,7 +297,7 @@ pub struct ChromeTokens {
 /// 一个完整风格 = chrome token 组 + 配对终端预置 id（M③ F1 契约 §0/§2）。
 ///
 /// `terminal_theme_id` 必须命中 `builtin_terminal_themes()` 中某个预置的 `id`
-/// （契约约束：A→b-dark-graphite / B→b-light-paper / C→b-dark-near-black）。
+/// （bespoke 配对：A→a-control-desk-term / B→b-paper-term / C→c-phosphor-term）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Style {
@@ -297,36 +370,36 @@ fn chrome(
 /// 默认 = B · Paper Terminal（`DEFAULT_STYLE_ID`）。
 pub fn builtin_styles() -> Vec<Style> {
     vec![
-        // A · Control Desk（dark）· terminal=b-dark-graphite
+        // A · Control Desk（dark）· terminal=a-control-desk-term（bespoke 石墨冷调）
         style(
             "a-control-desk",
             "监理台",
             ThemeAppearance::Dark,
-            "b-dark-graphite",
+            "a-control-desk-term",
             chrome(
                 "#0E0F12", "#131519", "#15171C", "#24272E", "#2A2E36", "#E6E9EE",
                 "#C7CBD1", "#8A909A", "#6B7079", "#3DD6C4", "#5BE3A0", "#E8B04B",
                 "#6B7079", "#3DD6C4",
             ),
         ),
-        // B · Paper Terminal（light，默认）· terminal=b-light-paper
+        // B · Paper Terminal（light，默认）· terminal=b-paper-term（bespoke 暖纸墨色）
         style(
             "b-paper",
             "纸感终端",
             ThemeAppearance::Light,
-            "b-light-paper",
+            "b-paper-term",
             chrome(
                 "#F6F1E7", "#EDE5D4", "#FBF7EE", "#DDD3C0", "#E6DECD", "#23201A",
                 "#2B2720", "#8A8170", "#A89E8A", "#B5503C", "#6E7B52", "#C08A2E",
                 "#B9AE98", "#B5503C",
             ),
         ),
-        // C · Phosphor（dark）· terminal=b-dark-near-black
+        // C · Phosphor（dark）· terminal=c-phosphor-term（bespoke 多色荧光）
         style(
             "c-phosphor",
             "微辉",
             ThemeAppearance::Dark,
-            "b-dark-near-black",
+            "c-phosphor-term",
             chrome(
                 "#0A1018", "#0F1827", "#101A2A", "#1E2A3C", "#243349", "#DCE7D8",
                 "#C6D2E0", "#6E7F94", "#5E7088", "#7FDCA0", "#7FDCA0", "#D6A85B",
@@ -343,11 +416,11 @@ mod tests {
     #[test]
     fn builtin_themes_have_unique_ids_and_contain_default() {
         let themes = builtin_terminal_themes();
-        assert_eq!(themes.len(), 6);
+        assert_eq!(themes.len(), 9, "6 样稿背景档 + 3 bespoke 风格配色");
         let mut ids: Vec<&str> = themes.iter().map(|t| t.id.as_str()).collect();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 6, "id 必须唯一");
+        assert_eq!(ids.len(), 9, "id 必须唯一");
         assert!(themes.iter().any(|t| t.id == DEFAULT_TERMINAL_THEME_ID));
     }
 
@@ -385,7 +458,7 @@ mod tests {
         for s in builtin_styles() {
             assert!(
                 theme_ids.contains(&s.terminal_theme_id.as_str()),
-                "风格 {} 的 terminal_theme_id={} 必须命中现有预置（不臆造新 ANSI）",
+                "风格 {} 的 terminal_theme_id={} 必须命中已注册预置（前端按 id 解析喂 xterm）",
                 s.id,
                 s.terminal_theme_id
             );
@@ -394,12 +467,44 @@ mod tests {
 
     #[test]
     fn styles_pair_with_contract_specified_presets() {
-        // F1 契约 §2 固定配对：A→graphite / B→paper / C→near-black。
+        // F1 契约 §2 bespoke 配对（配色模型 A）：A→a-control-desk-term /
+        // B→b-paper-term / C→c-phosphor-term（每风格指向自身 bespoke 配色）。
         let styles = builtin_styles();
         let by_id = |id: &str| styles.iter().find(|s| s.id == id).expect("style exists");
-        assert_eq!(by_id("a-control-desk").terminal_theme_id, "b-dark-graphite");
-        assert_eq!(by_id("b-paper").terminal_theme_id, "b-light-paper");
-        assert_eq!(by_id("c-phosphor").terminal_theme_id, "b-dark-near-black");
+        assert_eq!(by_id("a-control-desk").terminal_theme_id, "a-control-desk-term");
+        assert_eq!(by_id("b-paper").terminal_theme_id, "b-paper-term");
+        assert_eq!(by_id("c-phosphor").terminal_theme_id, "c-phosphor-term");
+    }
+
+    #[test]
+    fn bespoke_style_palettes_are_pairwise_distinct() {
+        // 配色模型 A 的硬约束：每风格 16 色独立设计——A 与 C 都是暗色但**不得再共享
+        // 同一套 ANSI**（修 bespoke 前 A/C 均借 Catppuccin Macchiato，red/green 相同）。
+        let themes = builtin_terminal_themes();
+        let theme_of = |style_id: &str| {
+            let tid = builtin_styles()
+                .into_iter()
+                .find(|s| s.id == style_id)
+                .expect("style exists")
+                .terminal_theme_id;
+            themes
+                .iter()
+                .find(|t| t.id == tid)
+                .expect("paired preset exists")
+                .clone()
+        };
+        let a = theme_of("a-control-desk");
+        let b = theme_of("b-paper");
+        let c = theme_of("c-phosphor");
+        // 用 (red, green, blue, background) 四元组作配色指纹，三风格两两不同。
+        let fp = |t: &TerminalTheme| (t.red.clone(), t.green.clone(), t.blue.clone(), t.background.clone());
+        assert_ne!(fp(&a), fp(&c), "A 监理台与 C 微辉不得共享 ANSI（bespoke 硬约束）");
+        assert_ne!(fp(&a), fp(&b), "A 与 B 配色须各异");
+        assert_ne!(fp(&b), fp(&c), "B 与 C 配色须各异");
+        // 强调色锚点：A 青、B 陶土红、C 荧光绿（cursor = accent，F1 §2）。
+        assert_eq!(a.cursor, "#3DD6C4");
+        assert_eq!(b.cursor, "#B5503C");
+        assert_eq!(c.cursor, "#7FDCA0");
     }
 
     #[test]
@@ -407,7 +512,7 @@ mod tests {
         let styles = builtin_styles();
         let paper = styles.iter().find(|s| s.id == "b-paper").unwrap();
         let json = serde_json::to_string(paper).unwrap();
-        assert!(json.contains("\"terminal_theme_id\":\"b-light-paper\""));
+        assert!(json.contains("\"terminal_theme_id\":\"b-paper-term\""));
         assert!(json.contains("\"surface_chrome\""));
         assert!(json.contains("\"accent_signal\""));
         assert!(json.contains("\"status_attention\""));
