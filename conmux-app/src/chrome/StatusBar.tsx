@@ -46,8 +46,13 @@ const StatusBar: FC<StatusBarProps> = ({
       boxSizing: "border-box",
     }}
   >
-    {/* 运行点（ellipse 7 status.running；降级时变 idle） */}
+    {/* 运行点（ellipse 7 status.running；降级时变 idle）。真心跳轮询驱动 daemonConnected
+        实时翻转——daemon 死亡 → idle 色。data-testid + aria-label 同 Home dot（a11y + 可测）。 */}
     <span
+      data-testid="conmux-daemon-dot"
+      data-connected={daemonConnected}
+      role="img"
+      aria-label={daemonConnected ? "daemon 已连接" : "daemon 未连接"}
       style={{
         width: 7,
         height: 7,

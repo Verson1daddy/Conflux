@@ -106,18 +106,54 @@ export function getDaemonConnected(): boolean {
   return daemonConnected;
 }
 
+/** 单次探活（不写 store）：invoke `is_daemon_connected`（后端真往返 ListThemes 探活）。
+ *  拉失败（命令缺失 / 非 Windows / 降级态 / daemon 死亡管道断）→ false（不抛）。 */
+async function fetchDaemonConnected(): Promise<boolean> {
+  try {
+    const ok = await invoke<boolean>("is_daemon_connected");
+    return ok === true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 启动拉取 daemon 连接态（真信号）：invoke `is_daemon_connected` 写 store + 广播。
  * 拉失败（命令缺失 / 非 Windows / 降级态）→ false（不抛，不阻塞 GUI）。幂等可重拉。
  */
 export async function initDaemonConnected(): Promise<void> {
-  try {
-    const ok = await invoke<boolean>("is_daemon_connected");
-    daemonConnected = ok === true;
-  } catch {
-    daemonConnected = false;
-  }
+  daemonConnected = await fetchDaemonConnected();
   notify();
+}
+
+/**
+ * daemon 真心跳（M⑤h 真信号 → 心跳升级）：每 `intervalMs` 轮询一次 `is_daemon_connected`
+ * （后端真往返 ListThemes 探活），daemon 中途死亡 → 管道断 → 点实时转灰。立即拉一次后起
+ * interval。**仅在变化时 notify**（避免每 tick 无谓重渲）。**inflight 守卫**：上一拉未回则
+ * 跳过本 tick（防 wedged daemon 下请求堆叠）。返回停止函数（清 interval + 抑制在途回写）。
+ */
+export function startDaemonHeartbeat(intervalMs = 5000): () => void {
+  let inflight = false;
+  let stopped = false;
+  const tick = async (): Promise<void> => {
+    if (inflight || stopped) return;
+    inflight = true;
+    try {
+      const next = await fetchDaemonConnected();
+      if (!stopped && next !== daemonConnected) {
+        daemonConnected = next;
+        notify();
+      }
+    } finally {
+      inflight = false;
+    }
+  };
+  void tick(); // 立即拉一次（取代单独 initDaemonConnected 的首拉）
+  const id = setInterval(() => void tick(), intervalMs);
+  return () => {
+    stopped = true;
+    clearInterval(id);
+  };
 }
 
 // ===== useSyncExternalStore 接口 =====

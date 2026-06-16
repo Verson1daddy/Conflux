@@ -33,7 +33,7 @@ import {
   getActiveId,
   getDaemonConnected,
   getSessions,
-  initDaemonConnected,
+  startDaemonHeartbeat,
   initSessions,
   removeSession,
   reopenRecent,
@@ -151,7 +151,6 @@ export default function App() {
       await initTerminalThemes();
       await initStyles();
       await initSessions(); // list_sessions → 构建缩点条 + active = 第一个
-      await initDaemonConnected(); // is_daemon_connected → daemon 点真信号（独立于会话数）
       if (cancelled) return;
       const current = getCurrentStyle();
       setTerminalTheme(current.terminal_theme_id);
@@ -160,6 +159,10 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  // ===== daemon 真心跳：周期轮询 is_daemon_connected（后端真往返探活），daemon
+  // 中途死亡 → 点实时转灰。首拉即时，挂载起停 interval（取代旧 initDaemonConnected 单拉）。
+  useEffect(() => startDaemonHeartbeat(5000), []);
 
   // 风格变化（含初次）→ 写 chrome CSS 变量 + 取配对 TerminalTheme 喂 xterm。
   useEffect(() => {

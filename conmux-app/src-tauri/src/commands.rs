@@ -276,15 +276,25 @@ pub async fn kill_session(
     }
 }
 
-/// daemon 控制连接是否就绪（M⑤h 真信号）：Windows 读 `state.control` 是否为 `Some`
-/// （connect_and_setup 成功才填，降级态 / KillServer 后为 None）。非 Windows 恒 false
-/// （无命名管道 / ConPTY，永降级）。比前端 `sessions.length>0` 代理诚实——0 会话时
-/// daemon 仍在跑（control 连接独立于会话），点应亮。永不抛（前端拉失败也按 false 降级）。
+/// daemon 控制连接是否**真活**（M⑤h 真信号 → 真心跳升级）：Windows 经长连控制连接发一次
+/// 最廉价的只读 op（`ListThemes`，daemon serve 回路真处理、无副作用）做活性探测——**真往返
+/// 成功**才 true。daemon 进程死亡 → 管道断 → `request` 返 Err → false，比旧 `control.is_some()`
+/// 诚实（连接对象存在 ≠ daemon 还活着）。前端按心跳间隔轮询此命令，daemon 中途死亡可在 UI
+/// 实时反映（点转灰）。降级态 / KillServer 后 control=None → false。非 Windows 恒 false
+/// （无命名管道 / ConPTY）。永不抛（前端拉失败也按 false 降级）。
+/// **已知局限**（与所有控制 op 同源）：`request` 阻塞读无超时，wedged-but-alive daemon 会阻塞
+/// 持锁——但主导失败态是进程死亡（管道断 → 干净 Err）；读超时 + 自动重连 + pane 重拉为后续项。
 #[tauri::command]
 pub async fn is_daemon_connected(state: State<'_, ConmuxState>) -> Result<bool, String> {
     #[cfg(windows)]
     {
-        Ok(lock(&state.control).is_some())
+        use conmux::protocol::MuxOp;
+        let mut guard = lock(&state.control);
+        let alive = match guard.as_mut() {
+            Some(control) => control.request(MuxOp::ListThemes).is_ok(),
+            None => false,
+        };
+        Ok(alive)
     }
     #[cfg(not(windows))]
     {
