@@ -106,15 +106,23 @@ export default function App() {
   // ref 镜像：XtermTerminal 轮询闭包读最新退出态（避免 stale 闭包）。
   const exitedRef = useRef<Set<string>>(new Set());
 
+  // 重连提示条（SF-3）：daemon 真死亡 → 自动重起新会话是静默的（dot 恒绿），给个短暂提示
+  // 让用户知道旧会话已没、已起新默认会话。gen 仅真重起（fresh daemon）时 +1，故它是诚实触发。
+  const [reconnectNotice, setReconnectNotice] = useState(false);
+
   // 重连代际变化（Part 2）：re-synced 会话是全新 pane → 清旧退出态（exit bar）+ 重启 observer
   // （旧 observer 持陈旧 exited/elapsed，否则 aware-header 会在一个活终端上显"已退出"）。下方
   // observer 同步 effect（deps sessions，重连时 sessions 也变）随即把它们重建为新观测者。
-  // 首挂载 gen=0：退出态/observer 本就空，全为 no-op；仅重连（gen 变）真正清。
+  // 首挂载 gen=0：退出态/observer 本就空，全为 no-op；仅重连（gen 变）真正清 + 提示（SF-3）。
   useEffect(() => {
     exitedRef.current.clear();
     setExitInfo(new Map());
     for (const [, obs] of observersRef.current) obs.stop();
     observersRef.current.clear();
+    if (daemonGen === 0) return; // 首挂载不提示
+    setReconnectNotice(true);
+    const t = setTimeout(() => setReconnectNotice(false), 4500);
+    return () => clearTimeout(t);
   }, [daemonGen]);
 
   // 同步 observers 与 sessions list：新会话起观测者 + 订阅 bump；移除的停掉。
@@ -403,6 +411,44 @@ export default function App() {
           boxSizing: "border-box",
         }}
       >
+        {/* 重连提示条（SF-3）：daemon 真死亡自愈后短暂提示（4.5s 自消），走 chrome 变量随风格。 */}
+        {reconnectNotice && (
+          <div
+            data-testid="conmux-reconnect-notice"
+            role="status"
+            style={{
+              position: "absolute",
+              top: 12,
+              left: "50%",
+              transform: "translateX(-50%)",
+              zIndex: 20,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "6px 14px",
+              background: "var(--cx-surface-raised)",
+              border: "1px solid var(--cx-line-hairline)",
+              borderRadius: 6,
+              fontFamily: "'JetBrains Mono', 'JetBrains Mono Variable', monospace",
+              fontSize: 11,
+              letterSpacing: 0.5,
+              color: "var(--cx-text-primary)",
+              boxShadow: "0 2px 10px rgba(0,0,0,0.14)",
+            }}
+          >
+            <span
+              aria-hidden="true"
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: "50%",
+                background: "var(--cx-accent-signal)",
+                flex: "0 0 auto",
+              }}
+            />
+            daemon 已重连 · 新建默认会话
+          </div>
+        )}
         {sessions.map((s) => {
           const isActive = s.instanceId === activeId;
           const sExit = exitInfo.get(s.instanceId) ?? null;
