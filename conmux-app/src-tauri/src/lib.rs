@@ -151,7 +151,12 @@ pub fn run_daemon() -> i32 {
 #[cfg(windows)]
 fn connect_and_setup(app: &tauri::AppHandle) -> Result<ConmuxState, String> {
     // 控制连接（D-3）：无 daemon 时自托管拉起 `<exe> daemon`（D-1）。这一次确证 daemon 在跑。
-    let control = Client::connect_or_spawn().map_err(|e| format!("连接 daemon 失败: {e}"))?;
+    let mut control = Client::connect_or_spawn().map_err(|e| format!("连接 daemon 失败: {e}"))?;
+    // 读超时（红队 SF-1）：wedged-but-alive daemon 下控制请求最多阻塞 5s 即返 Err，不再无限
+    // 持锁。Spawn/KillTree/ListPanes 等本地操作远快于 5s；心跳探活超时即判 daemon 不应答（死）。
+    // **不变量（红队 SF-2）**：所有 request-based 控制 op 须在 5s 内应答。未来若新增可能 >5s 的
+    // 慢 op（如 spawn 前同步跑慢外部程序），须为其单独放宽超时，否则会被误取消 → 连接 desync。
+    control.set_read_timeout(Some(std::time::Duration::from_secs(5)));
 
     let state = ConmuxState {
         control: Mutex::new(Some(control)),

@@ -282,8 +282,10 @@ pub async fn kill_session(
 /// 诚实（连接对象存在 ≠ daemon 还活着）。前端按心跳间隔轮询此命令，daemon 中途死亡可在 UI
 /// 实时反映（点转灰）。降级态 / KillServer 后 control=None → false。非 Windows 恒 false
 /// （无命名管道 / ConPTY）。永不抛（前端拉失败也按 false 降级）。
-/// **已知局限**（与所有控制 op 同源）：`request` 阻塞读无超时，wedged-but-alive daemon 会阻塞
-/// 持锁——但主导失败态是进程死亡（管道断 → 干净 Err）；读超时 + 自动重连 + pane 重拉为后续项。
+/// **超时治理**（红队 SF-1 已修）：控制连接已设 5s 读超时（lib.rs `connect_and_setup`），
+/// wedged-but-alive daemon 下 `request` 最多阻塞 5s 即返 Err，不再无限持锁；探活失败即丢弃
+/// 连接（下，避免超时半帧 desync 误用）。**自动重连 + pane 重拉为后续项（Part 2）**——当前丢弃
+/// 后控制命令降级返「未就绪」直至重启/重连。
 #[tauri::command]
 pub async fn is_daemon_connected(state: State<'_, ConmuxState>) -> Result<bool, String> {
     #[cfg(windows)]
@@ -294,6 +296,12 @@ pub async fn is_daemon_connected(state: State<'_, ConmuxState>) -> Result<bool, 
             Some(control) => control.request(MuxOp::ListThemes).is_ok(),
             None => false,
         };
+        // 探活失败（5s 读超时 / 管道断）→ 连接已死或可能 desync（超时后半帧残留），丢弃以免
+        // 后续控制命令误读残帧。重连 + pane 重拉 = Part 2 后续；当前丢弃后控制命令降级返
+        // 「未就绪」直至重启/重连，但不再无限阻塞、不再假亮（诚实降级）。
+        if !alive {
+            *guard = None;
+        }
         Ok(alive)
     }
     #[cfg(not(windows))]
