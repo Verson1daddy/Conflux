@@ -42,6 +42,42 @@ pub const ADAPTER_ID: &str = "pwsh";
 /// 新建会话默认程序（D-2：powershell；CLI 选择器 = 后续登记）。
 pub const DEFAULT_PROGRAM: &str = "powershell.exe";
 
+/// finding-2：PowerShell 默认不发 OSC7 → conmux aware-header cwd 恒「—」。给 conmux 自起的
+/// powershell（**无显式 args 时**）经 `-EncodedCommand` 注入 prompt 包裹器，每次提示吐一条
+/// OSC7（`ESC]7;file:///<path>ESC\`）让 cwd 实时上报。**只作用于 conmux 起的 powershell
+/// 会话**，不碰用户全局 $PROFILE；包裹现有 prompt（保留 conda "(base)" 等原貌）。用
+/// `-EncodedCommand`（UTF-16LE+base64）而非 `-Command`——base64 纯 ASCII，避 argv 引号地狱。
+// 路径**逐段 percent-encode**（红队 SF：osc7.ts 解析端 decodeURIComponent，发射端不编码会
+// 让含 `%`/空格的真路径被误解码成错目录）。按 [\\/] 拆段、各段 EscapeDataString、`/` 重接，
+// 盘符 "C:" → "C%3A"（解析端 decode 回 "C:"，再去前导 / 还原盘符路径）。
+const PS_OSC7_SETUP: &str = r#"$__op=$function:prompt; function global:prompt { $p=(Get-Location).ProviderPath; $e=($p -split '[\\/]' | ForEach-Object { [Uri]::EscapeDataString($_) }) -join '/'; [Console]::Write("$([char]27)]7;file:///$e$([char]27)\"); if($__op){& $__op}else{"PS $p> "} }"#;
+
+/// program 是否 PowerShell（按 basename 判，大小写无关）。
+fn is_powershell(program: &str) -> bool {
+    let base = std::path::Path::new(program)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    matches!(
+        base.as_str(),
+        "powershell" | "powershell.exe" | "pwsh" | "pwsh.exe"
+    )
+}
+
+/// conmux 自起 powershell 的 OSC7 注入 args：`-NoExit -EncodedCommand <base64(UTF-16LE setup)>`。
+fn powershell_osc7_args() -> Vec<String> {
+    let utf16: Vec<u8> = PS_OSC7_SETUP
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    vec![
+        "-NoExit".to_string(),
+        "-EncodedCommand".to_string(),
+        BASE64.encode(&utf16),
+    ]
+}
+
 // ===== emit 通道（与前端 setPtyEventChannels 对齐）=====
 
 const PTY_OUTPUT_CHANNEL: &str = "conmux://pty-output";
@@ -195,6 +231,14 @@ pub(crate) fn spawn_session_into(
 
     let now_ms = now_millis();
 
+    // finding-2：conmux 自起 powershell（无显式 args 时）注入 OSC7 prompt 包裹器，让 cwd 实时
+    // 上报（aware-header B1 不再恒「—」）。用户给了显式 args 则尊重原样（不注入，避冲突）。
+    let effective_args: Vec<String> = if args.is_empty() && is_powershell(program) {
+        powershell_osc7_args()
+    } else {
+        args.to_vec()
+    };
+
     // Spawn（经长连控制连接）。pane_id == instanceId。
     {
         let mut guard = lock(&state.control);
@@ -205,7 +249,7 @@ pub(crate) fn spawn_session_into(
             pane_id: PaneId(pane_id.to_string()),
             command: CommandSpec {
                 program: program.to_string(),
-                args: args.to_vec(),
+                args: effective_args,
                 cwd: cwd.map(|c| c.to_string()),
                 env: Vec::new(),
             },
@@ -396,4 +440,46 @@ fn setup_state(app: &tauri::AppHandle) -> ConmuxState {
 fn setup_state(_app: &tauri::AppHandle) -> ConmuxState {
     eprintln!("[conmux-app] 非 Windows：daemon 客户端不可用，进入降级态。");
     ConmuxState::degraded()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_powershell_matches_by_basename_case_insensitive() {
+        assert!(is_powershell("powershell.exe"));
+        assert!(is_powershell("powershell"));
+        assert!(is_powershell("POWERSHELL.EXE"));
+        assert!(is_powershell("pwsh.exe"));
+        assert!(is_powershell(
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+        ));
+        assert!(!is_powershell("wsl.exe"));
+        assert!(!is_powershell("cmd.exe"));
+        assert!(!is_powershell("claude"));
+    }
+
+    #[test]
+    fn powershell_osc7_args_encode_decode_roundtrip() {
+        let args = powershell_osc7_args();
+        assert_eq!(args.len(), 3);
+        assert_eq!(args[0], "-NoExit");
+        assert_eq!(args[1], "-EncodedCommand");
+        // base64(UTF-16LE) → 解回原 setup 脚本（PowerShell -EncodedCommand 同款编码）。
+        let bytes = BASE64.decode(&args[2]).expect("base64 decodes");
+        assert_eq!(bytes.len() % 2, 0, "UTF-16LE 必偶数字节");
+        let u16s: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        let decoded = String::from_utf16(&u16s).expect("valid UTF-16");
+        assert_eq!(decoded, PS_OSC7_SETUP);
+        // setup 含 OSC7 发射（]7;file://）+ prompt 包裹 + 原 prompt 保留（& $__op）+ 路径
+        // 逐段 percent-encode（红队 SF：避 osc7.ts decode 端误解码）。
+        assert!(decoded.contains("]7;file:///"));
+        assert!(decoded.contains("function global:prompt"));
+        assert!(decoded.contains("& $__op"));
+        assert!(decoded.contains("EscapeDataString"));
+    }
 }
