@@ -45,6 +45,7 @@ import {
   type RecentEntry,
 } from "../lib/sessions";
 import type { SessionStatus } from "./session-status";
+import { ConmuxBrandMark } from "./ConmuxBrandMark";
 
 const MONO = "'JetBrains Mono', 'JetBrains Mono Variable', monospace";
 const SERIF = "'Fraunces', 'Fraunces Variable', Georgia, serif";
@@ -346,6 +347,9 @@ const Home: FC<HomeProps> = ({
       >
         <span
           style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 7,
             fontFamily: SERIF,
             fontStyle: "italic",
             fontSize: 20,
@@ -354,6 +358,7 @@ const Home: FC<HomeProps> = ({
             letterSpacing: 0.2,
           }}
         >
+          <ConmuxBrandMark size={19} color="var(--cx-text-primary)" />
           conmux
         </span>
         <span

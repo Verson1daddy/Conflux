@@ -119,7 +119,7 @@ describe("TopIslandPopover lifecycle", () => {
     expect(
       renderer.root.findAll(
         (node) =>
-          node.type === "img" &&
+          node.type === "svg" &&
           typeof node.props.className === "string" &&
           node.props.className.includes("conflux-brand-mark")
       ).length

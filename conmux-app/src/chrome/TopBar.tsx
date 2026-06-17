@@ -18,6 +18,7 @@
 
 import { useState, type FC } from "react";
 import type { SessionState, SessionStatus } from "./session-status";
+import { ConmuxBrandMark } from "./ConmuxBrandMark";
 
 const STATUS_VAR: Record<SessionStatus, string> = {
   running: "var(--cx-status-running)",
@@ -208,20 +209,22 @@ const TopBar: FC<TopBarProps> = ({
       boxSizing: "border-box",
     }}
   >
-    {/* conmux 字标（Fraunces italic 14 accent） */}
-    <span
-      style={{
-        fontFamily: "'Fraunces', 'Fraunces Variable', Georgia, serif",
-        fontStyle: "italic",
-        fontSize: 14,
-        fontWeight: 500,
-        color: "var(--cx-accent-signal)",
-        letterSpacing: 0.2,
-        flex: "0 0 auto",
-      }}
-    >
-      conmux
-    </span>
+    {/* conmux 字标（花瓣自适应对比色 + "conmux" Fraunces italic accent，无背景） */}
+    <div style={{ display: "flex", alignItems: "center", gap: 6, flex: "0 0 auto" }}>
+      <ConmuxBrandMark size={15} color="var(--cx-text-primary)" />
+      <span
+        style={{
+          fontFamily: "'Fraunces', 'Fraunces Variable', Georgia, serif",
+          fontStyle: "italic",
+          fontSize: 14,
+          fontWeight: 500,
+          color: "var(--cx-accent-signal)",
+          letterSpacing: 0.2,
+        }}
+      >
+        conmux
+      </span>
+    </div>
 
     {/* 会话项序列（裸点 / 带名 pill / hover 展开 / attention 脉冲）。 */}
     <div
