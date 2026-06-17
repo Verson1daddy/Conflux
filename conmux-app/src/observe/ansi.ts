@@ -23,3 +23,22 @@ const SHORT_RE = new RegExp(`${ESC}[@-Z\\\\\\]^_a-z=><]`, "g");
 export function stripAnsi(s: string): string {
   return s.replace(OSC_RE, "").replace(CSI_RE, "").replace(SHORT_RE, "");
 }
+
+// OSC 窗口/图标标题：ESC ] 0|1|2 ; <title> (BEL | ESC\)。OSC 7（cwd）的 7 不在 [0-2]，不误收。
+// finding-1（2026-06-17）：alt-screen claude 不在 scrollback 留可嗅探 banner，但终端标题恒设
+// "✳ Claude Code"（版本稳定、survive alt-screen）——用它嗅探 claude（见 session-observer）。
+const OSC_TITLE_RE = new RegExp(
+  `${ESC}\\]([0-2]);([^${BEL}${ESC}]*)(?:${BEL}|${ESC}\\\\)`,
+  "g"
+);
+
+/** 提取 buffer 内**最后一个** OSC 0/1/2 标题（窗口/图标标题）payload，无则 null。 */
+export function extractOscTitle(s: string): string | null {
+  OSC_TITLE_RE.lastIndex = 0;
+  let last: string | null = null;
+  let m: RegExpExecArray | null;
+  while ((m = OSC_TITLE_RE.exec(s)) !== null) {
+    last = m[2];
+  }
+  return last;
+}

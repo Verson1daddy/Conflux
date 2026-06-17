@@ -8,7 +8,7 @@
 // done+detail 抽取 / 折叠 running / 诚实空 / general-purpose 连字符。只测不改解析逻辑。
 
 import { describe, expect, it } from "vitest";
-import { extractSubagents } from "./claude";
+import { extractSubagents, sniffClaude } from "./claude";
 
 describe("extractSubagents", () => {
   it("matches a single committed dispatch line (prose excluded)", () => {
@@ -91,5 +91,32 @@ describe("extractSubagents", () => {
 
   it("drops dispatch lines with empty description", () => {
     expect(extractSubagents("● Explore()\n")).toEqual([]);
+  });
+});
+
+describe("sniffClaude (finding-1：alt-screen OSC 标题信号)", () => {
+  it("不从 alt-screen scrollback 单独命中（logo 被光标定位打散为 'ClaudeCode' 无空格）", () => {
+    // 复现 finding-1：当前 claude 全 alt-screen，banner 在 OSC 标题被 strip、logo 打散无空格、
+    // "Using Opus" 不落 scrollback——纯去 ANSI 文本里没有可嗅探标记。
+    const altScreenStripped =
+      "ClaudeCode\n(base) PS C:\\Users\\zwm>\nsome program output";
+    expect(sniffClaude(altScreenStripped)).toBe(false);
+  });
+
+  it("OSC 终端标题 'Claude Code' 进入嗅探文本即命中（finding-1 的修复信号）", () => {
+    // observer 把 OSC 标题（"✳ Claude Code"，带空格）追加进嗅探文本。
+    const withTitle = "ClaudeCode\n(base) PS>\n✳ Claude Code";
+    expect(sniffClaude(withTitle)).toBe(true);
+  });
+
+  it("经典 banner 标记仍命中（Using Opus / Welcome to Claude Code）", () => {
+    expect(sniffClaude("Using Opus 4.8 (1M context)")).toBe(true);
+    expect(sniffClaude("Welcome to Claude Code")).toBe(true);
+  });
+
+  it("普通 shell scrollback 不误命中", () => {
+    expect(sniffClaude("(base) PS C:\\Users\\zwm> git status\nnothing to commit")).toBe(
+      false
+    );
   });
 });

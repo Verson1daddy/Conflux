@@ -23,7 +23,7 @@ import { type AwareState, initialAwareState } from "./types";
 import type { AwareStatePatch } from "./parsers/types";
 import { ParserRegistry } from "./registry";
 import { parseOsc7Cwd } from "./osc7";
-import { stripAnsi } from "./ansi";
+import { stripAnsi, extractOscTitle } from "./ansi";
 import {
   type JsonlAccum,
   initJsonlAccum,
@@ -226,8 +226,16 @@ export class SessionObserver {
       dirty = true;
     }
 
-    // parser 升级嗅探（单向粘性）——在去 ANSI 文本上嗅探。
-    const upgraded = this.registry.maybeUpgrade(this.strippedBuffer);
+    // parser 升级嗅探（单向粘性）——在去 ANSI 文本上嗅探。finding-1（2026-06-17）：alt-screen
+    // claude 不在 scrollback 留可嗅探 banner，但 OSC 终端标题恒为 "✳ Claude Code"（版本稳定、
+    // survive alt-screen）。把 raw 缓冲里的 OSC 标题追加进嗅探文本让 claude sniff 命中——
+    // scrollback 的 logo 被光标定位打散成 "ClaudeCode"（无空格），故 "Claude Code" 标记基本
+    // 只 OSC 标题命中（非 claude 会话需字面 echo "Claude Code" 才误报，可接受）。
+    const oscTitle = extractOscTitle(this.rawBuffer);
+    const sniffInput = oscTitle
+      ? `${this.strippedBuffer}\n${oscTitle}`
+      : this.strippedBuffer;
+    const upgraded = this.registry.maybeUpgrade(sniffInput);
     const parser = this.registry.active;
     if (upgraded) {
       next.parserId = parser.id;

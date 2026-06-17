@@ -32,6 +32,11 @@ const CLAUDE_SNIFF_MARKERS: RegExp[] = [
   // 最可靠；用它 + "(1M context)" 兜底嗅探（同行 model 正则随即可提取）。
   /\bUsing\s+(?:Opus|Sonnet|Haiku)\s+[\d.]/i,
   /\(1M context\)/i,
+  // finding-1（2026-06-17）：当前 claude 全 alt-screen TUI，上面的 scrollback 标记多不中
+  // （banner 在 OSC 标题被 strip、logo 被光标定位打散成 "ClaudeCode" 无空格）。但 OSC 终端
+  // 标题恒为 "✳ Claude Code"（版本稳定、survive alt-screen）——observer 把 OSC 标题追加进嗅探
+  // 文本，此带空格标记命中标题（scrollback 打散的 "ClaudeCode" 不含空格故不误中）。
+  /\bClaude Code\b/i,
 ];
 
 export function sniffClaude(recentOutput: string): boolean {
