@@ -370,6 +370,7 @@ pub fn run() {
             commands::list_styles,
             commands::create_session,
             commands::list_sessions,
+            commands::reconnect_daemon,
             commands::kill_session,
             commands::read_claude_jsonl,
             commands::list_available_skills,

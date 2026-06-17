@@ -32,6 +32,7 @@ import {
   createSession,
   getActiveId,
   getDaemonConnected,
+  getDaemonGeneration,
   getSessions,
   startDaemonHeartbeat,
   initSessions,
@@ -90,6 +91,8 @@ export default function App() {
     subscribeSessions,
     getDaemonConnected
   );
+  // daemon 重连代际（Part 2）：每次自动重连 +1，编进终端 key 强制重挂载（接新 pane 流）。
+  const daemonGen = useSyncExternalStore(subscribeSessions, getDaemonGeneration);
 
   // ===== per-session 观测者（M3-ext，feed dot 状态 + aware-header）=====
   // ref Map：instanceId → SessionObserver。随 sessions list 增删同步 start/stop。
@@ -102,6 +105,17 @@ export default function App() {
   );
   // ref 镜像：XtermTerminal 轮询闭包读最新退出态（避免 stale 闭包）。
   const exitedRef = useRef<Set<string>>(new Set());
+
+  // 重连代际变化（Part 2）：re-synced 会话是全新 pane → 清旧退出态（exit bar）+ 重启 observer
+  // （旧 observer 持陈旧 exited/elapsed，否则 aware-header 会在一个活终端上显"已退出"）。下方
+  // observer 同步 effect（deps sessions，重连时 sessions 也变）随即把它们重建为新观测者。
+  // 首挂载 gen=0：退出态/observer 本就空，全为 no-op；仅重连（gen 变）真正清。
+  useEffect(() => {
+    exitedRef.current.clear();
+    setExitInfo(new Map());
+    for (const [, obs] of observersRef.current) obs.stop();
+    observersRef.current.clear();
+  }, [daemonGen]);
 
   // 同步 observers 与 sessions list：新会话起观测者 + 订阅 bump；移除的停掉。
   useEffect(() => {
@@ -394,7 +408,7 @@ export default function App() {
           const sExit = exitInfo.get(s.instanceId) ?? null;
           return (
             <div
-              key={s.instanceId}
+              key={`${s.instanceId}:${daemonGen}`}
               data-testid={`conmux-pane-${s.instanceId}`}
               data-active={isActive ? "true" : "false"}
               style={{

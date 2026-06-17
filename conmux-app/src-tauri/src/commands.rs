@@ -205,34 +205,125 @@ pub async fn create_session(
     }
 }
 
+/// 收集当前会话快照（list_sessions / reconnect_daemon 共用）。稳定排序（HashMap 迭代序不定）：
+/// default 优先，其余按 instanceId 升序——缩点条顺序确定、前端 active 顺延可预测。
+#[cfg(windows)]
+fn collect_sessions(state: &ConmuxState) -> Vec<SessionInfo> {
+    let guard = lock(&state.sessions);
+    let mut out: Vec<SessionInfo> = guard
+        .iter()
+        .map(|(id, h)| SessionInfo {
+            instance_id: id.clone(),
+            adapter_id: h.adapter_id.clone(),
+            exited: h.exited.load(Ordering::SeqCst),
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        let rank = |id: &str| if id == crate::DEFAULT_PANE_ID { 0 } else { 1 };
+        rank(&a.instance_id)
+            .cmp(&rank(&b.instance_id))
+            .then_with(|| a.instance_id.cmp(&b.instance_id))
+    });
+    out
+}
+
 /// 列出当前所有会话（前端启动拉取构建缩点条）。返回 instanceId/adapterId/exited。
 #[tauri::command]
 pub async fn list_sessions(state: State<'_, ConmuxState>) -> Result<Vec<SessionInfo>, String> {
     #[cfg(windows)]
     {
-        let guard = lock(&state.sessions);
-        let mut out: Vec<SessionInfo> = guard
-            .iter()
-            .map(|(id, h)| SessionInfo {
-                instance_id: id.clone(),
-                adapter_id: h.adapter_id.clone(),
-                exited: h.exited.load(Ordering::SeqCst),
-            })
-            .collect();
-        // 稳定排序（HashMap 迭代序不定）：default 优先，其余按 instanceId 升序——
-        // 缩点条顺序确定、前端 active 顺延可预测。
-        out.sort_by(|a, b| {
-            let rank = |id: &str| if id == crate::DEFAULT_PANE_ID { 0 } else { 1 };
-            rank(&a.instance_id)
-                .cmp(&rank(&b.instance_id))
-                .then_with(|| a.instance_id.cmp(&b.instance_id))
-        });
-        Ok(out)
+        Ok(collect_sessions(&state))
     }
     #[cfg(not(windows))]
     {
         let _ = &state;
         Ok(Vec::new())
+    }
+}
+
+/// daemon 自动重连（Part 2）：控制连接被探活丢弃（daemon 死/wedge）后自愈——重建控制连接、
+/// 据 daemon 实际 pane 列表恢复会话，让控制面不需重启即可用。前端心跳探到掉线时调用。
+///
+/// 流程（Windows）：
+/// - control 仍 Some（已连 / 别处已重连）→ 不动，幂等返当前会话（防抢占健康连接）。
+/// - control None → `connect_or_spawn`（连存活 daemon 或拉起新）+ 设 5s 读超时 → `ListPanes`
+///   探 daemon 真实 pane：
+///     · **空**（fresh daemon——旧 pane 已随 daemon 死亡、attach 读线程已 emit Exited）→ 清本地
+///       会话表 + 起 fresh 默认会话（恢复到可用态）。
+///     · **非空**（survivor daemon）→ 不清不重起（旧 attach 连接各自管生命周期），仅恢复控制——
+///       **绝不误清仍存活的会话**（5s 超时丢连接后 daemon 其实没死的边界）。
+///     · 探测失败（罕见，刚连上）→ 保守按非空处理（宁可少恢复，不误清）。
+/// 返回恢复后会话列表，前端据此 re-sync store + bump generation 强制终端重挂载（接新 pane 流）。
+/// `reconnect_daemon` 应答：`respawned` = 是否真重起了新 pane（fresh daemon）。前端据此决定
+/// 是否 bump generation 强制终端重挂载——**survivor（daemon 没死、会话仍活）不重挂载，保住
+/// scrollback、不打断**（红队 SF-2）；仅 fresh daemon 重起才需重挂载接新 pane 流。
+#[derive(serde::Serialize)]
+pub struct ReconnectResult {
+    pub respawned: bool,
+    pub sessions: Vec<SessionInfo>,
+}
+
+#[tauri::command]
+pub async fn reconnect_daemon(
+    #[allow(unused_variables)] app: tauri::AppHandle,
+    state: State<'_, ConmuxState>,
+) -> Result<ReconnectResult, String> {
+    #[cfg(windows)]
+    {
+        use conmux::client::Client;
+        use conmux::protocol::{MuxOp, MuxPayload};
+
+        // 已连接 → 幂等返回（防抢占健康连接），未重起。
+        let connected = lock(&state.control).is_some();
+        if connected {
+            return Ok(ReconnectResult {
+                respawned: false,
+                sessions: collect_sessions(&state),
+            });
+        }
+
+        // 重建控制连接（连存活 / 拉起新 daemon）+ 设读超时（同 connect_and_setup）。
+        let mut control =
+            Client::connect_or_spawn().map_err(|e| format!("重连 daemon 失败: {e}"))?;
+        control.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+
+        // 探 daemon 真实 pane（在本地 control 上，未入 state，无持锁）。
+        let pane_count = match control.request(MuxOp::ListPanes) {
+            Ok(MuxPayload::Panes(p)) => p.len(),
+            _ => usize::MAX, // 探测失败 → 保守按非空（不误清存活会话）。
+        };
+
+        // 装回控制连接。
+        *lock(&state.control) = Some(control);
+
+        // fresh daemon（无 pane）：旧会话已死 → 清表 + 起 fresh 默认会话。
+        let respawned = pane_count == 0;
+        if respawned {
+            lock(&state.sessions).clear();
+            if let Err(e) = crate::spawn_session_into(
+                &app,
+                &state,
+                crate::DEFAULT_PANE_ID,
+                crate::DEFAULT_PROGRAM,
+                &[],
+                None,
+            ) {
+                // SF-1 回滚：spawn 失败若留 control=Some，下次心跳见 alive 不再重连 → 卡死在
+                // 零会话绿点态。丢弃控制 → 下一 tick 重入重连重试（不留半死态）。
+                *lock(&state.control) = None;
+                return Err(format!("重连后初始会话创建失败: {e}"));
+            }
+        }
+
+        Ok(ReconnectResult {
+            respawned,
+            sessions: collect_sessions(&state),
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (&app, &state);
+        Err("conmux daemon 客户端仅支持 Windows".to_string())
     }
 }
 

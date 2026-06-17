@@ -62,6 +62,9 @@ let activeId: string | null = null;
  * 0 会话时 daemon 仍在跑（control 连接独立于会话），点应亮。
  */
 let daemonConnected = false;
+/** daemon 重连代际（Part 2）：每次自动重连 +1。前端把它编进终端 key 强制重挂载——重连后
+ *  pane 是新的（同 id 新流），不重挂载会复用旧死终端的订阅与缓冲。 */
+let daemonGeneration = 0;
 const listeners = new Set<() => void>();
 
 /** 默认会话 paneId（后端 DEFAULT_PANE_ID）；用于派生展示名。 */
@@ -106,6 +109,11 @@ export function getDaemonConnected(): boolean {
   return daemonConnected;
 }
 
+/** daemon 重连代际（Part 2）：终端 key 编入它，每次自动重连 +1 强制终端重挂载。 */
+export function getDaemonGeneration(): number {
+  return daemonGeneration;
+}
+
 /** 单次探活（不写 store）：invoke `is_daemon_connected`（后端真往返 ListThemes 探活）。
  *  拉失败（命令缺失 / 非 Windows / 降级态 / daemon 死亡管道断）→ false（不抛）。 */
 async function fetchDaemonConnected(): Promise<boolean> {
@@ -132,6 +140,42 @@ export async function initDaemonConnected(): Promise<void> {
  * interval。**仅在变化时 notify**（避免每 tick 无谓重渲）。**inflight 守卫**：上一拉未回则
  * 跳过本 tick（防 wedged daemon 下请求堆叠）。返回停止函数（清 interval + 抑制在途回写）。
  */
+/** 据后端会话列表重建 store（重连后用）。保留当前 active（若仍在列表），否则取第一个。 */
+function resyncSessionsFromList(list: SessionInfo[]): void {
+  sessions = list.map(toEntry);
+  if (!sessions.some((s) => s.instanceId === activeId)) {
+    activeId = sessions.length > 0 ? sessions[0].instanceId : null;
+  }
+}
+
+/**
+ * daemon 自动重连（Part 2）：invoke `reconnect_daemon`（后端重建控制连接 + 据 daemon 真实
+ * pane 恢复会话）→ 据返回列表 re-sync store + **bump generation**（前端据此强制终端重挂载，
+ * 接新 pane 流）+ daemonConnected=true。失败 → false（不抛，下一 tick 再试）。
+ */
+export async function tryReconnectDaemon(): Promise<boolean> {
+  try {
+    const res = await invoke<{ respawned: boolean; sessions: SessionInfo[] }>(
+      "reconnect_daemon",
+    );
+    resyncSessionsFromList(res.sessions);
+    // 仅 fresh daemon 真重起新 pane 才 bump generation 强制终端重挂载（接新流）；survivor
+    // （daemon 没死、会话仍活）不重挂载——保住 scrollback、不打断终端（红队 SF-2）。
+    if (res.respawned) daemonGeneration += 1;
+    daemonConnected = true;
+    notify();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * daemon 真心跳（M⑤h → 心跳 → 自愈）：每 `intervalMs` 轮询 `is_daemon_connected`（后端真往返
+ * 探活）。**活** → 点亮。**掉线** → 自动 `tryReconnectDaemon`（重建控制 + 恢复会话 + bump
+ * generation）；重连失败才置 false。立即拉一次后起 interval；**仅变化时 notify**；**inflight
+ * 守卫**（上一拉/重连未回则跳过本 tick）。返回停止函数（清 interval + 抑制在途回写）。
+ */
 export function startDaemonHeartbeat(intervalMs = 5000): () => void {
   let inflight = false;
   let stopped = false;
@@ -139,9 +183,18 @@ export function startDaemonHeartbeat(intervalMs = 5000): () => void {
     if (inflight || stopped) return;
     inflight = true;
     try {
-      const next = await fetchDaemonConnected();
-      if (!stopped && next !== daemonConnected) {
-        daemonConnected = next;
+      const alive = await fetchDaemonConnected();
+      if (alive) {
+        if (!stopped && daemonConnected !== true) {
+          daemonConnected = true;
+          notify();
+        }
+        return;
+      }
+      // 掉线：自动重连。成功 → tryReconnectDaemon 内部已 set true + re-sync + bump gen + notify。
+      const reconnected = await tryReconnectDaemon();
+      if (!stopped && !reconnected && daemonConnected !== false) {
+        daemonConnected = false;
         notify();
       }
     } finally {
