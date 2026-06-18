@@ -9,7 +9,6 @@
 //   tokens     ← 多数 claude 版本**不**把 token 计数打到终端 → 大概率 null（可接受）。
 //                仅当输出真出现明确的 "N tokens" / "N/M tokens" 才解析。
 //   contextPct ← 仅当真打印 "NN% context" / "context left: NN%" 才解析；否则 null。
-//   cost       ← 本 parser **从不**输出 cost（终端不打印、无 API）；observer 恒置 null。
 //   activity   ← 仅当真打印可识别状态动词（思考 / 执行 / 等待批准等）才提取；
 //                泛化 spinner（"esc to interrupt"）→ running 但 activity 仍可 null
 //                （observer 据 status 泛化文案，不在此编具体活动）。

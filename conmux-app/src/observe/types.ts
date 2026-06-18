@@ -11,7 +11,7 @@
 //   model    ← agent banner 解析；解析不到 = null
 //   tokens*  ← agent 真打印才解析；多数 claude 版本不打印 → 大概率 null（可接受）
 //   contextPct← 同 tokens（真打印才解析）
-//   cost     ← 无来源（需 provider 凭据 / API）→ v1 恒 null（UI 显 `—`，不接、不算、不编）
+//   （费用 / $ 成本：用户决策**永久不做**——订阅边际≈$0，显金额误导。字段已删，勿再加回。）
 
 /** pane 生命周期 / 活跃度态（状态点语义）。 */
 export type ObserveStatus = "running" | "idle" | "exited";
@@ -67,11 +67,6 @@ export interface AwareState {
   /** 上下文占用百分比（agent 真打印才解析）；否则 null。 */
   contextPct: number | null;
   /**
-   * cost：M⑥ 砍（订阅边际≈$0，显金额误导）。类型保留 `null` 减小 diff，
-   * AwareHeader B6 已移除 cost slot 渲染（D-4）。
-   */
-  cost: null;
-  /**
    * 本会话累计输入处理 tokens（Σ over 真实 assistant 消息的 input + cache_read +
    * cache_creation）。来源 = Claude Code 会话 JSONL（M⑥ §3）；无真实消息 → null。
    */
@@ -111,7 +106,6 @@ export function initialAwareState(): AwareState {
     tokensUsed: null,
     tokensTotal: null,
     contextPct: null,
-    cost: null,
     sessionTokensIn: null,
     sessionTokensOut: null,
     activeWorkflow: null,

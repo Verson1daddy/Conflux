@@ -9,7 +9,7 @@
 //
 // 诚实（§0）：
 //   - 所有 LLM 元数据只由 parser 从真打印内容写入；observer 不编。
-//   - cost 恒 null（不接、不算、不编）。
+//   - 费用 / $：用户决策永久不做（字段已删；订阅边际≈$0 显金额误导）。
 //   - cwd 仅 OSC7 真解析到才更新（本 demo spawn cwd=None → 初始 null）。
 //   - status：最近 IDLE_MS 内有输出 = running，否则 idle；退出 = exited（不臆造活跃）。
 

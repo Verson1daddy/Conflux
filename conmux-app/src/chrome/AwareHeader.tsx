@@ -7,7 +7,7 @@
 //   B1（8g1rN）：状态点(status.*) + 「{活动 ?? 泛化} · {耗时} · {cwd ?? —}」JetBrains Mono 12 text.content
 //   B6（4ai9a）：ctx 标签(text.muted) + 进度条(contextPct) + {pct% / —} · {model / —} ·
 //                {tokens / —} · Σ↑/Σ↓（来自 JSONL 富观测，M⑥）
-//   M⑥ 富观测（claude 会话）：cost slot 已退役（D-4，订阅边际≈$0 不显金额误导）；ctx/tokens/
+//   M⑥ 富观测（claude 会话）：不显费用/$（用户决策永久不做，订阅边际≈$0 误导）；ctx/tokens/
 //     model 由 JSONL 权威源喂真值；新增 activeWorkflow / recentSkill / Σ↑Σ↓ / skills 计数。
 //   非 agent（shell）态：B6 整行淡化 + 标「非 agent 会话」（无 LLM 元数据可诚实展示）。
 //
@@ -121,7 +121,7 @@ const B6Row: FC<{ s: AwareState; skillCount: number | null }> = ({
         ? `${s.tokensUsed.toLocaleString()}/${s.tokensTotal.toLocaleString()} tok`
         : `${s.tokensUsed.toLocaleString()} tok`
       : EM_DASH;
-  // M⑥：cost slot 退役（D-4，订阅边际≈$0 不显金额误导）；改显 Σ↑/Σ↓ 会话累计（JSONL 真值）。
+  // 不显费用/$（用户决策永久不做）；改显 Σ↑/Σ↓ 会话累计（JSONL 真值）。
   const sessionText =
     s.sessionTokensIn != null && s.sessionTokensOut != null
       ? `Σ↑${formatCompact(s.sessionTokensIn)} ↓${formatCompact(s.sessionTokensOut)}`
