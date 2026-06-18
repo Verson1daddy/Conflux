@@ -18,6 +18,11 @@ export interface SessionState {
   status: SessionStatus;
   /** 是否为当前活跃会话（活跃 = 带名 pill；非活跃 = 裸点）。 */
   active: boolean;
+  /**
+   * 进程是否已退出（observer 的 aware.status==="exited"）。dot 颜色仍映射成 idle，
+   * 但右键菜单据此决定是否提供「重启」。默认/未知 = false。
+   */
+  exited?: boolean;
 }
 
 /**

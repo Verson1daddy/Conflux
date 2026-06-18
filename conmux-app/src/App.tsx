@@ -38,6 +38,7 @@ import {
   initSessions,
   removeSession,
   reopenRecent,
+  restartSession,
   setActive,
   subscribeSessions,
   type RecentEntry,
@@ -308,6 +309,8 @@ export default function App() {
       name: s.launchName ?? s.name,
       status,
       active: s.instanceId === activeId,
+      // 退出态（aware.status==="exited"）→ 右键菜单据此提供「重启」。
+      exited: aware?.status === "exited",
     };
   });
 
@@ -361,8 +364,8 @@ export default function App() {
     });
   }, []);
 
-  const handleClose = useCallback((instanceId: string) => {
-    // 清退出态镜像（避免移除后残留）。
+  const clearExitMirror = useCallback((instanceId: string) => {
+    // 清退出态镜像（避免移除/重启后残留陈旧退出信息）。
     exitedRef.current.delete(instanceId);
     setExitInfo((prev) => {
       if (!prev.has(instanceId)) return prev;
@@ -370,8 +373,26 @@ export default function App() {
       next.delete(instanceId);
       return next;
     });
-    void removeSession(instanceId);
   }, []);
+
+  const handleClose = useCallback(
+    (instanceId: string) => {
+      clearExitMirror(instanceId);
+      void removeSession(instanceId);
+    },
+    [clearExitMirror]
+  );
+
+  // 退出态右键菜单「重启」：从该会话 launchCommand 复原新会话 + 移除旧退出项。
+  const handleRestart = useCallback(
+    (instanceId: string) => {
+      clearExitMirror(instanceId);
+      void restartSession(instanceId).catch((e) => {
+        console.error("[conmux] 重启会话失败:", e);
+      });
+    },
+    [clearExitMirror]
+  );
 
   // active 会话的观测者（驱动 aware-header）。无会话时为 null。
   const activeObserver =
@@ -384,6 +405,7 @@ export default function App() {
         onSelect={handleSelect}
         onCreate={handleCreate}
         onClose={handleClose}
+        onRestart={handleRestart}
         styleName={style.name}
         onCycleStyle={cycleStyle}
       />

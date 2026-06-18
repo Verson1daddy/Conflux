@@ -16,7 +16,7 @@
 //   「+」→ onCreate()（create_session powershell → 新点 + setActive）。
 //   active pill hover 出 × → onClose(instanceId)（kill_session + store 移除）。
 
-import { useState, type FC } from "react";
+import { useEffect, useState, type FC } from "react";
 import type { SessionState, SessionStatus } from "./session-status";
 import { ConmuxBrandMark } from "./ConmuxBrandMark";
 
@@ -50,15 +50,27 @@ interface SessionItemProps {
   session: SessionState;
   onSelect: (instanceId: string) => void;
   onClose: (instanceId: string) => void;
+  /** 右键会话项 → 在 (x,y) 开小菜单（切换/重启/移除）。 */
+  onContextMenu: (instanceId: string, x: number, y: number) => void;
 }
 
 /**
  * 单会话项。
  *   active → 带名 pill（accent 描边）+ hover 出 ×（关闭）。
  *   非 active → 裸点；hover → 就地展开带名 pill（soft 描边）。
+ *   右键（任意态）→ 小菜单（切换/重启/移除）。
  */
-const SessionItem: FC<SessionItemProps> = ({ session, onSelect, onClose }) => {
+const SessionItem: FC<SessionItemProps> = ({
+  session,
+  onSelect,
+  onClose,
+  onContextMenu,
+}) => {
   const [hover, setHover] = useState(false);
+  const openMenu = (e: { preventDefault: () => void; clientX: number; clientY: number }) => {
+    e.preventDefault();
+    onContextMenu(session.instanceId, e.clientX, e.clientY);
+  };
 
   // 带名 pill 渲染（active 与 hover-expand 共用骨架，仅描边色 + × 显隐不同）。
   const renderPill = (variant: "active" | "hover") => {
@@ -73,6 +85,7 @@ const SessionItem: FC<SessionItemProps> = ({ session, onSelect, onClose }) => {
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
         onClick={() => onSelect(session.instanceId)}
+        onContextMenu={openMenu}
         style={{
           display: "inline-flex",
           alignItems: "center",
@@ -162,6 +175,7 @@ const SessionItem: FC<SessionItemProps> = ({ session, onSelect, onClose }) => {
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       onClick={() => onSelect(session.instanceId)}
+      onContextMenu={openMenu}
       style={{
         display: "inline-flex",
         alignItems: "center",
@@ -181,20 +195,136 @@ interface TopBarProps {
   onSelect: (instanceId: string) => void;
   onCreate: () => void;
   onClose: (instanceId: string) => void;
+  /** 退出态右键菜单「重启」：从该会话 launchCommand 复原新会话。 */
+  onRestart: (instanceId: string) => void;
   /** 当前风格名（换肤钮展示）。 */
   styleName: string;
   /** 点切换钮：循环到下一风格。 */
   onCycleStyle: () => void;
 }
 
+/** 右键菜单的一项（mono 12，hover 高亮 surface-chrome；danger=移除走 warn 色）。 */
+const MenuItem: FC<{
+  testid: string;
+  label: string;
+  danger?: boolean;
+  autoFocus?: boolean;
+  onClick: () => void;
+}> = ({ testid, label, danger, autoFocus, onClick }) => {
+  const [h, setH] = useState(false);
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      data-testid={testid}
+      autoFocus={autoFocus}
+      onMouseEnter={() => setH(true)}
+      onMouseLeave={() => setH(false)}
+      onClick={onClick}
+      style={{
+        display: "block",
+        width: "100%",
+        textAlign: "left",
+        padding: "6px 10px",
+        border: "none",
+        borderRadius: 5,
+        background: h ? "var(--cx-surface-chrome)" : "transparent",
+        color: danger ? "var(--cx-status-warn)" : "var(--cx-text-content)",
+        fontFamily: MONO,
+        fontSize: 12,
+        lineHeight: 1.3,
+        cursor: "pointer",
+        whiteSpace: "nowrap",
+        boxSizing: "border-box",
+      }}
+    >
+      {label}
+    </button>
+  );
+};
+
+const MENU_W = 176;
+const MENU_H = 140;
+
 const TopBar: FC<TopBarProps> = ({
   sessions,
   onSelect,
   onCreate,
   onClose,
+  onRestart,
   styleName,
   onCycleStyle,
-}) => (
+}) => {
+  // 会话点右键菜单：{instanceId,x,y} | null（一次一个）。
+  const [menu, setMenu] = useState<{ instanceId: string; x: number; y: number } | null>(null);
+  const closeMenu = () => setMenu(null);
+
+  // 目标会话（被移除/重启换 id → null）。
+  const menuSession = menu
+    ? sessions.find((s) => s.instanceId === menu.instanceId) ?? null
+    : null;
+
+  // 菜单开时 Esc 关闭；目标会话消失则自动收起。
+  useEffect(() => {
+    if (!menu) return;
+    if (!menuSession) {
+      setMenu(null);
+      return;
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        setMenu(null);
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [menu, menuSession]);
+
+  // 菜单项（按会话态裁剪）：切换(非活跃) / 重启(已退出) / 移除。
+  const menuItems = menuSession
+    ? [
+        ...(menuSession.active
+          ? []
+          : [
+              {
+                testid: "conmux-session-menu-switch",
+                label: "切换到此会话",
+                onClick: () => {
+                  onSelect(menuSession.instanceId);
+                  closeMenu();
+                },
+              },
+            ]),
+        ...(menuSession.exited
+          ? [
+              {
+                testid: "conmux-session-menu-restart",
+                label: "重启会话",
+                onClick: () => {
+                  onRestart(menuSession.instanceId);
+                  closeMenu();
+                },
+              },
+            ]
+          : []),
+        {
+          testid: "conmux-session-menu-remove",
+          label: "移除会话",
+          danger: true,
+          onClick: () => {
+            onClose(menuSession.instanceId);
+            closeMenu();
+          },
+        },
+      ]
+    : [];
+
+  // 坐标 clamp 进视口（留 8px 边距）。
+  const clampX = menu ? Math.max(8, Math.min(menu.x, window.innerWidth - MENU_W - 8)) : 0;
+  const clampY = menu ? Math.max(8, Math.min(menu.y, window.innerHeight - MENU_H - 8)) : 0;
+
+  return (
   <div
     data-testid="conmux-topbar"
     style={{
@@ -237,6 +367,7 @@ const TopBar: FC<TopBarProps> = ({
           session={s}
           onSelect={onSelect}
           onClose={onClose}
+          onContextMenu={(id, x, y) => setMenu({ instanceId: id, x, y })}
         />
       ))}
     </div>
@@ -296,7 +427,67 @@ const TopBar: FC<TopBarProps> = ({
     >
       ◐ {styleName}
     </button>
+
+    {/* 会话点右键小菜单（scrim 捕获外点 + 视口内定位卡片；Esc 关）。 */}
+    {menu && menuSession && (
+      <>
+        <div
+          data-testid="conmux-session-menu-scrim"
+          onClick={closeMenu}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            closeMenu();
+          }}
+          style={{ position: "fixed", inset: 0, zIndex: 60 }}
+        />
+        <div
+          role="menu"
+          aria-label={`会话 ${menuSession.name} 操作`}
+          data-testid="conmux-session-menu"
+          data-instance-id={menuSession.instanceId}
+          style={{
+            position: "fixed",
+            left: clampX,
+            top: clampY,
+            zIndex: 61,
+            minWidth: MENU_W,
+            padding: 4,
+            borderRadius: 8,
+            background: "var(--cx-surface-raised)",
+            border: "1px solid var(--cx-line-soft)",
+            boxShadow: "0 8px 24px rgba(0, 0, 0, 0.28)",
+            boxSizing: "border-box",
+          }}
+        >
+          <div
+            style={{
+              padding: "4px 10px 6px",
+              marginBottom: 4,
+              borderBottom: "1px solid var(--cx-line-hairline)",
+              fontFamily: MONO,
+              fontSize: 11,
+              color: "var(--cx-text-faint)",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {menuSession.name}
+            {menuSession.exited ? " · 已退出" : ""}
+          </div>
+          {menuItems.map((it, i) => (
+            <MenuItem
+              key={it.testid}
+              testid={it.testid}
+              label={it.label}
+              danger={it.danger}
+              autoFocus={i === 0}
+              onClick={it.onClick}
+            />
+          ))}
+        </div>
+      </>
+    )}
   </div>
-);
+  );
+};
 
 export { TopBar };

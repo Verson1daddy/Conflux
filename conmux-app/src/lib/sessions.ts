@@ -302,8 +302,13 @@ export function rebuildCommand(program: string, args?: string[]): string {
  * 即便后端 kill 报错也清本地（与后端 kill_session 的"失败仍清表"对齐）。
  *
  * M⑤b：若该会话有 launchCommand（快捷启动的会话），push 到 RECENT store（可重开）。
+ * opts.recordRecent=false 时跳过 RECENT 入库（restartSession 复用：重启≠关闭，不留 RECENT）。
  */
-export async function removeSession(instanceId: string): Promise<void> {
+export async function removeSession(
+  instanceId: string,
+  opts?: { recordRecent?: boolean }
+): Promise<void> {
+  const recordRecent = opts?.recordRecent ?? true;
   const entry = sessions.find((s) => s.instanceId === instanceId) ?? null;
   try {
     await invoke<void>("kill_session", { instanceId });
@@ -313,7 +318,7 @@ export async function removeSession(instanceId: string): Promise<void> {
   const idx = sessions.findIndex((s) => s.instanceId === instanceId);
   if (idx === -1) return;
   // 有 launchCommand（快捷启动的会话）→ 入 RECENT（最近优先、去重、capped）。
-  if (entry && entry.launchCommand) {
+  if (recordRecent && entry && entry.launchCommand) {
     pushRecent({
       name: entry.launchName ?? entry.name,
       command: entry.launchCommand,
@@ -420,4 +425,29 @@ export async function reopenRecent(entry: RecentEntry): Promise<SessionEntry> {
     args,
     ...(entry.cwd ? { cwd: entry.cwd } : {}),
   });
+}
+
+/**
+ * 重启会话（退出态右键菜单）：从该会话自身的 launchCommand 复原一个新会话（成为活跃），
+ * 再移除旧的退出项。recordRecent:false —— 重启不是关闭，不往 RECENT 留痕。
+ *   - 有 launchCommand（快捷启动的会话）→ parse → createSession（携带 name/cwd）。
+ *   - 无 launchCommand（默认会话）→ createSession() 默认 powershell。
+ * 失败抛出（调用方降级；失败时旧项仍在，不至于丢会话）。
+ */
+export async function restartSession(instanceId: string): Promise<SessionEntry> {
+  const entry = sessions.find((s) => s.instanceId === instanceId) ?? null;
+  let spec: CreateSpec | undefined;
+  if (entry?.launchCommand) {
+    const { program, args } = parseCommand(entry.launchCommand);
+    spec = {
+      ...(entry.launchName ? { name: entry.launchName } : {}),
+      program,
+      args,
+      ...(entry.cwd ? { cwd: entry.cwd } : {}),
+    };
+  }
+  const created = await createSession(spec);
+  // 新会话已 active；移除旧退出项（kill 对已死 pane 无副作用，失败也清表）。
+  if (entry) await removeSession(instanceId, { recordRecent: false });
+  return created;
 }
