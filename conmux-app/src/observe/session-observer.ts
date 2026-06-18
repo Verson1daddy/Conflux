@@ -80,6 +80,15 @@ function subagentsEqual(
   return true;
 }
 
+/**
+ * 输出是否含终端响铃 BEL（`\x07`）。attention 真路由信号之一（tmux monitor-bell 语义）。
+ * 用 `\x07` 转义（源码文本、运行时才是 0x07，避免 git 判 binary）。导出供单测。
+ * 注：仅对**非活跃**会话有意义（活跃会话用户在打字，readline 响铃属噪声，App 会即时 ack）。
+ */
+export function containsBel(text: string): boolean {
+  return text.includes("\x07");
+}
+
 export class SessionObserver {
   private readonly instanceId: string;
   /**
@@ -221,6 +230,14 @@ export class SessionObserver {
       }
     }
 
+    // attention 真路由（MF-3）：终端响铃 BEL → 标需注意（真信号，非启发式）。
+    // 在原始 text 上检测（BEL 是 C0 控制符，stripAnsi 不保证去除）。App 据 attention +
+    // 非活跃 → 缩点脉冲；活跃会话由 App 即时 ack（用户在看，readline 响铃不算需注意）。
+    if (!next.attention && containsBel(text)) {
+      next.attention = true;
+      dirty = true;
+    }
+
     // OSC7 cwd（真解析到才更新）。
     const cwd = parseOsc7Cwd(this.rawBuffer);
     if (cwd !== null && cwd !== next.cwd) {
@@ -320,8 +337,20 @@ export class SessionObserver {
       ...this.state,
       status: "exited",
       activity: null, // 已退出，无活动（不保留运行时残留活动文案）。
+      // attention 真路由（MF-3）：进程退出 = 真信号需注意（你没在看时它结束/崩了）。
+      attention: true,
     };
     this.commit(next);
+  }
+
+  /**
+   * 确认 attention（App 在用户切到该会话时调用）：清 attention 标记。
+   * 你看了就不再"需注意"——这是 attention 路由的"清除"半边。
+   */
+  acknowledgeAttention(): void {
+    if (this.state.attention) {
+      this.commit({ ...this.state, attention: false });
+    }
   }
 
   private tick(): void {

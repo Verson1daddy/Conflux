@@ -31,7 +31,7 @@ body {
   background: var(--cx-surface-base);
 }
 
-/* ===== 缩点 dot attention 脉冲（M③：前端本地启发式占位，非控制面真路由 MF-3）===== */
+/* ===== 缩点 dot attention 脉冲（MF-3 真路由：非活跃会话 BEL/退出真信号触发）===== */
 .cx-dot {
   display: inline-block;
 }

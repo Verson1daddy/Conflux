@@ -93,12 +93,19 @@ export interface AwareState {
    * 滚出窗口的标 `historic`（末次观测值）。shell 态恒 `[]`（无 subagent）。
    */
   subagents: SubagentNode[];
+  /**
+   * 需注意（attention 真路由 MF-3，2026-06-19）：由**真 PTY 信号**置真——
+   * 终端响铃（BEL `\x07`）或进程退出。非启发式臆测。App 据此 + 非活跃 → 缩点 attention 脉冲；
+   * 用户切到该会话即 acknowledge 清除（你看了就不再"需注意"）。
+   */
+  attention: boolean;
 }
 
 /** 观测起始的初始状态（全 null / running / 0ms，诚实空态）。 */
 export function initialAwareState(): AwareState {
   return {
     status: "running",
+    attention: false,
     activity: null,
     elapsedMs: 0,
     cwd: null,

@@ -9,7 +9,8 @@
 //   ① 非活跃 = 裸点（ellipse 9px，色=status.*：running/idle/warn/exited）。
 //   ② 活跃 = 带名 pill（radius6 fill surface.base accent 描边，dot7px + name(mono12)，pad[6,11] gap7）。
 //   ③ hover 裸点 = 就地展开带名 pill（soft 描边 line.soft，区别于 active 的 accent 描边）。
-//   ④ 需注意 = 点用 accent.signal + 外发光脉冲（M3-ext 本地启发式占位，MF-3 非控制面真路由）。
+//   ④ 需注意 = 点用 accent.signal + 外发光脉冲（MF-3 真路由：非活跃会话 BEL/退出真信号触发，
+//      切到该会话即清；见 session-status.ts 头注释）。
 //
 // 交互（M④）：
 //   click 会话项 → onSelect(instanceId)（body 换该会话终端 + aware-header 换该会话态）。

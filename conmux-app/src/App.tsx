@@ -318,12 +318,17 @@ export default function App() {
   const sessionStates: SessionState[] = sessions.map((s: SessionEntry) => {
     const obs = observersRef.current.get(s.instanceId);
     const aware = obs?.getSnapshot();
-    const status = aware ? deriveStatusFromAware(aware) : "running";
+    const isActive = s.instanceId === activeId;
+    const baseStatus = aware ? deriveStatusFromAware(aware) : "running";
+    // attention 真路由（MF-3）：非活跃会话被真信号（BEL/退出）标 attention → 缩点脉冲。
+    // 活跃会话不显（你正看着；由下方 effect 即时 ack 清除）。
+    const status =
+      aware?.attention && !isActive ? "attention" : baseStatus;
     return {
       instanceId: s.instanceId,
       name: s.launchName ?? s.name,
       status,
-      active: s.instanceId === activeId,
+      active: isActive,
       // 退出态（aware.status==="exited"）→ 右键菜单据此提供「重启」。
       exited: aware?.status === "exited",
     };
@@ -412,6 +417,13 @@ export default function App() {
   // active 会话的观测者（驱动 aware-header）。无会话时为 null。
   const activeObserver =
     activeId !== null ? observersRef.current.get(activeId) ?? null : null;
+
+  // attention 真路由清除（MF-3）：活跃会话被标 attention（你正看着时它响铃/退出）→ 即时 ack。
+  // 切到带 attention 的会话即清（activeId 变 → effect 跑 → ack）。
+  const activeAttention = activeObserver?.getSnapshot().attention ?? false;
+  useEffect(() => {
+    if (activeAttention) activeObserver?.acknowledgeAttention();
+  }, [activeId, activeAttention, activeObserver]);
 
   return (
     <WindowFrame>

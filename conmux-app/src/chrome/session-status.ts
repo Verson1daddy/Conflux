@@ -1,10 +1,13 @@
 // ===== 会话状态启发式（缩点条 dot 4 态来源）=====
 //
-// ⚠️ MF-3：attention 脉冲是「前端本地启发式占位」，**非控制面真路由**。
-// 真路由 = M4+ 新增 `MuxNotify::Attention`（须过红队）；本文件的 attention 仅依据
-// 前端可观测的本地信号（退出码非零 / 无输出超时 / 用户标记）做视觉预留位。
-// dot 运行/空闲态来源 = daemon pane lifecycle（M② 已通的退出探测）+ M3-ext 观测者的
-// 输出活跃度。文案/契约不得宣称已是受监管路由。
+// attention 真路由（MF-3，2026-06-19 落地）：attention 脉冲由**真 PTY 信号**触发——
+// 终端响铃（BEL）或进程退出（见 session-observer 的 AwareState.attention），用户切到该会话
+// 即清除。在**观测层 + App**（非启发式臆测「是否在等输入」）；route 在前端而非 daemon——
+// 当前 GUI mount-all 观测全部 pane，故前端就能拿到全部会话的真信号。daemon `MuxNotify::Attention`
+// 的纯架构路由留作未来（仅当 GUI 不再观测全部 pane 时才需要）。
+// dot 运行/空闲态来源 = daemon pane lifecycle（M② 退出探测）+ M3-ext 观测者的输出活跃度。
+// 注：本文件 deriveStatusFromAware 只产 running/idle（不产 attention）；attention 由 App 据
+// aware.attention + 非活跃 叠加（见 App sessionStates）。
 
 import type { ProcessExitedPayload } from "@conmux/terminal-core";
 import type { AwareState } from "../observe/types";
@@ -43,12 +46,13 @@ export function deriveSessionStatus(
 
 /**
  * 由 M3-ext 观测者的 AwareState 派生缩点条 dot 状态（M④ 多会话主路径）。
- * - exited → idle（干净退出，缩点显空闲灯；attention 仅留给"需注意"语义占位）。
+ * - exited → idle（干净退出，缩点显空闲灯）。
  * - running → running。
  * - idle → idle。
  *
- * ⚠️ 当前不把任何观测态映射为 attention（无控制面真路由，MF-3）。attention 视觉态
- * 保留给未来 `MuxNotify::Attention`；本启发式只诚实反映输出活跃度 + 退出。
+ * 本函数只产 running/idle（输出活跃度 + 退出，诚实反映）。**attention 不在此**——
+ * attention 真路由（BEL/退出真信号）由 App 据 `aware.attention` + 非活跃 叠加（MF-3 已落地，
+ * 见本文件头注释 + App sessionStates）。
  */
 export function deriveStatusFromAware(s: AwareState): SessionStatus {
   switch (s.status) {
