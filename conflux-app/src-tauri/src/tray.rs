@@ -50,7 +50,10 @@ fn current_theme<R: Runtime>(app: &tauri::App<R>) -> Theme {
 /// 系统主题切换时热替托盘图标（lib.rs on_window_event ThemeChanged 调用）。
 pub fn update_tray_icon_for_theme<R: Runtime>(app: &AppHandle<R>, theme: Theme) {
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        let _ = tray.set_icon(Some(tray_icon_for_theme(theme)));
+        let r = tray.set_icon(Some(tray_icon_for_theme(theme)));
+        eprintln!("[tray] theme changed → {theme:?}, set_icon ok={}", r.is_ok());
+    } else {
+        eprintln!("[tray] theme changed → {theme:?} but tray_by_id 未找到");
     }
 }
 
@@ -84,7 +87,9 @@ pub fn create_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::e
 
     // 托盘破例随任务栏主题取对比色（方案 B）：启动按 main 窗口主题选初始图标，
     // lib.rs ThemeChanged 事件热切换。其余系统图标仍固定原图。
-    let icon = tray_icon_for_theme(current_theme(app));
+    let theme = current_theme(app);
+    eprintln!("[tray] building with initial theme={theme:?}");
+    let icon = tray_icon_for_theme(theme);
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
@@ -143,6 +148,7 @@ pub fn create_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::e
         })
         .build(app)?;
 
+    eprintln!("[tray] created ok (id={TRAY_ID})");
     Ok(())
 }
 
