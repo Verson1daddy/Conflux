@@ -19,6 +19,7 @@ import { StatusBar } from "./chrome/StatusBar";
 import { AwareHeader } from "./chrome/AwareHeader";
 import { SubagentTree } from "./chrome/SubagentTree";
 import { CommandPalette } from "./chrome/CommandPalette";
+import { LeaderConfig } from "./chrome/LeaderConfig";
 import { Home, type HomeRunningRow } from "./chrome/Home";
 import { SessionObserver } from "./observe/session-observer";
 import {
@@ -46,6 +47,11 @@ import {
 } from "./lib/sessions";
 import { parseCommand, type LaunchEntry } from "./lib/launch-registry";
 import { useLeaderKeyboard } from "./lib/leader";
+import {
+  formatLeaderLabel,
+  getLeaderChord,
+  subscribeLeaderChord,
+} from "./lib/leader-key";
 import {
   deriveStatusFromAware,
   type SessionState,
@@ -82,6 +88,15 @@ export default function App() {
   // ref 镜像：leader 机 isBlocked 回调读最新态（listener 一次装配，闭包不刷新）。
   const homeOverlayOpenRef = useRef(homeOverlayOpen);
   homeOverlayOpenRef.current = homeOverlayOpen;
+
+  // ===== leader 前缀配置 modal（可配置化 2026-06-19）：命令面板「设置 leader 前缀」打开 =====
+  // 开时经 isBlocked 抑制 leader 待命（modal 自己 capture 抓新组合键，leader 机不该 arm）。
+  const [leaderConfigOpen, setLeaderConfigOpen] = useState(false);
+  const leaderConfigOpenRef = useRef(leaderConfigOpen);
+  leaderConfigOpenRef.current = leaderConfigOpen;
+  // 当前 leader 前缀（响应式订阅；StatusBar 徽章 + 配置回显用）。
+  const leaderChord = useSyncExternalStore(subscribeLeaderChord, getLeaderChord);
+  const leaderLabel = formatLeaderLabel(leaderChord);
 
   // ===== 会话 store 订阅 =====
   const sessions = useSyncExternalStore(subscribeSessions, getSessions);
@@ -248,8 +263,8 @@ export default function App() {
     openHomeOverlay: toggleHomeOverlay,
     // leader+s → 切风格（M⑤d §1/D-4），复用缩点条换肤钮同款 cycleStyle。
     cycleStyle,
-    // Home overlay 开时抑制 leader 待命（M⑤d §1/D-2）：overlay 自有键盘，Ctrl+Space 放行不 arm。
-    isBlocked: () => homeOverlayOpenRef.current,
+    // Home overlay / leader 配置 modal 开时抑制 leader 待命：它们自有键盘，前缀键放行不 arm。
+    isBlocked: () => homeOverlayOpenRef.current || leaderConfigOpenRef.current,
   });
 
   // ===== Home `n` 键 → 新建默认会话（M⑤b §4，仅 0 会话 Home 时；v1 先鼠标点 + n/Ctrl+K）=====
@@ -541,6 +556,7 @@ export default function App() {
         paneCount={sessions.length}
         daemonConnected={daemonConnected}
         leaderArmed={leaderArmed}
+        leaderLabel={leaderLabel}
       />
 
       {/* 命令面板（M⑤a）：Ctrl+K 开（fixed scrim 覆盖全窗，DOM 末位不影响壳布局）。
@@ -549,7 +565,17 @@ export default function App() {
         <CommandPalette
           open
           onClose={() => setPaletteOpen(false)}
+          onConfigureLeader={() => {
+            setPaletteOpen(false);
+            setLeaderConfigOpen(true);
+          }}
         />
+      )}
+
+      {/* leader 前缀配置 modal（可配置化）：命令面板「设置 leader 前缀」打开；
+          捕获新组合键 → 校验（须带 Ctrl/Alt）→ 持久。开时 isBlocked 抑制 leader 待命。 */}
+      {leaderConfigOpen && (
+        <LeaderConfig onClose={() => setLeaderConfigOpen(false)} />
       )}
 
       {/* Home overlay（M⑤d §2）：leader+h 在「有会话」时把 Home 作为叠层开在活跃会话之上

@@ -25,12 +25,10 @@
 import { useEffect, useRef } from "react";
 import { injectStdin } from "@conmux/terminal-core";
 import { getActiveId, getSessions, setActive } from "./sessions";
+import { leaderLiteral, matchesLeaderChord } from "./leader-key";
 
 /** armed 自动退待命的超时（spec §1：1.5s 无键 → 退透传）。 */
 const LEADER_TIMEOUT_MS = 1500;
-
-/** leader 字面字符（leader leader → 送活跃终端，tmux send-prefix）。Ctrl+Space = NUL。 */
-const LEADER_LITERAL = "\x00";
 
 export interface UseLeaderKeyboardOptions {
   /** 开/关命令面板（App 传 React setState；leader+: → open(true)）。 */
@@ -62,9 +60,9 @@ function isConmuxInputFocused(): boolean {
   return true;
 }
 
-/** 是否 Ctrl+Space（leader 键）。e.code 优先（布局无关）；e.key 兜底（" "）。 */
+/** 是否 leader 前缀键（可配置，lib/leader-key 读 localStorage；默认 Ctrl+Space）。 */
 function isLeaderKey(e: KeyboardEvent): boolean {
-  return e.ctrlKey && (e.code === "Space" || e.key === " ");
+  return matchesLeaderChord(e);
 }
 
 /** 下一会话（循环）。无会话则 null（no-op）。 */
@@ -151,11 +149,14 @@ export function useLeaderKeyboard(opts: UseLeaderKeyboardOptions): void {
         e.preventDefault();
         e.stopPropagation();
 
-        // leader leader（再按 Ctrl+Space）→ 把字面 leader（NUL）送活跃终端（tmux send-prefix）。
+        // leader leader（再按前缀键）→ 把字面前缀送活跃终端（tmux send-prefix）。
+        // 字面按当前 chord 算（Ctrl+Space→NUL / Ctrl+字母→控制码 / Alt+键→ESC+键）；
+        // 不可表示 → 空串，则 no-op（不送垃圾，诚实降级）。
         if (isLeaderKey(e)) {
           const id = getActiveId();
-          if (id !== null) {
-            void injectStdin(id, LEADER_LITERAL).catch((err) => {
+          const literal = leaderLiteral();
+          if (id !== null && literal.length > 0) {
+            void injectStdin(id, literal).catch((err) => {
               console.error("[conmux] leader-leader 注入失败:", err);
             });
           }

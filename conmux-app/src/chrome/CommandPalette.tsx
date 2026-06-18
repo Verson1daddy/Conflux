@@ -31,6 +31,8 @@ export interface CommandPaletteProps {
   open: boolean;
   /** 关闭回调（esc/scrim/失焦/执行后）。 */
   onClose: () => void;
+  /** 「设置 leader 前缀」动作回调（App：关面板 + 开 leader 配置 modal）。 */
+  onConfigureLeader?: () => void;
 }
 
 /**
@@ -60,7 +62,11 @@ function restoreCurrentStyle(): void {
   setTerminalTheme(current.terminal_theme_id);
 }
 
-const CommandPalette: FC<CommandPaletteProps> = ({ open, onClose }) => {
+const CommandPalette: FC<CommandPaletteProps> = ({
+  open,
+  onClose,
+  onConfigureLeader,
+}) => {
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -68,8 +74,8 @@ const CommandPalette: FC<CommandPaletteProps> = ({ open, onClose }) => {
 
   // 开面板时构建动作集（实时快照）。query 变化不重建（动作集本轮固定）。
   const actions = useMemo<CommandAction[]>(
-    () => (open ? buildCommandActions() : []),
-    [open]
+    () => (open ? buildCommandActions({ onConfigureLeader }) : []),
+    [open, onConfigureLeader]
   );
 
   // 过滤结果（query 变化重算）。

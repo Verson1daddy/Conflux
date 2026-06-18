@@ -50,6 +50,12 @@ function applyStyleTransient(style: Style): void {
   setTerminalTheme(style.terminal_theme_id);
 }
 
+/** 构建动作时的 App 上下文（需要 App 级 UI 副作用的动作经此回调）。 */
+export interface CommandContext {
+  /** 打开 leader 前缀配置 modal（命令面板「设置 leader 前缀」动作）。 */
+  onConfigureLeader?: () => void;
+}
+
 /**
  * 构建当前可执行的命令动作集（开面板时调一次，取实时快照）。
  *
@@ -58,8 +64,9 @@ function applyStyleTransient(style: Style): void {
  *   ② 切换 · {name}（每个非活跃会话；无则不入）
  *   ③ 关闭活跃会话（有活跃才入）
  *   ④ 各风格 select（恒有；预览类，当前风格 hint=current）
+ *   ⑤ 设置 leader 前缀（ctx 提供回调才入）
  */
-export function buildCommandActions(): CommandAction[] {
+export function buildCommandActions(ctx?: CommandContext): CommandAction[] {
   const actions: CommandAction[] = [];
 
   // ===== 会话动作（真能跑才入，§0/D-3 诚实）=====
@@ -112,6 +119,17 @@ export function buildCommandActions(): CommandAction[] {
       preview: () => applyStyleTransient(style),
       // 执行：持久化 + 广播（useStyle 重渲；App effect 会 applyChromeVars+setTerminalTheme）。
       run: () => setStyle(style.id),
+    });
+  }
+
+  // ===== ⑤ 设置 leader 前缀（ctx 提供回调才入；run 关面板 + 开配置 modal）=====
+  if (ctx?.onConfigureLeader) {
+    const onConfigureLeader = ctx.onConfigureLeader;
+    actions.push({
+      id: "leader:configure",
+      title: "设置 leader 前缀",
+      category: "键盘",
+      run: () => onConfigureLeader(),
     });
   }
 

@@ -25,12 +25,15 @@ interface StatusBarProps {
   daemonConnected: boolean;
   /** leader 待命态（M⑤c，armed 时显 ⌨ LEADER 徽章；让用户知道处于待命，不吞键无感）。 */
   leaderArmed?: boolean;
+  /** 当前 leader 前缀标签（可配置化，armed 徽章显具体键，e.g. "⌃Space"）。 */
+  leaderLabel?: string;
 }
 
 const StatusBar: FC<StatusBarProps> = ({
   paneCount,
   daemonConnected,
   leaderArmed = false,
+  leaderLabel = "⌃Space",
 }) => (
   <div
     data-testid="conmux-statusbar"
@@ -78,7 +81,7 @@ const StatusBar: FC<StatusBarProps> = ({
           flex: "0 0 auto",
         }}
       >
-        ⌨ LEADER
+        ⌨ {leaderLabel}
       </span>
     )}
     <span style={META_TEXT}>DAEMON</span>
