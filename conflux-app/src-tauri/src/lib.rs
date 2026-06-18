@@ -301,6 +301,12 @@ pub fn run() {
                 .skip_initial_state("island")
                 .build(),
         )
+        // 系统主题切换 → 托盘图标随任务栏主题取对比色（方案 B；其余系统图标固定原图）。
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::ThemeChanged(theme) = event {
+                tray::update_tray_icon_for_theme(window.app_handle(), *theme);
+            }
+        })
         .setup(|app| {
             // CRIT-01 修复：使用 Tauri app_data_dir 解析安全的数据库路径
             let app_data_dir = app.path().app_data_dir().expect("无法获取应用数据目录");
