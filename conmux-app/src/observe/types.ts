@@ -19,10 +19,15 @@ export type ObserveStatus = "running" | "idle" | "exited";
 /**
  * 观测到的子 agent 节点（M3-ext-2 F1 §1，深 agent 观测 v2）。
  *
- * 诚实铁律（§0）：每个节点必须能在 strippedBuffer 16KB 窗口里找到对应派发行
- * （`● <type>(<description>)`）；窗口外滚走的不补、不造。status 取折叠行字面，
+ * 诚实铁律（§0）：每个节点必须**曾在** strippedBuffer 窗口里真出现过对应派发行
+ * （`● <type>(<description>)`）；从不臆造未观测的节点。status 取折叠行字面，
  * 解析不到 → 缺省 "running" + detail=null（在跑但状态未知，绝不编造）。
  * claude 渲 main→subagents **一层** → 扁平数组（不臆造更深嵌套）。
+ *
+ * §0 扩展（subagent 持久化，2026-06-19，见 memory_bank/decisions.md）：节点由「仅当前
+ * 窗口」升级为「会话级累计派发历史」——一旦真观测到即留存、滚出窗口不丢。但**诚实标 provenance**：
+ * `historic=true` = 已滚出当前窗口（status 为末次观测值）；UI 据此降透明 + 去 live 脉冲，
+ * 绝不让已滚出的 running 项谎称仍在 live 跳动。仍从不臆造未观测节点。
  */
 export interface SubagentNode {
   /** agent 类型（派发行 `● Type(` 的 Type）：Explore / Plan / general-purpose / 自定义。 */
@@ -33,6 +38,11 @@ export interface SubagentNode {
   status: "running" | "done";
   /** done 折叠行原文（e.g. "Done (1 tool use · 18.9k tokens · 16s)"）；解析不到 = null。 */
   detail: string | null;
+  /**
+   * true = 该节点已滚出当前观测窗口（status/detail 为末次观测值，非实时）。
+   * 累计历史里的"过去时"标记；UI 降透明 + 去脉冲。缺省 / false = 仍在当前窗口（实时）。
+   */
+  historic?: boolean;
 }
 
 /**
@@ -83,8 +93,9 @@ export interface AwareState {
   /** 当前生效的 parser id（'shell' | 'claude' | ...）。 */
   parserId: string;
   /**
-   * 观测到的子 agent（M3-ext-2 §1）。`[]` = 当前无可观测子 agent（诚实空，UI 不渲染树）。
-   * 只含 strippedBuffer 窗口内真实出现的派发行；shell 态恒 `[]`（无 subagent）。
+   * 观测到的子 agent（M3-ext-2 §1 + 持久化扩展）。`[]` = 本会话从未观测到子 agent
+   * （诚实空，UI 不渲染树）。**会话级累计**：一旦真观测到即留存（按派发序、done 粘性），
+   * 滚出窗口的标 `historic`（末次观测值）。shell 态恒 `[]`（无 subagent）。
    */
   subagents: SubagentNode[];
 }

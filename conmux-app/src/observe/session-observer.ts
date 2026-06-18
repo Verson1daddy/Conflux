@@ -24,6 +24,7 @@ import type { AwareStatePatch } from "./parsers/types";
 import { ParserRegistry } from "./registry";
 import { parseOsc7Cwd } from "./osc7";
 import { stripAnsi, extractOscTitle } from "./ansi";
+import { accumulateSubagents } from "./subagent-accum";
 import {
   type JsonlAccum,
   initJsonlAccum,
@@ -70,7 +71,8 @@ function subagentsEqual(
       x.type !== y.type ||
       x.description !== y.description ||
       x.status !== y.status ||
-      x.detail !== y.detail
+      x.detail !== y.detail ||
+      (x.historic ?? false) !== (y.historic ?? false)
     ) {
       return false;
     }
@@ -261,11 +263,15 @@ export class SessionObserver {
     for (const key of Object.keys(patch) as (keyof AwareStatePatch)[]) {
       const v = patch[key];
       if (v === undefined) continue;
-      // subagents 是数组——每次 parse 都是新引用，用值比较避免每块无谓 commit
-      // （[] !== [] 恒真会导致每个输出块都重渲；§D-4 允许信息态 flicker，但仍按值收敛）。
+      // subagents：把本轮窗口解析（v）累加进会话级历史（next.subagents 即累加器）。
+      // 滚出窗口的项不丢、标 historic（持久化，2026-06-19）。值比较避免无谓 commit。
       if (key === "subagents") {
-        if (!subagentsEqual(next.subagents, v as AwareState["subagents"])) {
-          next.subagents = v as AwareState["subagents"];
+        const merged = accumulateSubagents(
+          next.subagents,
+          v as AwareState["subagents"]
+        );
+        if (!subagentsEqual(next.subagents, merged)) {
+          next.subagents = merged;
           dirty = true;
         }
         continue;
