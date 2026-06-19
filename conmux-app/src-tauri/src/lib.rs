@@ -437,6 +437,9 @@ pub fn run() {
             commands::kill_session,
             commands::read_claude_jsonl,
             commands::list_available_skills,
+            commands::trust_pin_executable,
+            commands::trust_list,
+            commands::trust_unpin,
         ])
         .run(tauri::generate_context!())
         .expect("error while running conmux-app");

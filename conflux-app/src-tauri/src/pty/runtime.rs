@@ -126,14 +126,17 @@ pub struct PaneRuntime {
 impl PaneRuntime {
     /// Windows 构造：conflux 提供钩子链（PolicyHook/AuditHook）+ 事件出口（MuxEventBridge），
     /// conmux 内部装配 ConPTY 后端 + JobObject 监管。`meta` 与 bridge 共享同一 Arc。
+    /// Slice 2：启动时加载 SharedTrustStore 一次，注入 PaneHost（spawn 热路径不做文件 I/O）。
+    /// conflux 是 in-process PaneHost，SharedTrustStore 可被 Tauri pin 命令共享 → pin 即时生效。
     #[cfg(windows)]
     pub fn new_windows(
         hooks: Vec<Arc<dyn conmux::InjectionHook>>,
         event_sink: Arc<dyn conmux::PaneEventSink>,
         meta: Arc<InstanceMetaRegistry>,
     ) -> Self {
+        let trust_store = Arc::new(conmux::SharedTrustStore::load_or_create());
         Self {
-            host: conmux::PaneHost::new_windows(hooks, event_sink),
+            host: conmux::PaneHost::new_windows_with_trust(hooks, event_sink, trust_store),
             meta,
         }
     }

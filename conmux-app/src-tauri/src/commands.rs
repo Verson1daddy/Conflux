@@ -608,3 +608,39 @@ fn extract_frontmatter_field(content: &str, field: &str) -> Option<String> {
     }
     None
 }
+
+// ===== Slice 2 信任库管理命令 =====
+//
+// conmux-app 经 daemon 客户端，spawn 实际在 daemon 进程内执行（信任校验也在 daemon）。
+// 此处 pin/unpin/list 命令直接读写 `%APPDATA%\conmux\trust.toml` 文件——daemon 进程
+// 启动时加载一次，pin 后需重启 daemon（或后续 slice 加 reload IPC）才生效。
+// conflux-app 是 in-process PaneHost，SharedTrustStore 共享，pin 即时生效。
+// UI（首次信任弹窗）留后续 slice；此处仅提供命令基础设施，让无签名 CLI 有路可信任。
+
+/// pin 一个可执行文件：算 SHA-256 + 写 pinned_targets + 存盘。
+/// path 必须为绝对路径（与内核 spawn 守卫一致）。
+#[tauri::command]
+pub async fn trust_pin_executable(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if !p.is_absolute() {
+        return Err(format!("path 必须为绝对路径: {path}"));
+    }
+    if !p.exists() {
+        return Err(format!("文件不存在: {path}"));
+    }
+    let mut store = conmux::TrustStore::load_or_create();
+    store.pin_executable(&path)
+}
+
+/// 列出当前信任库快照（mode + trusted_publishers + pinned_targets）。
+#[tauri::command]
+pub async fn trust_list() -> Result<conmux::TrustStore, String> {
+    Ok(conmux::TrustStore::load_or_create())
+}
+
+/// 移除 pin（存盘）。
+#[tauri::command]
+pub async fn trust_unpin(path: String) -> Result<(), String> {
+    let mut store = conmux::TrustStore::load_or_create();
+    store.unpin(&path)
+}

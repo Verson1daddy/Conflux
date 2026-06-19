@@ -219,11 +219,15 @@ impl Daemon {
         let listener = PipeListener::bind(&config.pipe_name)?;
         let conns: Arc<Mutex<HashMap<u64, Arc<ConnHandle>>>> = Arc::new(Mutex::new(HashMap::new()));
         // M2a 单用形态：钩子链空（R-2 全 UserDirect）；event_sink = FanoutSink（按订阅投递）。
-        let host = PaneHost::new_windows(
+        // Slice 2：启动时加载 TrustStore 一次，注入 PaneHost（spawn 热路径不做文件 I/O）。
+        // 用 SharedTrustStore：未来 reload IPC 可经同一共享态即时生效。
+        let trust_store = Arc::new(crate::trust::SharedTrustStore::load_or_create());
+        let host = PaneHost::new_windows_with_trust(
             Vec::new(),
             Arc::new(FanoutSink {
                 conns: Arc::clone(&conns),
             }),
+            trust_store,
         );
         let shared = Arc::new(DaemonShared {
             host,

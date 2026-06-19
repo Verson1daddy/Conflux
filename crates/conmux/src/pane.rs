@@ -245,6 +245,8 @@ pub(crate) struct PaneHostConfig {
     pub(crate) hooks: Vec<Arc<dyn InjectionHook>>,
     /// 事件出口（None = 不起读线程，2a mock 测试用；Windows 路径必给）。
     pub(crate) event_sink: Option<Arc<dyn PaneEventSink>>,
+    /// 信任策略（Slice 2：None = 跳过信任校验，向后兼容；Some = spawn 入口校验）。
+    pub(crate) trust: Option<Arc<dyn crate::trust::TrustPolicy>>,
 }
 
 /// 对外门面。私有持有 pane 表；唯一写入口 `inject_stdin`（MF-1）。
@@ -260,6 +262,8 @@ pub struct PaneHost {
     supervisor_factory: Box<dyn SupervisorFactory>,
     hooks: Vec<Arc<dyn InjectionHook>>,
     event_sink: Option<Arc<dyn PaneEventSink>>,
+    /// 信任策略（Slice 2：None = 跳过，向后兼容；Some = spawn 入口校验）。
+    trust: Option<Arc<dyn crate::trust::TrustPolicy>>,
     panes: Mutex<HashMap<PaneId, Pane>>,
 }
 
@@ -271,6 +275,7 @@ impl PaneHost {
             supervisor_factory: config.supervisor_factory,
             hooks: config.hooks,
             event_sink: config.event_sink,
+            trust: config.trust,
             panes: Mutex::new(HashMap::new()),
         }
     }
@@ -288,13 +293,33 @@ impl PaneHost {
             supervisor_factory: Box::new(crate::job::JobObjectSupervisorFactory),
             hooks,
             event_sink: Some(event_sink),
+            trust: None, // 向后兼容：不校验信任（两条上层按需用 new_windows_with_trust）。
+        })
+    }
+
+    /// 公开 Windows 构造器 + 信任策略注入（Slice 2）。
+    /// 信任策略（TrustStore）启动时加载一次，经此注入；spawn 热路径不做文件 I/O。
+    /// 两条上层（conmux-app / conflux-app）应优先用此构造器。
+    #[cfg(windows)]
+    pub fn new_windows_with_trust(
+        hooks: Vec<Arc<dyn InjectionHook>>,
+        event_sink: Arc<dyn PaneEventSink>,
+        trust: Arc<dyn crate::trust::TrustPolicy>,
+    ) -> Self {
+        Self::new(PaneHostConfig {
+            backend: Box::new(crate::pane_win::WindowsPaneBackend),
+            supervisor_factory: Box::new(crate::job::JobObjectSupervisorFactory),
+            hooks,
+            event_sink: Some(event_sink),
+            trust: Some(trust),
         })
     }
 
     /// spawn 一个 pane：backend.open → session.spawn → 监管器 assign（fail-closed，MF-4）
     /// → 注册。assign 失败 ⇒ 不注册（不产生无监管 pane）。读线程/capture 接线在 2b。
     pub fn spawn(&self, req: SpawnRequest) -> Result<PaneId, ConmuxError> {
-        // Slice 1 守卫：到达内核的 program 必为绝对路径（消除"验的文件≠跑的文件"TOCTOU）。
+        // Slice 1 守卫：到达内核的 program 必为绝对路径（消除"裸名 PATH 解析歧义"——
+        // 注意**不**消除 verify↔spawn 之间文件被替换的 TOCTOU 窗口，见 trust.rs 已知限制 #3）。
         // 两条上层（conmux-app / conflux-app）负责把裸名解析成绝对路径；裸名透传 = 上游漏
         // 解析，fail-closed 拒绝（不丢给 CreateProcess 再猜）。Windows `Path::is_absolute()`
         // 对 `C:\...` / `\\server\share` 返回 true，对 `cmd`/`powershell.exe` 返回 false。
@@ -303,6 +328,23 @@ impl PaneHost {
                 program: req.command.program.clone(),
             });
         }
+
+        // Slice 2 信任校验：对已解析的绝对路径 program 做三档决策（A 签名 / B 哈希钉 / C 拒）。
+        // trust=None → 跳过（向后兼容）；trust=Some → 校验。TrustPolicy 内部处理 mode
+        // （enforce/warn/off），warn/off 始终返 Allow，enforce 返真实决策。
+        if let Some(trust) = &self.trust {
+            let path = std::path::Path::new(&req.command.program);
+            match trust.verify(path) {
+                crate::trust::TrustDecision::Allow => {}
+                crate::trust::TrustDecision::Reject { reason } => {
+                    return Err(ConmuxError::UntrustedProgram {
+                        program: req.command.program.clone(),
+                        reason,
+                    });
+                }
+            }
+        }
+
         {
             let panes = self.panes.lock().unwrap_or_else(recover);
             if panes.contains_key(&req.pane_id) {
@@ -990,6 +1032,7 @@ mod tests {
             }),
             hooks: vec![Arc::new(hook)],
             event_sink: None, // mock 路径不起读线程
+            trust: None,     // mock 测试不校验信任
         });
         Fixture {
             host,
@@ -1516,6 +1559,7 @@ mod tests {
                 reentered: Arc::clone(&reentered),
             })],
             event_sink: None,
+            trust: None, // mock 测试不校验信任
         }));
         *host_slot.lock().unwrap() = Some(Arc::clone(&host));
         host.spawn(req("p1")).unwrap();

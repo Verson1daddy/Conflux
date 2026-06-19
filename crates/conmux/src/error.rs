@@ -24,6 +24,12 @@ pub enum ConmuxError {
     #[error("program 非绝对路径: {program}")]
     NonAbsoluteProgram { program: String },
 
+    /// program 未通过信任校验（Slice 2：签名校验 + 哈希钉 TOFU + fail-closed）。
+    /// 到达内核 spawn 的绝对路径 program 经 TrustPolicy 校验未通过（C 档拒绝）。
+    /// reason 含具体原因（无签名未 pin / 签名主体不在受信列表 / 哈希不符等）。
+    #[error("program 未通过信任校验: {program}（{reason}）")]
+    UntrustedProgram { program: String, reason: String },
+
     /// PTY 读写错误。
     #[error("PTY 错误: {message}")]
     PtyError { message: String },
