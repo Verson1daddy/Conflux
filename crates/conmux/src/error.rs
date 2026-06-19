@@ -18,6 +18,12 @@ pub enum ConmuxError {
     #[error("spawn 失败: {message}")]
     SpawnFailed { message: String },
 
+    /// program 非绝对路径（Slice 1 守卫：消除"验的文件≠跑的文件"TOCTOU）。
+    /// 到达内核 spawn 的 program 必为已解析绝对路径；裸名透传 = 上游漏解析，
+    /// fail-closed 拒绝（不丢给 CreateProcess 再猜）。两条上层负责解析。
+    #[error("program 非绝对路径: {program}")]
+    NonAbsoluteProgram { program: String },
+
     /// PTY 读写错误。
     #[error("PTY 错误: {message}")]
     PtyError { message: String },

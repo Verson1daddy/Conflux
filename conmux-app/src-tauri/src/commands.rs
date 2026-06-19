@@ -126,7 +126,7 @@ pub async fn is_process_exited(
 
 /// 在 PATH × PATHEXT 上解析 program → 首个存在文件路径（finding-3）。含路径分隔符则直接判该路径。
 #[cfg(windows)]
-fn resolve_on_path(program: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn resolve_on_path(program: &str) -> Option<std::path::PathBuf> {
     use std::path::Path;
     if program.contains('\\') || program.contains('/') {
         let p = Path::new(program);
@@ -150,21 +150,17 @@ fn resolve_on_path(program: &str) -> Option<std::path::PathBuf> {
 }
 
 /// 快捷启动 program 是否需 shell 包裹（finding-3）：解析到非 `.exe`（npm shim 的 .cmd /
-/// 无后缀脚本等）→ CreateProcess 不能直接跑 → 需 `cmd /c` 让 shell 解析。`.exe` / 显式
-/// .exe 后缀 / 未解析 → 直起（不动 wsl.exe/powershell.exe 等真 exe 的 M⑤b 直起行为）。
+/// 无后缀脚本等）→ CreateProcess 不能直接跑 → 需 `cmd /c` 让 shell 解析。
+///
+/// Slice 1：改为接收**已解析路径**（消除原内部二次 `resolve_on_path`）。调用方先解析、
+/// 复用结果；未命中已在调用方 fail-closed，此处必为已解析到具体文件。
 #[cfg(windows)]
-fn needs_shell_wrap(program: &str) -> bool {
-    if program.to_ascii_lowercase().ends_with(".exe") {
-        return false;
-    }
-    match resolve_on_path(program) {
-        Some(p) => !p
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("exe"))
-            .unwrap_or(false),
-        None => false, // 未解析 → 不包裹（让自然失败，不掩盖拼写错）。
-    }
+fn needs_shell_wrap(resolved: &std::path::Path) -> bool {
+    !resolved
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("exe"))
+        .unwrap_or(false)
 }
 
 /// 新建会话（D-2 默认 powershell）：后端生成 paneId（D-3）→ Spawn → attach → 起读线程
@@ -186,15 +182,21 @@ pub async fn create_session(
         let pane_id = state.next_pane_id();
         let program = program.unwrap_or_else(|| crate::DEFAULT_PROGRAM.to_string());
         let args = args.unwrap_or_default();
-        // finding-3：claude 等 npm shim（.cmd/无后缀脚本）不能被 CreateProcess 直接 spawn
-        // （快捷启动 "claude" → 0 PANES）。解析到非 .exe → 包 `cmd /c` 让 shell 解析 shim；
-        // wsl.exe/powershell.exe 等真 exe 仍直起（不动 M⑤b 直起行为）。
-        let (program, args) = if needs_shell_wrap(&program) {
-            let mut wrapped = vec!["/c".to_string(), program];
+        // Slice 1：解析一次、复用。未命中 → fail-closed（不把裸名透传给内核，消除"验的
+        // 文件≠跑的文件"TOCTOU）。needs_shell_wrap 接收已解析路径，消除原二次 resolve。
+        let resolved = resolve_on_path(&program)
+            .ok_or_else(|| format!("无法解析命令到可执行文件: {program}"))?;
+        let (program, args) = if needs_shell_wrap(&resolved) {
+            // shell-wrap（resolved 是 .cmd/.bat/无扩展 shim）：program = 绝对 cmd.exe，
+            // args = ["/c", 绝对 shim 路径, ...原 args]。cmd.exe 解析失败也 fail-closed。
+            let cmd_abs = resolve_on_path("cmd")
+                .ok_or_else(|| "无法解析 cmd.exe（系统 PATH 异常）".to_string())?;
+            let mut wrapped = vec!["/c".to_string(), resolved.to_string_lossy().into_owned()];
             wrapped.extend(args);
-            ("cmd".to_string(), wrapped)
+            (cmd_abs.to_string_lossy().into_owned(), wrapped)
         } else {
-            (program, args)
+            // 直起 exe：program = 绝对路径。
+            (resolved.to_string_lossy().into_owned(), args)
         };
         crate::spawn_session_into(&app, &state, &pane_id, &program, &args, cwd.as_deref())
     }

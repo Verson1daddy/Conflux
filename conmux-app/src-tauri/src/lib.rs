@@ -216,6 +216,22 @@ fn connect_and_setup(app: &tauri::AppHandle) -> Result<ConmuxState, String> {
 /// `claude --resume` 等带参 / 指定目录启动，D-4）。`args=&[]` / `cwd=None` 即现状行为。
 ///
 /// 失败 ⇒ Err（调用方决定降级 / 返错）。成功 ⇒ SessionHandle 已入 state.sessions。
+
+/// Slice 1：把 program 收敛为绝对路径。已是绝对路径 → 直接返回；裸名 → PATH×PATHEXT
+/// 解析；未命中 → fail-closed Err（不把裸名透传给内核 spawn 守卫）。
+/// setup/reconnect 传 `DEFAULT_PROGRAM`（裸名 powershell.exe）经此解析；create_session
+/// 已解析传绝对路径，is_absolute 短路返回（不重复 PATH 查找）。
+#[cfg(windows)]
+fn resolve_program_absolute(program: &str) -> Result<String, String> {
+    use std::path::Path;
+    if Path::new(program).is_absolute() {
+        return Ok(program.to_string());
+    }
+    crate::commands::resolve_on_path(program)
+        .map(|p| p.to_string_lossy().into_owned())
+        .ok_or_else(|| format!("无法解析命令到可执行文件: {program}"))
+}
+
 #[cfg(windows)]
 pub(crate) fn spawn_session_into(
     app: &tauri::AppHandle,
@@ -231,9 +247,12 @@ pub(crate) fn spawn_session_into(
 
     let now_ms = now_millis();
 
+    // Slice 1：到达内核 spawn 的 program 必为绝对路径（内核守卫 fail-closed）。
+    let program = resolve_program_absolute(program)?;
+
     // finding-2：conmux 自起 powershell（无显式 args 时）注入 OSC7 prompt 包裹器，让 cwd 实时
     // 上报（aware-header B1 不再恒「—」）。用户给了显式 args 则尊重原样（不注入，避冲突）。
-    let effective_args: Vec<String> = if args.is_empty() && is_powershell(program) {
+    let effective_args: Vec<String> = if args.is_empty() && is_powershell(&program) {
         powershell_osc7_args()
     } else {
         args.to_vec()
@@ -248,7 +267,7 @@ pub(crate) fn spawn_session_into(
         let spawn = SpawnRequest {
             pane_id: PaneId(pane_id.to_string()),
             command: CommandSpec {
-                program: program.to_string(),
+                program: program.clone(),
                 args: effective_args,
                 cwd: cwd.map(|c| c.to_string()),
                 env: Vec::new(),

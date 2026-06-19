@@ -52,14 +52,25 @@ fn not_found(instance_id: &str) -> ConfluxError {
 /// 命中是 bash shim（error 193）。手工走 PATH+PATHEXT 取 .cmd/.exe/.bat 真实路径。
 /// 归属说明：暂留 conflux 策略层（V0 不动 conmux 机制库；是否下沉留 V1 议题）。
 /// 原版位于 manager.rs（cutover ④ 随旧路径删除）。
+///
+/// Slice 1：签名改为返回 `Result`——未命中 fail-closed `Err`（C1，不再回退原始 command
+/// 让 CreateProcess 猜）。顺手修绝对路径无扩展名 bug：`is_absolute() && is_file()` 即
+/// 直接返回，不再要求 `extension().is_some()`、不再 fall through 到 PATHEXT 重解析。
 #[cfg(windows)]
-fn resolve_windows_command(command: &str) -> String {
+fn resolve_windows_command(command: &str) -> Result<String, ConfluxError> {
     use std::path::{Path, PathBuf};
 
     let path = Path::new(command);
 
-    if path.is_absolute() && path.extension().is_some() && path.exists() {
-        return command.to_string();
+    // 绝对路径收敛：文件存在即直接返回（修原 bug——原要求 extension().is_some()，导致无
+    // 扩展名绝对路径 shim 被错误地走 PATHEXT 重解析）。不存在 → fail-closed Err。
+    if path.is_absolute() {
+        if path.is_file() {
+            return Ok(command.to_string());
+        }
+        return Err(ConfluxError::PtyError {
+            message: format!("绝对路径程序不存在: {command}"),
+        });
     }
 
     let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
@@ -69,12 +80,8 @@ fn resolve_windows_command(command: &str) -> String {
         .map(|s| s.to_string())
         .collect();
 
-    let candidate_dirs: Vec<PathBuf> = if path.is_absolute() {
-        match path.parent() {
-            Some(parent) => vec![parent.to_path_buf()],
-            None => return command.to_string(),
-        }
-    } else if path.components().count() > 1 {
+    let candidate_dirs: Vec<PathBuf> = if path.components().count() > 1 {
+        // 含路径分隔符的相对路径（如 bin\foo）：在其 parent 下找。
         match path.parent() {
             Some(parent) if !parent.as_os_str().is_empty() => vec![parent.to_path_buf()],
             _ => vec![],
@@ -94,17 +101,20 @@ fn resolve_windows_command(command: &str) -> String {
         for ext in &extensions {
             let candidate = dir.join(format!("{}{}", basename, ext));
             if candidate.is_file() {
-                return candidate.to_string_lossy().into_owned();
+                return Ok(candidate.to_string_lossy().into_owned());
             }
         }
     }
 
-    command.to_string()
+    // C1：未命中 → fail-closed Err（不再回退原始 command 让 CreateProcess 猜）。
+    Err(ConfluxError::PtyError {
+        message: format!("无法解析命令到可执行文件: {command}"),
+    })
 }
 
 #[cfg(not(windows))]
-fn resolve_windows_command(command: &str) -> String {
-    command.to_string()
+fn resolve_windows_command(command: &str) -> Result<String, ConfluxError> {
+    Ok(command.to_string())
 }
 
 /// 策略层门面——持 conmux::PaneHost（机制）+ InstanceMetaRegistry（策略）。
@@ -205,7 +215,18 @@ impl PaneRuntime {
             },
         );
 
-        let resolved_command = resolve_windows_command(command);
+        let resolved_command = match resolve_windows_command(command) {
+            Ok(p) => p,
+            Err(e) => {
+                // Slice 1 C2：解析失败 → 回滚 meta（与 spawn 失败一致）+ 返错，不把裸名塞进
+                // CommandSpec.program（上游 create_agent_instance 已有回滚，此处再兜底）。
+                self.meta.remove(&instance_id);
+                log::error!(
+                    "PTY spawn 路径解析失败: instance_id={instance_id}, command={command}, error={e}"
+                );
+                return Err(e);
+            }
+        };
         if resolved_command != command {
             log::debug!("PTY spawn 路径解析: {} -> {}", command, resolved_command);
         }
@@ -633,6 +654,38 @@ mod characterization_tests {
             .iter()
             .any(|i| i.instance_id.0 == "char-fixed-id"));
         rt.kill("char-fixed-id").expect("kill 应成功");
+    }
+
+    // Slice 1 C1：resolve_windows_command 未命中 fail-closed Err（不回退裸名）。
+    #[test]
+    fn resolve_windows_command_returns_err_when_not_found() {
+        let result = resolve_windows_command("this-binary-does-not-exist-xyz123");
+        assert!(
+            matches!(result, Err(ConfluxError::PtyError { .. })),
+            "未命中应 fail-closed Err，实际: {result:?}"
+        );
+    }
+
+    // Slice 1：绝对路径不存在 → fail-closed Err（修原 bug：原会 fall through 到 PATHEXT 重解析）。
+    #[test]
+    fn resolve_windows_command_returns_err_for_nonexistent_absolute_path() {
+        let result = resolve_windows_command(r"C:\does\not\exist\foo.exe");
+        assert!(
+            matches!(result, Err(ConfluxError::PtyError { .. })),
+            "不存在的绝对路径应 Err，实际: {result:?}"
+        );
+    }
+
+    // Slice 1：系统 cmd.exe 应解析为绝对路径（验证 PATH×PATHEXT 查找仍工作）。
+    #[test]
+    fn resolve_windows_command_resolves_system_cmd() {
+        let result = resolve_windows_command("cmd.exe");
+        assert!(result.is_ok(), "cmd.exe 应解析成功，实际: {result:?}");
+        let resolved = result.unwrap();
+        assert!(
+            std::path::Path::new(&resolved).is_absolute(),
+            "解析结果应为绝对路径，实际: {resolved}"
+        );
     }
 
     #[test]

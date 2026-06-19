@@ -294,6 +294,15 @@ impl PaneHost {
     /// spawn 一个 pane：backend.open → session.spawn → 监管器 assign（fail-closed，MF-4）
     /// → 注册。assign 失败 ⇒ 不注册（不产生无监管 pane）。读线程/capture 接线在 2b。
     pub fn spawn(&self, req: SpawnRequest) -> Result<PaneId, ConmuxError> {
+        // Slice 1 守卫：到达内核的 program 必为绝对路径（消除"验的文件≠跑的文件"TOCTOU）。
+        // 两条上层（conmux-app / conflux-app）负责把裸名解析成绝对路径；裸名透传 = 上游漏
+        // 解析，fail-closed 拒绝（不丢给 CreateProcess 再猜）。Windows `Path::is_absolute()`
+        // 对 `C:\...` / `\\server\share` 返回 true，对 `cmd`/`powershell.exe` 返回 false。
+        if !std::path::Path::new(&req.command.program).is_absolute() {
+            return Err(ConmuxError::NonAbsoluteProgram {
+                program: req.command.program.clone(),
+            });
+        }
         {
             let panes = self.panes.lock().unwrap_or_else(recover);
             if panes.contains_key(&req.pane_id) {
@@ -991,10 +1000,16 @@ mod tests {
     }
 
     fn req(id: &str) -> SpawnRequest {
+        // Slice 1：内核 spawn 守卫要求 program 为绝对路径。MockSession.spawn 不检查 program
+        // （用 `_cmd`），故用编译期绝对路径（CARGO_MANIFEST_DIR）满足守卫即可，文件无需存在。
+        let abs_program = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("test-fake-cmd.exe")
+            .to_string_lossy()
+            .into_owned();
         SpawnRequest {
             pane_id: PaneId(id.into()),
             command: CommandSpec {
-                program: "cmd.exe".into(),
+                program: abs_program,
                 args: vec![],
                 cwd: Some("D:\\repo".into()),
                 env: vec![],
@@ -1004,6 +1019,18 @@ mod tests {
             display_name: Some("rev".into()),
             created_at: 1_700_000_000,
         }
+    }
+
+    #[test]
+    fn spawn_rejects_non_absolute_program() {
+        // Slice 1 守卫：裸名 program → fail-closed NonAbsoluteProgram（不丢给 CreateProcess 猜）。
+        let f = fixture_with_pid(1);
+        let mut r = req("p1");
+        r.command.program = "cmd.exe".to_string(); // 裸名
+        assert!(matches!(
+            f.host.spawn(r),
+            Err(ConmuxError::NonAbsoluteProgram { .. })
+        ));
     }
 
     #[test]
@@ -1703,11 +1730,30 @@ mod tests {
             }
         }
 
+        // Slice 1：内核 spawn 守卫要求绝对路径。ConPTY 集成测试用 SystemRoot 拼系统 exe
+        // 绝对路径（Windows 标准路径，真机稳定）。
+        fn system_cmd() -> String {
+            std::path::PathBuf::from(
+                std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into()),
+            )
+            .join("System32\\cmd.exe")
+            .to_string_lossy()
+            .into_owned()
+        }
+        fn system_powershell() -> String {
+            std::path::PathBuf::from(
+                std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into()),
+            )
+            .join("System32\\WindowsPowerShell\\v1.0\\powershell.exe")
+            .to_string_lossy()
+            .into_owned()
+        }
+
         fn win_req(id: &str, echo: &str) -> SpawnRequest {
             SpawnRequest {
                 pane_id: PaneId(id.into()),
                 command: CommandSpec {
-                    program: "cmd.exe".into(),
+                    program: system_cmd(),
                     args: vec!["/c".into(), format!("echo {echo}")],
                     cwd: None,
                     env: vec![],
@@ -1788,7 +1834,7 @@ mod tests {
             host.spawn(SpawnRequest {
                 pane_id: PaneId("w2".into()),
                 command: CommandSpec {
-                    program: "cmd.exe".into(),
+                    program: system_cmd(),
                     args: vec![],
                     cwd: None,
                     env: vec![],
@@ -1840,7 +1886,7 @@ mod tests {
             let req = SpawnRequest {
                 pane_id: PaneId("wm".into()),
                 command: CommandSpec {
-                    program: "powershell.exe".into(),
+                    program: system_powershell(),
                     args: vec![
                         "-NoProfile".into(),
                         "-Command".into(),
@@ -1987,7 +2033,7 @@ mod tests {
             host.spawn(SpawnRequest {
                 pane_id: PaneId("w4".into()),
                 command: CommandSpec {
-                    program: "cmd.exe".into(),
+                    program: system_cmd(),
                     args: vec!["/c".into(), "exit 5".into()],
                     cwd: None,
                     env: vec![],

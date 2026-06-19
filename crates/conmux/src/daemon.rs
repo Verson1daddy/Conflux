@@ -941,12 +941,19 @@ mod tests {
     fn exit_sweep_broadcasts_pane_exited_to_subscribers() {
         let shared = test_shared();
         let pane_id = PaneId("sweep-exit".into());
+        // Slice 1：内核 spawn 守卫要求绝对路径（SystemRoot 拼系统 cmd.exe）。
+        let cmd_abs = std::path::PathBuf::from(
+            std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into()),
+        )
+        .join("System32\\cmd.exe")
+        .to_string_lossy()
+        .into_owned();
         shared
             .host
             .spawn(crate::pane::SpawnRequest {
                 pane_id: pane_id.clone(),
                 command: crate::pane::CommandSpec {
-                    program: "cmd.exe".into(),
+                    program: cmd_abs,
                     args: vec!["/c".into(), "exit 7".into()],
                     cwd: None,
                     env: vec![],
