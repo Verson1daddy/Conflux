@@ -166,31 +166,70 @@ pub(crate) struct Pane {
 }
 
 impl Pane {
-    fn to_state(&self, pane_id: &PaneId) -> PaneState {
-        let (first, last) = {
-            let sb = self.scrollback.lock().unwrap_or_else(recover);
-            sb.line_range_available()
-        };
-        PaneState {
-            pane_id: pane_id.clone(),
-            adapter_id: self.adapter_id.clone(),
-            display_name: self.display_name.clone(),
-            lifecycle: self.lifecycle.clone(),
-            pid: self.pid,
-            exit_code: self.exit_code,
-            working_dir: self.working_dir.clone(),
-            size: self.size,
-            scrollback: ScrollbackInfo {
-                total_bytes: self
-                    .scrollback
-                    .lock()
-                    .unwrap_or_else(recover)
-                    .total_bytes(),
-                first_abs_line: first,
-                last_abs_line: last,
+    /// 表锁内调：拷贝标量元字段 + 取 scrollback 句柄（**不读 scrollback 内容**，
+    /// 不取 scrollback 锁）。配合 [`build_pane_state`] 在表锁外组装 `PaneState`，
+    /// 消除"表锁内取 scrollback 锁"的长持锁风险（C-2 锁纪律）。
+    fn snapshot_meta(&self) -> (Arc<Mutex<LineIndexedBuffer>>, PaneStateMeta) {
+        (
+            Arc::clone(&self.scrollback),
+            PaneStateMeta {
+                adapter_id: self.adapter_id.clone(),
+                display_name: self.display_name.clone(),
+                lifecycle: self.lifecycle.clone(),
+                pid: self.pid,
+                exit_code: self.exit_code,
+                working_dir: self.working_dir.clone(),
+                size: self.size,
+                created_at: self.created_at,
             },
-            created_at: self.created_at,
-        }
+        )
+    }
+}
+
+/// 表锁内拷贝的 pane 标量元字段（不含 scrollback——scrollback 句柄单独取，锁外读）。
+struct PaneStateMeta {
+    adapter_id: String,
+    display_name: Option<String>,
+    lifecycle: PaneLifecycle,
+    pid: Option<u32>,
+    exit_code: Option<i32>,
+    working_dir: String,
+    size: PaneSize,
+    created_at: i64,
+}
+
+/// 表锁外调：读 scrollback 字段（**一次 lock 取齐** total_bytes + 行窗，消除旧 `to_state`
+/// 的 2 次独立 lock）+ 组装 `PaneState`。
+///
+/// 一致性说明：`meta` 是表锁释放前的快照，`scrollback` 字段是锁外读——两者非原子，
+/// scrollback 可能比 meta 稍新（读线程在表锁释放后追加）。这对现有消费方无影响：
+/// `run_exit_sweep` 用 `pane_id` 列表驱动 poll_exit，不依赖跨 pane scrollback 原子性；
+/// `list_panes` 的消费方（对账/展示）容忍单 pane 内的弱一致。
+fn build_pane_state(
+    pane_id: PaneId,
+    scrollback: Arc<Mutex<LineIndexedBuffer>>,
+    meta: PaneStateMeta,
+) -> PaneState {
+    let (total_bytes, first, last) = {
+        let sb = scrollback.lock().unwrap_or_else(recover);
+        let (first, last) = sb.line_range_available();
+        (sb.total_bytes(), first, last)
+    };
+    PaneState {
+        pane_id,
+        adapter_id: meta.adapter_id,
+        display_name: meta.display_name,
+        lifecycle: meta.lifecycle,
+        pid: meta.pid,
+        exit_code: meta.exit_code,
+        working_dir: meta.working_dir,
+        size: meta.size,
+        scrollback: ScrollbackInfo {
+            total_bytes,
+            first_abs_line: first,
+            last_abs_line: last,
+        },
+        created_at: meta.created_at,
     }
 }
 
@@ -626,20 +665,39 @@ impl PaneHost {
 
     /// 对账/死亡检测用。
     pub fn list_panes(&self) -> Vec<PaneState> {
-        let panes = self.panes.lock().unwrap_or_else(recover);
-        panes.iter().map(|(id, pane)| pane.to_state(id)).collect()
+        // C-2 锁纪律：表锁内只拷贝标量字段 + Arc::clone(&scrollback)，立即释放；
+        // scrollback 字段在锁外逐 pane 读（消除表锁内 N 次取 scrollback 锁的长持锁）。
+        let snapshots: Vec<(PaneId, Arc<Mutex<LineIndexedBuffer>>, PaneStateMeta)> = {
+            let panes = self.panes.lock().unwrap_or_else(recover);
+            panes
+                .iter()
+                .map(|(id, pane)| {
+                    let (sb, meta) = pane.snapshot_meta();
+                    (id.clone(), sb, meta)
+                })
+                .collect()
+        };
+        snapshots
+            .into_iter()
+            .map(|(id, sb, meta)| build_pane_state(id, sb, meta))
+            .collect()
     }
 
     /// 单 pane 状态查询（V1-core：行级 jump-back 的 scrollback 高水位取数路径——
     /// ingest 每事件一查，避免 list_panes O(n)）。
     pub fn pane_state(&self, pane_id: &PaneId) -> Result<PaneState, ConmuxError> {
-        let panes = self.panes.lock().unwrap_or_else(recover);
-        panes
-            .get(pane_id)
-            .map(|pane| pane.to_state(pane_id))
-            .ok_or_else(|| ConmuxError::PaneNotFound {
-                pane_id: pane_id.0.clone(),
-            })
+        // C-2 锁纪律：同 list_panes——表锁内只取句柄 + 拷贝标量，锁外读 scrollback。
+        let (pane_id, scrollback, meta) = {
+            let panes = self.panes.lock().unwrap_or_else(recover);
+            let pane = panes
+                .get(pane_id)
+                .ok_or_else(|| ConmuxError::PaneNotFound {
+                    pane_id: pane_id.0.clone(),
+                })?;
+            let (sb, meta) = pane.snapshot_meta();
+            (pane_id.clone(), sb, meta)
+        };
+        Ok(build_pane_state(pane_id, scrollback, meta))
     }
 
     /// 捕获 pane scrollback（契约 §3.4 / §6）。ANSI 开关：`ansi=false` 剥离 VT 序列
@@ -652,45 +710,60 @@ impl PaneHost {
         req: crate::capture::CaptureRequest,
     ) -> Result<crate::capture::CaptureResult, ConmuxError> {
         use crate::capture::CaptureRange;
-        let panes = self.panes.lock().unwrap_or_else(recover);
-        let pane = panes
-            .get(&req.pane_id)
-            .ok_or_else(|| ConmuxError::PaneNotFound {
-                pane_id: req.pane_id.0.clone(),
-            })?;
-        let sb = pane.scrollback.lock().unwrap_or_else(recover);
-        let (first, last) = sb.line_range_available();
+        // C-2 锁纪律：表锁内只取 scrollback 句柄，立即释放（对齐 attach_snapshot）。
+        //
+        // 代际守卫说明：capture **不写回 pane 字段**，与 resize/poll_exit 不同（它们
+        // 要写回 size/lifecycle，故需 `Arc::ptr_eq` 验证代际防旧代际污染新 pane）。
+        // 这里 Arc 引用计数保证：取句柄后即使 pane 被 kill+respawn（同 id 新 pane），
+        // 旧 `Arc<scrollback>` 仍存活，读到的是取句柄那一刻的 scrollback，不会读到
+        // 新 pane 的数据，也不会 panic。代际一致性天然成立，无需 ptr_eq 写回守卫
+        // （回归测试 `capture_after_respawn_reads_old_generation_scrollback`）。
+        let scrollback = {
+            let panes = self.panes.lock().unwrap_or_else(recover);
+            let pane = panes
+                .get(&req.pane_id)
+                .ok_or_else(|| ConmuxError::PaneNotFound {
+                    pane_id: req.pane_id.0.clone(),
+                })?;
+            Arc::clone(&pane.scrollback)
+        };
+        // 锁外读 scrollback + base64 编码（H-1：重活移出表锁，避免冻结全表）。
+        let (data_base64, first, last, truncated, effectively_full) = {
+            let sb = scrollback.lock().unwrap_or_else(recover);
+            let (first, last) = sb.line_range_available();
 
-        // 取字节 + truncated 判定（LineRange 被环覆盖 → None → truncated）。
-        let (raw, truncated) = match &req.range {
-            CaptureRange::All => (sb.read_all_bytes(), false),
-            CaptureRange::LastBytes(n) => {
-                let valid = sb.total_bytes() as usize;
-                (sb.read_last_bytes(*n), *n > valid)
-            }
-            CaptureRange::LineRange { start_abs, end_abs } => {
-                // read_lines 是 [start, end)；契约 end_abs 含端 → +1。
-                match sb.read_lines(*start_abs, end_abs.saturating_add(1)) {
-                    Some(bytes) => (bytes, false),
-                    None => (Vec::new(), true), // 起始已被环覆盖，不静默返部分
+            // 取字节 + truncated 判定（LineRange 被环覆盖 → None → truncated）。
+            let (raw, truncated) = match &req.range {
+                CaptureRange::All => (sb.read_all_bytes(), false),
+                CaptureRange::LastBytes(n) => {
+                    let valid = sb.total_bytes() as usize;
+                    (sb.read_last_bytes(*n), *n > valid)
                 }
-            }
-        };
+                CaptureRange::LineRange { start_abs, end_abs } => {
+                    // read_lines 是 [start, end)；契约 end_abs 含端 → +1。
+                    match sb.read_lines(*start_abs, end_abs.saturating_add(1)) {
+                        Some(bytes) => (bytes, false),
+                        None => (Vec::new(), true), // 起始已被环覆盖，不静默返部分
+                    }
+                }
+            };
 
-        let data = if req.ansi {
-            raw
-        } else {
-            crate::capture::strip_ansi(&raw)
-        };
-        let data_base64 = base64_encode(&data);
+            let data = if req.ansi {
+                raw
+            } else {
+                crate::capture::strip_ansi(&raw)
+            };
+            let data_base64 = base64_encode(&data);
 
-        // 等效全量判定（复闸 C2）：按有效覆盖而非枚举变体，杜绝换 range 规避审计。
-        let effectively_full = crate::capture::is_effectively_full(
-            &req.range,
-            sb.total_bytes() as usize,
-            first,
-            last,
-        );
+            // 等效全量判定（复闸 C2）：按有效覆盖而非枚举变体，杜绝换 range 规避审计。
+            let effectively_full = crate::capture::is_effectively_full(
+                &req.range,
+                sb.total_bytes() as usize,
+                first,
+                last,
+            );
+            (data_base64, first, last, truncated, effectively_full)
+        };
 
         Ok(crate::capture::CaptureResult {
             data_base64,
@@ -1481,6 +1554,136 @@ mod tests {
             f.host.pane_state(&PaneId("nope".into())),
             Err(ConmuxError::PaneNotFound { .. })
         ));
+    }
+
+    // ===== C-2 锁纪律扩展测试（方案 A：锁内重活移出锁外）=====
+
+    /// 辅助：从 host 表里取指定 pane 的 scrollback Arc（测试用，同模块可访问私有字段）。
+    fn scrollback_arc(host: &PaneHost, id: &PaneId) -> Arc<Mutex<LineIndexedBuffer>> {
+        let panes = host.panes.lock().unwrap();
+        Arc::clone(&panes.get(id).unwrap().scrollback)
+    }
+
+    /// 测试 1（红绿驱动）：capture 期间表锁不被持有——即使 scrollback 读被阻塞，
+    /// 并发 spawn 仍应立即完成（修复前 capture 在表锁内取 scrollback 锁，会冻结全表）。
+    #[test]
+    fn capture_does_not_freeze_host_during_slow_scrollback_read() {
+        let f = fixture_with_pid(1);
+        let host = Arc::new(f.host);
+        host.spawn(req("a")).unwrap();
+
+        let sb = scrollback_arc(&host, &PaneId("a".into()));
+        sb.lock().unwrap().append_and_seq(b"hello\n");
+
+        // T0：持有 scrollback 锁，让 capture 卡在锁外读 scrollback 阶段。
+        let sb_guard = sb.lock().unwrap();
+
+        // T1：capture "a"——取句柄（表锁短持）后，卡在 scrollback.lock()。
+        let h1 = {
+            let host = Arc::clone(&host);
+            std::thread::spawn(move || {
+                host.capture(crate::capture::CaptureRequest {
+                    pane_id: PaneId("a".into()),
+                    range: crate::capture::CaptureRange::All,
+                    ansi: true,
+                })
+            })
+        };
+        // 等 T1 进入 capture 并卡在 scrollback lock。
+        std::thread::sleep(std::time::Duration::from_millis(150));
+
+        // T2：spawn "b"——修复后表锁未被 capture 持有，应立即完成。
+        let h2 = {
+            let host = Arc::clone(&host);
+            std::thread::spawn(move || host.spawn(req("b")))
+        };
+        let result = h2.join().expect("T2 panic");
+        assert!(result.is_ok(), "spawn 'b' 不应被 capture 阻塞");
+
+        // 清理：释放 scrollback 锁，让 T1 完成。
+        drop(sb_guard);
+        let _ = h1.join().expect("T1 panic");
+    }
+
+    /// 测试 2（红绿驱动）：list_panes 期间表锁不被持有——即使 scrollback 读被阻塞，
+    /// 并发 spawn 仍应立即完成（修复前 list_panes 在表锁内逐 pane 取 scrollback 锁）。
+    #[test]
+    fn list_panes_does_not_freeze_host_during_slow_scrollback_read() {
+        let f = fixture_with_pid(1);
+        let host = Arc::new(f.host);
+        host.spawn(req("a")).unwrap();
+
+        let sb = scrollback_arc(&host, &PaneId("a".into()));
+        sb.lock().unwrap().append_and_seq(b"data\n");
+
+        // T0：持有 scrollback 锁，让 list_panes 卡在锁外读 scrollback 阶段。
+        let sb_guard = sb.lock().unwrap();
+
+        // T1：list_panes——表锁短持（拷贝标量 + 取句柄）后，卡在 build_pane_state 的 scrollback lock。
+        let h1 = {
+            let host = Arc::clone(&host);
+            std::thread::spawn(move || host.list_panes())
+        };
+        std::thread::sleep(std::time::Duration::from_millis(150));
+
+        // T2：spawn "b"——修复后表锁未被 list_panes 持有，应立即完成。
+        let h2 = {
+            let host = Arc::clone(&host);
+            std::thread::spawn(move || host.spawn(req("b")))
+        };
+        let result = h2.join().expect("T2 panic");
+        assert!(result.is_ok(), "spawn 'b' 不应被 list_panes 阻塞");
+
+        drop(sb_guard);
+        let _ = h1.join().expect("T1 panic");
+    }
+
+    /// 测试 3（代际一致）：capture 取句柄后、读 scrollback 前，pane 被 kill+respawn
+    /// （同 id 新 pane）。Arc 引用计数保证读到旧 pane 的 scrollback，不读新 pane、不 panic。
+    #[test]
+    fn capture_after_respawn_reads_old_generation_scrollback() {
+        use base64::Engine;
+        let f = fixture_with_pid(1);
+        let host = Arc::new(f.host);
+        host.spawn(req("a")).unwrap();
+
+        // 旧 pane 写 "old data"。
+        let old_sb = scrollback_arc(&host, &PaneId("a".into()));
+        old_sb.lock().unwrap().append_and_seq(b"old data\n");
+
+        // T0：持有旧 scrollback 锁，让 capture 卡在锁外读阶段。
+        let sb_guard = old_sb.lock().unwrap();
+
+        // T1：capture "a"——取到旧 pane 的 scrollback Arc，卡在 scrollback.lock()。
+        let h1 = {
+            let host = Arc::clone(&host);
+            std::thread::spawn(move || {
+                host.capture(crate::capture::CaptureRequest {
+                    pane_id: PaneId("a".into()),
+                    range: crate::capture::CaptureRange::All,
+                    ansi: true,
+                })
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(150));
+
+        // kill "a"（remove 旧 pane）+ respawn "a"（新 pane，新 scrollback Arc）。
+        host.kill(&PaneId("a".into())).unwrap();
+        host.spawn(req("a")).unwrap();
+
+        // 新 pane 写 "new data"。
+        let new_sb = scrollback_arc(&host, &PaneId("a".into()));
+        new_sb.lock().unwrap().append_and_seq(b"new data\n");
+
+        // 释放旧 scrollback 锁——T1 的 capture 继续读旧 scrollback（Arc 存活）。
+        drop(sb_guard);
+        let result = h1.join().expect("T1 panic").expect("capture err");
+
+        // 验证读到的是旧 pane 的 "old data"，不是新 pane 的 "new data"。
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&result.data_base64)
+            .unwrap();
+        assert_eq!(decoded, b"old data\n", "应读到旧代际 scrollback（Arc 存活保证）");
     }
 
     // ===== Windows 端到端集成（cutover 2b-3）：new_windows 真实组装 =====

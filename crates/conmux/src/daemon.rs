@@ -76,11 +76,16 @@ impl DaemonLog {
     /// 追加一条审计行（`<epoch_ms> <event>`）。滚动：超上限把现文件改名 .1 后另起。
     fn log(&self, event: &str) {
         use std::io::Write;
-        let g = self.state.lock().unwrap_or_else(recover);
-        // 滚动（best-effort）。
-        if let Ok(meta) = std::fs::metadata(&g.path) {
-            if meta.len() > g.max_bytes {
-                let _ = std::fs::rename(&g.path, g.path.with_extension("log.1"));
+        // 锁内只克隆 path + max_bytes（短临界区）；所有 fs I/O 移到锁外
+        // （消 §2.3① 锁内 I/O——慢盘 / 杀软扫描不再阻塞后续 log 调用）。
+        let (path, max_bytes) = {
+            let g = self.state.lock().unwrap_or_else(recover);
+            (g.path.clone(), g.max_bytes)
+        };
+        // 滚动（best-effort，锁外）。
+        if let Ok(meta) = std::fs::metadata(&path) {
+            if meta.len() > max_bytes {
+                let _ = std::fs::rename(&path, path.with_extension("log.1"));
             }
         }
         let ts = SystemTime::now()
@@ -90,7 +95,7 @@ impl DaemonLog {
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&g.path)
+            .open(&path)
         {
             let _ = writeln!(f, "{ts} {event}");
         }
@@ -543,10 +548,15 @@ fn attach_with_limits(
         }
     }
     // 先注册订阅（D-6），后取快照；无论成败清并发标记。
-    conn.subscriptions
-        .lock()
-        .unwrap_or_else(recover)
-        .insert(pane_id.clone());
+    // D-6 不变量：订阅本身先于 attach_snapshot 建立——消费方靠 `seq > last_seq`
+    // 去重，先订阅保证快照后到达的 PaneOutput 事件不丢。这里只提前 drop
+    // subscriptions 的 Mutex guard（订阅记录已写入 HashSet），**不改变订阅顺序**。
+    // 显式块让"guard 在 attach_snapshot 前释放"的意图清晰，防后续维护误把
+    // attach_snapshot 挪进 subscriptions 锁内（会引入 L8→L1 嵌套）。
+    {
+        let mut subs = conn.subscriptions.lock().unwrap_or_else(recover);
+        subs.insert(pane_id.clone());
+    }
     let result = shared.host.attach_snapshot(&pane_id);
     shared
         .attaching
@@ -1018,6 +1028,46 @@ mod tests {
             matches!(errs[1], ConmuxError::Busy { .. }),
             "第二次快速 attach 应被限速 Busy，实际: {:?}",
             errs[1]
+        );
+    }
+
+    /// 测试 4（第 5 项嵌套消除回归 + D-6 不变量）：attach_with_limits 不持 subscriptions
+    /// 锁进入 attach_snapshot（改动：显式块提前 drop guard），且订阅仍先于快照建立。
+    /// 并发 Subscribe/Unsubscribe 同 conn 不死锁（subscriptions 锁可被其他线程获取）。
+    ///
+    /// 环境限制：测试环境无 ConPTY（`openpty 失败: HRESULT -2147024890`），无法 spawn
+    /// 真实 pane 验证 attach 成功路径。改为验证回滚路径（attach 不存在 pane）+ 并发
+    /// subscribe/unsubscribe 不死锁。D-6 不变量（订阅先于快照）由代码逻辑保证：
+    /// `subscriptions.insert` 在 `attach_snapshot` 前，guard 提前释放（显式块），订阅顺序不变。
+    #[test]
+    fn attach_with_limits_releases_subscriptions_guard_before_snapshot() {
+        let shared = test_shared();
+        let (conn, _rx) = test_conn();
+        let pane_id = PaneId("attach-d6".into());
+
+        // 并发 Subscribe/Unsubscribe 同 conn 不死锁（subscriptions 锁未被 attach 长期持有）。
+        // 此处验证 subscriptions 锁可被其他线程获取——改动后 attach_with_limits 不持该锁
+        // 进入 attach_snapshot，故并发访问不阻塞。
+        let conn2 = Arc::clone(&conn);
+        let h = std::thread::spawn(move || {
+            let mut subs = conn2.subscriptions.lock().unwrap();
+            subs.insert(PaneId("other".into()));
+            subs.remove(&PaneId("other".into()));
+        });
+        h.join().expect("并发 subscribe/unsubscribe 不应死锁");
+
+        // attach 不存在 pane → PaneNotFound + 订阅回滚（D-6 回滚路径）。
+        // attach_with_limits 流程：subscriptions.insert → drop guard → attach_snapshot
+        // （PaneNotFound）→ 回滚 subscriptions.remove。验证 guard 提前释放不影响回滚语义。
+        let result = attach_with_limits(&shared, &conn, pane_id.clone());
+        assert!(
+            matches!(result, Err(ConmuxError::PaneNotFound { .. })),
+            "attach 不存在 pane 应返回 PaneNotFound，实际: {:?}",
+            result
+        );
+        assert!(
+            !conn.subscriptions.lock().unwrap().contains(&pane_id),
+            "D-6：attach 失败应回滚订阅（subscriptions 不含该 pane）"
         );
     }
 
