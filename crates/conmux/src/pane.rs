@@ -267,6 +267,39 @@ pub struct PaneHost {
     panes: Mutex<HashMap<PaneId, Pane>>,
 }
 
+/// 识别 `cmd.exe /c <abs_path>` 包裹形态，返回真正要执行的 shim 绝对路径（Slice 3）。
+///
+/// conmux-app `create_session` 把 shim（.cmd/.bat/无后缀）包成
+/// `program=cmd.exe + args=["/c", shim_abs, ...]`。本函数提取 args[1] 供 `PaneHost::spawn`
+/// 追加验签——否则只验 cmd.exe（A 档永远过），shim 从不被验签。
+///
+/// 命中条件（全满足才返 Some）：
+/// - `program` 文件名 == `cmd.exe`（大小写不敏感）——比较文件名而非全路径，避免硬编 System32。
+/// - `args.len() >= 2` 且 `args[0]` == `/c`（大小写不敏感）。
+/// - `args[1]` 是绝对路径（相对路径/命令串如 `dir` 不触发——无文件可验，维持现状）。
+///
+/// **不命中 = 不收窄**：其它形态（`cmd /k`、`powershell -c`、`cmd /c dir`）维持现状
+/// （仅 program 验过即放行），不引入新拒绝。
+fn cmd_wrap_target(cmd: &CommandSpec) -> Option<String> {
+    let is_cmd_exe = std::path::Path::new(&cmd.program)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.eq_ignore_ascii_case("cmd.exe"))
+        .unwrap_or(false);
+    if !is_cmd_exe {
+        return None;
+    }
+    let args = &cmd.args;
+    if args.len() < 2 || !args[0].eq_ignore_ascii_case("/c") {
+        return None;
+    }
+    if std::path::Path::new(&args[1]).is_absolute() {
+        Some(args[1].clone())
+    } else {
+        None
+    }
+}
+
 impl PaneHost {
     /// `pub(crate)`——2a 经 mock parts 构造（测试）；Windows 用 `new_windows`。
     pub(crate) fn new(config: PaneHostConfig) -> Self {
@@ -332,6 +365,16 @@ impl PaneHost {
         // Slice 2 信任校验：对已解析的绝对路径 program 做三档决策（A 签名 / B 哈希钉 / C 拒）。
         // trust=None → 跳过（向后兼容）；trust=Some → 校验。TrustPolicy 内部处理 mode
         // （enforce/warn/off），warn/off 始终返 Allow，enforce 返真实决策。
+        //
+        // Slice 3 cmd-wrap 加固：conmux-app 把 shim（.cmd/.bat/无后缀）包成
+        // `program=cmd.exe + args=["/c", shim_abs, ...]`。若只验 program=cmd.exe（A 档永远过），
+        // args 里的 shim 从不被验签 → B 档哈希钉形同虚设。故在 program 验过后，识别
+        // `cmd.exe /c <abs_path>` 形态、追加验签 <abs_path>（真正执行的 shim）。
+        // 防绕过：program 先验（挡 C:\evil\cmd.exe 冒名）。conmux-app 自动包裹的 shim 恒为
+        // 绝对路径（create_session 先 resolve_on_path 再包）→ 必命中、必验签，主威胁已堵。
+        // 已知残留：args[1] 相对路径不验——`cmd /c dir` 是内建无文件可验；但 `cmd /c x.cmd`
+        // 相对名 cmd 仍会按 PATH/cwd 解析并跑、却不被验签。仅当用户**手写**相对 cmd-wrap 命令
+        // 时触发（自残式，非 方案 A 主威胁；自动包裹路径不受影响）。收窄需规范化相对 args 再验。
         if let Some(trust) = &self.trust {
             let path = std::path::Path::new(&req.command.program);
             match trust.verify(path) {
@@ -341,6 +384,18 @@ impl PaneHost {
                         program: req.command.program.clone(),
                         reason,
                     });
+                }
+            }
+            // cmd-wrap 追加验签：program 已过（真 cmd.exe）+ args[0]="/c" + args[1] 绝对路径 → 验 shim。
+            if let Some(shim_path) = cmd_wrap_target(&req.command) {
+                match trust.verify(std::path::Path::new(&shim_path)) {
+                    crate::trust::TrustDecision::Allow => {}
+                    crate::trust::TrustDecision::Reject { reason } => {
+                        return Err(ConmuxError::UntrustedProgram {
+                            program: shim_path,
+                            reason,
+                        });
+                    }
                 }
             }
         }
@@ -1099,6 +1154,192 @@ mod tests {
             f.host.spawn(req("dup")),
             Err(ConmuxError::SpawnFailed { .. })
         ));
+    }
+
+    // ===== Slice 3：cmd-wrap 验签加固 =====
+    //
+    // conmux-app 把 shim（.cmd/.bat/无后缀）包成 `cmd.exe /c <shim_abs>`。原验签只校验
+    // program=cmd.exe（A 档永远过），shim 在 args 里从不被验签。以下测试确认 spawn 现在
+    // 把 shim 路径（而非 cmd.exe）送去二次验签，且 fail-closed 拒绝未 pin 的 shim。
+
+    /// 记录被 verify 的路径，可配置拒绝集（测试 cmd-wrap 把 shim 而非 cmd.exe 送去验签）。
+    struct RecordingTrust {
+        seen: Arc<StdMutex<Vec<String>>>,
+        reject: Vec<String>,
+    }
+    impl crate::trust::TrustPolicy for RecordingTrust {
+        fn verify(&self, program: &std::path::Path) -> crate::trust::TrustDecision {
+            let p = program.to_string_lossy().to_string();
+            self.seen.lock().unwrap().push(p.clone());
+            if self.reject.iter().any(|r| r.eq_ignore_ascii_case(&p)) {
+                crate::trust::TrustDecision::Reject {
+                    reason: format!("mock reject: {p}"),
+                }
+            } else {
+                crate::trust::TrustDecision::Allow
+            }
+        }
+    }
+
+    fn abs_path(name: &str) -> String {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(name)
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// 构造 `cmd.exe /c <shim_abs>` 形态的 SpawnRequest（模拟 conmux-app create_session 包 shim）。
+    fn cmd_wrap_req(id: &str, shim_abs: &str) -> SpawnRequest {
+        SpawnRequest {
+            pane_id: PaneId(id.into()),
+            command: CommandSpec {
+                program: abs_path("cmd.exe"),
+                args: vec!["/c".into(), shim_abs.into()],
+                cwd: Some("D:\\repo".into()),
+                env: vec![],
+            },
+            size: PaneSize { rows: 24, cols: 80 },
+            adapter_id: "claude-code".into(),
+            display_name: Some("rev".into()),
+            created_at: 1_700_000_000,
+        }
+    }
+
+    fn host_with_trust(trust: Arc<dyn crate::trust::TrustPolicy>) -> PaneHost {
+        PaneHost::new(PaneHostConfig {
+            backend: Box::new(MockBackend {
+                state: Arc::new(StdMutex::new(MockSessionState::default())),
+                pid: 1,
+            }),
+            supervisor_factory: Box::new(MockSupervisorFactory {
+                rec: Arc::new(StdMutex::new(SupervisorRecord::default())),
+            }),
+            hooks: vec![],
+            event_sink: None,
+            trust: Some(trust),
+        })
+    }
+
+    #[test]
+    fn cmd_wrap_target_extracts_shim_path() {
+        // 命中：cmd.exe /c <abs> → Some(abs)
+        let cmd = CommandSpec {
+            program: abs_path("cmd.exe"),
+            args: vec!["/c".into(), abs_path("shim.cmd")],
+            cwd: None,
+            env: vec![],
+        };
+        assert_eq!(cmd_wrap_target(&cmd), Some(abs_path("shim.cmd")));
+
+        // 大小写不敏感（CMD.EXE /C）
+        let cmd = CommandSpec {
+            program: abs_path("CMD.EXE"),
+            args: vec!["/C".into(), abs_path("shim.cmd")],
+            cwd: None,
+            env: vec![],
+        };
+        assert_eq!(cmd_wrap_target(&cmd), Some(abs_path("shim.cmd")));
+
+        // 非 cmd.exe（powershell）→ None
+        let cmd = CommandSpec {
+            program: abs_path("powershell.exe"),
+            args: vec!["/c".into(), abs_path("shim.cmd")],
+            cwd: None,
+            env: vec![],
+        };
+        assert_eq!(cmd_wrap_target(&cmd), None);
+
+        // /k 而非 /c → None
+        let cmd = CommandSpec {
+            program: abs_path("cmd.exe"),
+            args: vec!["/k".into(), abs_path("shim.cmd")],
+            cwd: None,
+            env: vec![],
+        };
+        assert_eq!(cmd_wrap_target(&cmd), None);
+
+        // 相对路径 args[1]（如 `cmd /c dir`）→ None（无文件可验，维持现状）
+        let cmd = CommandSpec {
+            program: abs_path("cmd.exe"),
+            args: vec!["/c".into(), "dir".into()],
+            cwd: None,
+            env: vec![],
+        };
+        assert_eq!(cmd_wrap_target(&cmd), None);
+
+        // args 不足 → None
+        let cmd = CommandSpec {
+            program: abs_path("cmd.exe"),
+            args: vec!["/c".into()],
+            cwd: None,
+            env: vec![],
+        };
+        assert_eq!(cmd_wrap_target(&cmd), None);
+    }
+
+    #[test]
+    fn spawn_cmd_wrap_verifies_shim_not_just_cmd() {
+        // 关键断言：cmd-wrap 形态下，shim 路径被送去验签（不只是 cmd.exe）。
+        let seen = Arc::new(StdMutex::new(Vec::new()));
+        let trust: Arc<dyn crate::trust::TrustPolicy> = Arc::new(RecordingTrust {
+            seen: Arc::clone(&seen),
+            reject: vec![],
+        });
+        let host = host_with_trust(trust);
+        let shim = abs_path("test-fake-shim.cmd");
+        host.spawn(cmd_wrap_req("p1", &shim)).unwrap();
+
+        let seen = seen.lock().unwrap();
+        assert!(
+            seen.iter().any(|p| p.eq_ignore_ascii_case(&shim)),
+            "shim 路径应被验签，实际 verify 调用: {seen:?}"
+        );
+        assert!(
+            seen.iter()
+                .any(|p| p.eq_ignore_ascii_case(&abs_path("cmd.exe"))),
+            "cmd.exe 也应被验签（先验 program）: {seen:?}"
+        );
+    }
+
+    #[test]
+    fn spawn_cmd_wrap_rejects_unpinned_shim_fail_closed() {
+        // shim 未 pin → fail-closed 拒绝，错误指向 shim 路径（驱动 pin UI）。
+        let shim = abs_path("test-fake-shim.cmd");
+        let trust: Arc<dyn crate::trust::TrustPolicy> = Arc::new(RecordingTrust {
+            seen: Arc::new(StdMutex::new(Vec::new())),
+            reject: vec![shim.clone()],
+        });
+        let host = host_with_trust(trust);
+        let err = host.spawn(cmd_wrap_req("p1", &shim)).unwrap_err();
+        match err {
+            ConmuxError::UntrustedProgram { program, reason } => {
+                assert!(
+                    program.eq_ignore_ascii_case(&shim),
+                    "错误应指向 shim 路径，实际: {program}"
+                );
+                assert!(reason.contains("mock reject"), "reason: {reason}");
+            }
+            other => panic!("期望 UntrustedProgram，得到 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spawn_cmd_wrap_relative_arg_not_verified() {
+        // `cmd /c dir`（相对 args[1]）→ shim 不触发二次验签，spawn 放行（不破默认 cmd 用法）。
+        let seen = Arc::new(StdMutex::new(Vec::new()));
+        let trust: Arc<dyn crate::trust::TrustPolicy> = Arc::new(RecordingTrust {
+            seen: Arc::clone(&seen),
+            reject: vec!["dir".into()],
+        });
+        let host = host_with_trust(trust);
+        let mut r = cmd_wrap_req("p1", "ignored");
+        r.command.args = vec!["/c".into(), "dir".into()];
+        host.spawn(r).unwrap();
+        let seen = seen.lock().unwrap();
+        assert!(
+            !seen.iter().any(|p| p == "dir"),
+            "相对路径 args[1] 不应被验签: {seen:?}"
+        );
     }
 
     // ===== C-2 锁纪律：表锁=短临界区，阻塞操作一律句柄取出后锁外执行 =====

@@ -609,18 +609,24 @@ fn extract_frontmatter_field(content: &str, field: &str) -> Option<String> {
     None
 }
 
-// ===== Slice 2 信任库管理命令 =====
+// ===== Slice 2/3 信任库管理命令 =====
 //
 // conmux-app 经 daemon 客户端，spawn 实际在 daemon 进程内执行（信任校验也在 daemon）。
-// 此处 pin/unpin/list 命令直接读写 `%APPDATA%\conmux\trust.toml` 文件——daemon 进程
-// 启动时加载一次，pin 后需重启 daemon（或后续 slice 加 reload IPC）才生效。
-// conflux-app 是 in-process PaneHost，SharedTrustStore 共享，pin 即时生效。
-// UI（首次信任弹窗）留后续 slice；此处仅提供命令基础设施，让无签名 CLI 有路可信任。
+// **Slice 3 关键变化**：pin 现走 daemon `PinExecutable` IPC（同 SharedTrustStore Arc，
+// 内存态即时生效 + 存盘），免重启 daemon。IPC 失败（daemon 不可达 / 旧版无此 op）回退
+// 直写 `trust.toml`——下次 daemon 重启加载即见（向后兼容）。unpin/list 仍直读文件
+// （daemon 未暴露 unpin IPC；list 是只读快照，无需即时）。
 
 /// pin 一个可执行文件：算 SHA-256 + 写 pinned_targets + 存盘。
 /// path 必须为绝对路径（与内核 spawn 守卫一致）。
+///
+/// Slice 3：优先走 daemon `PinExecutable` IPC（内存态即时生效，下次 spawn verify 即见）；
+/// IPC 不可用（daemon 不可达 / 旧版）回退直写文件（下次 daemon 重启生效）。
 #[tauri::command]
-pub async fn trust_pin_executable(path: String) -> Result<(), String> {
+pub async fn trust_pin_executable(
+    state: State<'_, ConmuxState>,
+    path: String,
+) -> Result<(), String> {
     let p = std::path::Path::new(&path);
     if !p.is_absolute() {
         return Err(format!("path 必须为绝对路径: {path}"));
@@ -628,6 +634,33 @@ pub async fn trust_pin_executable(path: String) -> Result<(), String> {
     if !p.exists() {
         return Err(format!("文件不存在: {path}"));
     }
+    // 优先 IPC（即时生效）。控制连接不可用 / daemon 旧版无此 op / 任何 IPC 错 → 回退直写。
+    #[cfg(windows)]
+    {
+        use conmux::protocol::{MuxOp, MuxPayload};
+        let ipc_ok = {
+            let mut guard = lock(&state.control);
+            match guard.as_mut() {
+                Some(control) => match control.request(MuxOp::PinExecutable { path: path.clone() }) {
+                    Ok(MuxPayload::Pinned) => true,
+                    Ok(other) => {
+                        // 不预期，但不算致命——回退直写并附诊断。
+                        eprintln!("[trust_pin] IPC 应答非预期: {other:?}，回退直写");
+                        false
+                    }
+                    Err(e) => {
+                        eprintln!("[trust_pin] IPC 失败，回退直写: {e}");
+                        false
+                    }
+                },
+                None => false,
+            }
+        };
+        if ipc_ok {
+            return Ok(());
+        }
+    }
+    // 回退：直写文件（向后兼容；下次 daemon 重启加载即见）。
     let mut store = conmux::TrustStore::load_or_create();
     store.pin_executable(&path)
 }

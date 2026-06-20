@@ -116,6 +116,26 @@ pub struct SessionInfo {
     pub exited: bool,
 }
 
+/// Slice 3：spawn 被信任校验拒绝的结构化错误（前端据此弹 pin UI）。
+///
+/// 经 `spawn_session_into` 的 `Err(String)` 通道传给前端——序列化为 JSON 字符串，
+/// 前端 `createSession` JSON.parse 后按 `kind` 分流。`pinnable=true` 表示可经
+/// `trust_pin_executable` 自助信任后重试（无签名 shim/exe 均属此类）。
+///
+/// **注意**：`program` 是真正被拒的目标（shim 或 exe），**非 cmd.exe 包裹层**——
+/// 内核 cmd-wrap 加固后，拒绝错误指向 args 里的 shim 路径，UI 据此 pin 正确目标。
+#[derive(Debug, Clone, Serialize)]
+pub struct SpawnUntrustedError {
+    /// 固定 `"UntrustedProgram"`（前端 type guard）。
+    pub kind: &'static str,
+    /// 被拒的绝对路径（shim 或 exe）。
+    pub program: String,
+    /// 内核拒绝原因（未签名 / 哈希不匹配等）。
+    pub reason: String,
+    /// true = 可 pin 后重试。
+    pub pinnable: bool,
+}
+
 /// 跨命令共享态（M④ 多 pane）。两平台同形（字段集一致），daemon 路径在 Windows 才填充。
 pub struct ConmuxState {
     /// 控制连接（Spawn / KillTree…），长连。attach 各会话独立连接，故控制态长连独立。
@@ -280,6 +300,20 @@ pub(crate) fn spawn_session_into(
         match control.request(MuxOp::Spawn(spawn)) {
             Ok(MuxPayload::Spawned(_)) => {}
             Ok(other) => return Err(format!("Spawn 应答非预期: {other:?}")),
+            Err(conmux::ConmuxError::UntrustedProgram { program, reason }) => {
+                // Slice 3：信任拒绝 → 结构化 JSON（前端 createSession 解析后弹 pin UI）。
+                // program 是真正被拒目标（shim 或 exe，非 cmd.exe 包裹层）——内核 cmd-wrap
+                // 加固后错误已指向 args 里的 shim 路径。pinnable=true：无签名 shim/exe 均可
+                // 经 trust_pin_executable 自助信任后重试。
+                let e = SpawnUntrustedError {
+                    kind: "UntrustedProgram",
+                    program,
+                    reason,
+                    pinnable: true,
+                };
+                return Err(serde_json::to_string(&e)
+                    .unwrap_or_else(|_| "UntrustedProgram（序列化失败）".to_string()));
+            }
             Err(e) => return Err(format!("Spawn 失败: {e}")),
         }
     }

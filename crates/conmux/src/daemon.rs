@@ -205,6 +205,10 @@ struct DaemonShared {
     attaching: Mutex<HashSet<PaneId>>,
     /// 连接级审计日志（D-2/RT-2，本地文件 fail-soft）。
     log: DaemonLog,
+    /// 信任库句柄（Slice 3：PinExecutable IPC 经此直接改内存态 + 存盘，
+    /// 与 PaneHost 持有的 `Arc<dyn TrustPolicy>` 是**同一 Arc**，pin 后下次 spawn verify 即见）。
+    /// None = 测试态（PinExecutable 返回 Unsupported）。
+    trust_store: Option<Arc<crate::trust::SharedTrustStore>>,
 }
 
 /// conmux daemon。`bind` 绑定管道，`serve` 进入服务循环。
@@ -222,6 +226,9 @@ impl Daemon {
         // Slice 2：启动时加载 TrustStore 一次，注入 PaneHost（spawn 热路径不做文件 I/O）。
         // 用 SharedTrustStore：未来 reload IPC 可经同一共享态即时生效。
         let trust_store = Arc::new(crate::trust::SharedTrustStore::load_or_create());
+        // 同一 Arc 两份：一份 move 进 PaneHost（coerce 为 Arc<dyn TrustPolicy>），
+        // 一份留 DaemonShared 供 PinExecutable IPC 直接改内存态（保持具体类型调 pin_executable）。
+        let trust_for_shared = Arc::clone(&trust_store);
         let host = PaneHost::new_windows_with_trust(
             Vec::new(),
             Arc::new(FanoutSink {
@@ -237,6 +244,7 @@ impl Daemon {
             next_conn_id: AtomicU64::new(1),
             attaching: Mutex::new(HashSet::new()),
             log: DaemonLog::for_current_user(),
+            trust_store: Some(trust_for_shared),
         });
         Ok(Self { shared, listener })
     }
@@ -481,6 +489,18 @@ fn build_reply(req: MuxRequest, shared: &Arc<DaemonShared>, conn: &ConnHandle) -
         MuxOp::ListPanes => Ok(MuxPayload::Panes(host.list_panes())),
         MuxOp::ListThemes => Ok(MuxPayload::Themes(crate::theme::builtin_terminal_themes())),
         MuxOp::KillServer => Ok(MuxPayload::ServerKillScheduled),
+        // Slice 3：pin 可执行文件到信任库。经 SharedTrustStore 同一 Arc 直接改内存态 + 存盘，
+        // 下次 spawn verify 即见新 pin（免 daemon 重启）。path 校验绝对路径 + 存在性；
+        // pin_executable 内部算 SHA-256 写 pinned_targets。
+        MuxOp::PinExecutable { path } => match &shared.trust_store {
+            Some(store) => store
+                .pin_executable(&path)
+                .map(|_| MuxPayload::Pinned)
+                .map_err(|e| ConmuxError::Unsupported { message: e }),
+            None => Err(ConmuxError::Unsupported {
+                message: "此 daemon 未装配信任库（测试态），不支持 pin".into(),
+            }),
+        },
         // D-5 订阅：维护本连接订阅集（fan-out 据此投递）。
         MuxOp::Subscribe { pane_id } => {
             conn.subscriptions.lock().unwrap_or_else(recover).insert(pane_id);
@@ -683,6 +703,7 @@ mod tests {
             next_conn_id: AtomicU64::new(1),
             attaching: Mutex::new(HashSet::new()),
             log: DaemonLog::with_path(std::env::temp_dir().join("conmux-test-unused.log"), MAX_LOG_BYTES),
+            trust_store: None,
         })
     }
 

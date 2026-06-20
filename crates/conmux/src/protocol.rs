@@ -95,6 +95,10 @@ pub enum MuxOp {
     SetTheme { id: String },
     /// 显式终结 daemon 及全部会话（D-2，先 kill 全部 pane 再退出）。→ [`MuxPayload::ServerKillScheduled`]
     KillServer,
+    /// pin 一个可执行文件到信任库（Slice 3：让 daemon 内存态即时生效，免重启）。
+    /// → [`MuxPayload::Pinned`]。daemon 调 `SharedTrustStore::pin_executable`（同 Arc，
+    /// 下次 spawn verify 即见新 pin）+ 存盘。path 必须绝对路径。
+    PinExecutable { path: String },
 }
 
 /// 应答帧（Ok/Err 均携带 correlation_id 供配对）。
@@ -161,6 +165,8 @@ pub enum MuxPayload {
     ThemeSet,
     /// KillServer → 终结已排程（daemon 随即 kill 全部 pane 并退出）
     ServerKillScheduled,
+    /// PinExecutable → pin 成功（无载荷；失败走 `MuxReply::Err`）。
+    Pinned,
 }
 
 /// IPC 帧信封（D-4 / 红队 H-2）。daemon 与客户端在同一连接上交换的全部帧。
@@ -272,6 +278,9 @@ mod tests {
                 id: "b-dark-ink".into(),
             },
             MuxOp::KillServer,
+            MuxOp::PinExecutable {
+                path: "C:\\shim\\evil.cmd".into(),
+            },
         ];
         for (i, op) in ops.into_iter().enumerate() {
             let req = MuxRequest {
@@ -395,6 +404,7 @@ mod tests {
             MuxPayload::Themes(themes),
             MuxPayload::ThemeSet,
             MuxPayload::ServerKillScheduled,
+            MuxPayload::Pinned,
         ];
         for (i, payload) in payloads.into_iter().enumerate() {
             let reply = MuxReply::Ok {

@@ -42,8 +42,11 @@ import {
   restartSession,
   setActive,
   subscribeSessions,
+  isSpawnUntrustedError,
+  type CreateSpec,
   type RecentEntry,
   type SessionEntry,
+  type SpawnUntrustedError,
 } from "./lib/sessions";
 import { parseCommand, type LaunchEntry } from "./lib/launch-registry";
 import { useLeaderKeyboard } from "./lib/leader";
@@ -94,6 +97,15 @@ export default function App() {
   const [leaderConfigOpen, setLeaderConfigOpen] = useState(false);
   const leaderConfigOpenRef = useRef(leaderConfigOpen);
   leaderConfigOpenRef.current = leaderConfigOpen;
+
+  // ===== Slice 3 pin UI（最小功能化）：spawn 被信任校验拒绝时弹此提示 =====
+  // 显示被拒程序路径 + "未签名"，用户点"信任并启动" → trust_pin_executable → 重试 createSession；
+  // 可取消。pendingSpec 缓存被拒的启动参数（重试时复用，不丢用户输入的 args/cwd）。
+  // pinning=true 时禁用按钮（防双击）；pinError 显 pin 失败原因（如文件不存在）。
+  const [pinPrompt, setPinPrompt] = useState<SpawnUntrustedError | null>(null);
+  const [pinPendingSpec, setPinPendingSpec] = useState<CreateSpec | undefined>(undefined);
+  const [pinning, setPinning] = useState(false);
+  const [pinError, setPinError] = useState<string | null>(null);
   // 当前 leader 前缀（响应式订阅；StatusBar 徽章 + 配置回显用）。
   const leaderChord = useSyncExternalStore(subscribeLeaderChord, getLeaderChord);
   const leaderLabel = formatLeaderLabel(leaderChord);
@@ -357,12 +369,62 @@ export default function App() {
     setHomeOverlayOpen(false);
   }, []);
 
-  const handleCreate = useCallback(() => {
-    void createSession().catch((e) => {
-      // create 失败 fail-soft（不崩 UI）：记 console，缩点条不变。
-      console.error("[conmux] 新建会话失败:", e);
-    });
+  // ===== Slice 3 pin UI 回调（定义在 handleCreate 之前，供其依赖）=====
+  // handleCreateError：createSession 失败统一处理——UntrustedProgram 弹 pin UI（缓存 spec
+  // 供重试），其它错误记 console。restartSession 失败时 spec 无法精确复原（其内部已 parse），
+  // pin 后重试只能用 undefined spec（默认 powershell）——可接受（重启场景罕见命中信任拒绝）。
+  const handleCreateError = useCallback((e: unknown, spec?: CreateSpec) => {
+    if (isSpawnUntrustedError(e)) {
+      setPinPendingSpec(spec);
+      setPinError(null);
+      setPinPrompt(e);
+      return;
+    }
+    console.error("[conmux] 新建会话失败:", e);
   }, []);
+
+  // handlePinAndRetry：用户点"信任并启动" → trust_pin_executable(program) → 重试 createSession。
+  // pin 成功后 daemon 内存态即时生效（IPC），重试 spawn 应过；仍失败则更新 pinError（如哈希变）。
+  // pin 失败（文件不存在 / IO 错）→ pinError 显原因，弹窗不关（用户可取消或修正后重试）。
+  const handlePinAndRetry = useCallback(async () => {
+    const err = pinPrompt;
+    if (!err || !err.pinnable) return;
+    setPinning(true);
+    setPinError(null);
+    try {
+      await invoke<void>("trust_pin_executable", { path: err.program });
+    } catch (pinErr) {
+      setPinning(false);
+      setPinError(typeof pinErr === "string" ? pinErr : String(pinErr));
+      return;
+    }
+    // pin 成功 → 重试原 spec。成功则关弹窗；失败则按新错误分流（可能仍是 UntrustedProgram，
+    // 如 daemon 旧版无 IPC、回退直写文件但 daemon 未重启 → 仍拒 → 更新 pinPrompt 留弹窗）。
+    try {
+      await createSession(pinPendingSpec);
+      setPinPrompt(null);
+      setPinPendingSpec(undefined);
+    } catch (retryErr) {
+      if (isSpawnUntrustedError(retryErr)) {
+        setPinPrompt(retryErr);
+      } else {
+        setPinError(typeof retryErr === "string" ? retryErr : String(retryErr));
+      }
+    } finally {
+      setPinning(false);
+    }
+  }, [pinPrompt, pinPendingSpec]);
+
+  const handlePinCancel = useCallback(() => {
+    setPinPrompt(null);
+    setPinPendingSpec(undefined);
+    setPinError(null);
+    setPinning(false);
+  }, []);
+
+  const handleCreate = useCallback(() => {
+    void createSession().catch(handleCreateError);
+  }, [handleCreateError]);
 
   // Home QUICK LAUNCH chip → parse 命令 → 起为新会话（D-1，携带 launchName）。
   const handleLaunch = useCallback((entry: LaunchEntry) => {
@@ -372,17 +434,13 @@ export default function App() {
       program,
       args,
       ...(entry.cwd ? { cwd: entry.cwd } : {}),
-    }).catch((e) => {
-      console.error("[conmux] 快捷启动失败:", e);
-    });
-  }, []);
+    }).catch(handleCreateError);
+  }, [handleCreateError]);
 
   // Home RECENT → 重开（parse 原命令 → 起为新会话，携带 launchName/cwd）。
   const handleReopenRecent = useCallback((entry: RecentEntry) => {
-    void reopenRecent(entry).catch((e) => {
-      console.error("[conmux] 重开会话失败:", e);
-    });
-  }, []);
+    void reopenRecent(entry).catch(handleCreateError);
+  }, [handleCreateError]);
 
   const clearExitMirror = useCallback((instanceId: string) => {
     // 清退出态镜像（避免移除/重启后残留陈旧退出信息）。
@@ -407,11 +465,9 @@ export default function App() {
   const handleRestart = useCallback(
     (instanceId: string) => {
       clearExitMirror(instanceId);
-      void restartSession(instanceId).catch((e) => {
-        console.error("[conmux] 重启会话失败:", e);
-      });
+      void restartSession(instanceId).catch(handleCreateError);
     },
-    [clearExitMirror]
+    [clearExitMirror, handleCreateError]
   );
 
   // active 会话的观测者（驱动 aware-header）。无会话时为 null。
@@ -606,6 +662,110 @@ export default function App() {
           onClose={() => setHomeOverlayOpen(false)}
           onSelectRunning={handleSelectRunning}
         />
+      )}
+
+      {/* Slice 3 pin UI（最小功能化）：spawn 被信任校验拒绝时弹此提示。
+          走 --cx-* 变量随风格；不追求终版视觉（终版另走 Pencil）。
+          显示被拒程序路径 + "未签名" + 原因；"信任并启动" → trust_pin_executable → 重试；
+          "取消" 关弹窗。pinning 时禁用按钮防双击；pinError 显 pin 失败原因。 */}
+      {pinPrompt && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1100,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "rgba(0,0,0,0.4)",
+          }}
+        >
+          <div
+            style={{
+              background: "var(--cx-surface-raised)",
+              border: "1px solid var(--cx-line-hairline)",
+              borderRadius: 8,
+              padding: 24,
+              maxWidth: 480,
+              width: "90%",
+              color: "var(--cx-text-primary)",
+              fontFamily: "var(--cx-font-sans, system-ui, sans-serif)",
+            }}
+          >
+            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>
+              程序未签名，无法启动
+            </div>
+            <div style={{ fontSize: 13, marginBottom: 8 }}>
+              <strong>路径：</strong>
+              <code
+                style={{
+                  display: "block",
+                  marginTop: 4,
+                  padding: 8,
+                  background: "var(--cx-surface-base)",
+                  borderRadius: 4,
+                  wordBreak: "break-all",
+                  fontSize: 12,
+                }}
+              >
+                {pinPrompt.program}
+              </code>
+            </div>
+            <div style={{ fontSize: 13, marginBottom: 8, color: "var(--cx-text-content)" }}>
+              <strong>原因：</strong>
+              {pinPrompt.reason}
+            </div>
+            {pinError && (
+              <div
+                style={{
+                  fontSize: 12,
+                  marginBottom: 8,
+                  color: "var(--cx-accent-signal, #c0392b)",
+                }}
+              >
+                信任失败：{pinError}
+              </div>
+            )}
+            <div style={{ fontSize: 12, marginBottom: 16, color: "var(--cx-text-content)" }}>
+              信任后将记录此程序的 SHA-256 哈希，后续启动不再拦截。仅信任你确认安全的程序。
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                onClick={handlePinCancel}
+                disabled={pinning}
+                style={{
+                  padding: "8px 16px",
+                  background: "var(--cx-surface-chrome)",
+                  border: "1px solid var(--cx-line-hairline)",
+                  borderRadius: 4,
+                  color: "var(--cx-text-primary)",
+                  cursor: pinning ? "not-allowed" : "pointer",
+                  fontSize: 13,
+                }}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={handlePinAndRetry}
+                disabled={pinning || !pinPrompt.pinnable}
+                style={{
+                  padding: "8px 16px",
+                  background: "var(--cx-accent-signal)",
+                  border: "1px solid var(--cx-accent-signal)",
+                  borderRadius: 4,
+                  color: "#fff",
+                  cursor: pinning ? "not-allowed" : "pointer",
+                  fontSize: 13,
+                  opacity: pinning ? 0.6 : 1,
+                }}
+              >
+                {pinning ? "信任中…" : "信任并启动"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </WindowFrame>
   );

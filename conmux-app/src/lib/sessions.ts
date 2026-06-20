@@ -259,18 +259,84 @@ export interface CreateSpec {
 }
 
 /**
+ * Slice 3：spawn 被信任校验拒绝的结构化错误（后端 SpawnUntrustedError 序列化）。
+ *
+ * 后端 `spawn_session_into` 捕获 `ConmuxError::UntrustedProgram` 后序列化为 JSON 字符串
+ * 经 `Err(String)` 通道返回；前端 `createSession` 解析后抛此 typed error，调用方（App.tsx）
+ * 据此弹 pin UI（路径 + 未签名 + 信任并启动 / 取消）。
+ *
+ * `program` 是真正被拒的目标（shim 或 exe，**非 cmd.exe 包裹层**）——内核 cmd-wrap 加固后
+ * 拒绝错误已指向 args 里的 shim 路径，UI 据此 pin 正确目标。
+ */
+export interface SpawnUntrustedError {
+  /** 固定 `"UntrustedProgram"`（type guard）。 */
+  kind: "UntrustedProgram";
+  /** 被拒的绝对路径（shim 或 exe）。 */
+  program: string;
+  /** 内核拒绝原因（未签名 / 哈希不匹配等）。 */
+  reason: string;
+  /** true = 可经 `trust_pin_executable` 自助信任后重试。 */
+  pinnable: boolean;
+}
+
+/**
+ * 判定一个**已解析对象**是否为结构化 UntrustedProgram（typed error，throw/catch 流转 + pin UI 用）。
+ * 注意：校验的是对象（非原始字符串）——pinPrompt 存的是对象，渲染读 .program/.reason/.pinnable。
+ * 原始 invoke 字符串错误请先经 parseSpawnUntrustedError 解析为对象。
+ */
+export function isSpawnUntrustedError(e: unknown): e is SpawnUntrustedError {
+  if (typeof e !== "object" || e === null) return false;
+  const o = e as Record<string, unknown>;
+  return (
+    o.kind === "UntrustedProgram" &&
+    typeof o.program === "string" &&
+    typeof o.reason === "string" &&
+    typeof o.pinnable === "boolean"
+  );
+}
+
+/**
+ * 把后端 invoke 抛出的原始字符串错误（lib.rs 序列化的 SpawnUntrustedError JSON）解析为
+ * 对象；非此类（解析失败 / 形状不符 / 非字符串）返回 null。createSession 用它把 wire 字符串
+ * 转成 typed 对象再抛出，使调用方拿到的是对象而非字符串。
+ */
+export function parseSpawnUntrustedError(e: unknown): SpawnUntrustedError | null {
+  if (typeof e !== "string") return null;
+  try {
+    const obj = JSON.parse(e) as unknown;
+    return isSpawnUntrustedError(obj) ? obj : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 新建会话（「+」/快捷启动）：create_session({program,args,cwd}) → 加入 list + setActive。
  *   - 无参（`createSession()`）= 默认 powershell 会话，name 派生（不破 M④ 默认 "conmux"）。
  *   - 带 spec.name = 快捷启动：entry.launchName=spec.name（缩点条/Home 显其名，D-3）、
  *     launchCommand = 原命令重建（program + args）供 RECENT 重开。
- * 失败抛出（调用方可降级处理，如 toast）；store 不变。
+ *
+ * 失败抛出：
+ *   - `SpawnUntrustedError`（Slice 3）：信任校验拒绝，调用方弹 pin UI（信任并重试）。
+ *   - 其它错误：原字符串抛出（调用方降级处理，如 toast）；store 不变。
  */
 export async function createSession(spec?: CreateSpec): Promise<SessionEntry> {
-  const info = await invoke<SessionInfo>("create_session", {
-    program: spec?.program ?? null,
-    args: spec?.args ?? null,
-    cwd: spec?.cwd ?? null,
-  });
+  let info: SessionInfo;
+  try {
+    info = await invoke<SessionInfo>("create_session", {
+      program: spec?.program ?? null,
+      args: spec?.args ?? null,
+      cwd: spec?.cwd ?? null,
+    });
+  } catch (e) {
+    // Slice 3：后端以 JSON 字符串报信任拒绝 → 解析为 typed 对象再抛（调用方 setPinPrompt 存对象、
+    // 渲染读 .program/.reason/.pinnable）。**必须抛对象**：先前 bug = 原样抛字符串致 pin 弹窗
+    // 路径/原因空、按钮 disabled（活体 e2e 2026-06-20 抓到）。
+    const untrusted = parseSpawnUntrustedError(e);
+    if (untrusted) throw untrusted;
+    // 其它错误原样抛（字符串形态，调用方降级）。
+    throw e;
+  }
   const entry = toEntry(info);
   // 携带启动名 / 命令（快捷启动才有；默认会话保持 deriveName）。
   if (spec?.name !== undefined) entry.launchName = spec.name;
