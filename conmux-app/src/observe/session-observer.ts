@@ -202,6 +202,19 @@ export class SessionObserver {
   private onOutput(base64Data: string): void {
     const text = this.decodeBase64Utf8(base64Data);
     if (text.length === 0) return;
+    this.feedChunk(text);
+  }
+
+  /**
+   * 喂入一块已解码的输出文本（strip→sniff upgrade→parser.parse→mergePatch→commit）。
+   *
+   * 从 onOutput 抽出的入口（行为零变）：onOutput 仍由 Tauri pty-output 事件回调，解码
+   * base64 后委托本方法。**导出为 public 仅为可测性**——端到端 replay harness 在无
+   * Tauri/无 PTY 下直接喂入分块字节，走真 stripAnsi/registry/extractSubagents/
+   * accumulateSubagents 链路（不 fake parser）。原 Tauri 订阅路径不动，行为零变。
+   */
+  feedChunk(text: string): void {
+    if (text.length === 0) return;
 
     const now = Date.now();
     this.lastOutputAt = now;
