@@ -677,3 +677,86 @@ pub async fn trust_unpin(path: String) -> Result<(), String> {
     let mut store = conmux::TrustStore::load_or_create();
     store.unpin(&path)
 }
+
+// ===== WSL 启动 picker（列已装发行版，供 Home 选发行版 + CLI 生成命令）=====
+
+/// 解析 `wsl --list --quiet` 的 **UTF-16LE** 输出为发行版名列表（纯函数，便于单测）。
+/// wsl.exe 输出是 UTF-16LE（每 ASCII 字符夹一个 NUL，按 UTF-8 直读会得夹 NUL 乱码）；
+/// 按 u16 小端解码后逐行 trim、去 BOM、去空行 / 残留 NUL / `\r`。
+pub(crate) fn parse_wsl_list(bytes: &[u8]) -> Vec<String> {
+    let start = if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE {
+        2
+    } else {
+        0
+    };
+    let u16s: Vec<u16> = bytes[start..]
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    String::from_utf16_lossy(&u16s)
+        .lines()
+        .map(|l| l.trim().trim_matches('\u{0}').trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// 列出已安装的 WSL 发行版（Home 的 WSL 启动 picker 用）。跑 `wsl.exe --list --quiet`
+/// （UTF-16LE 输出，见 `parse_wsl_list`）。这是 std::process 探测调用、非 PTY 会话 spawn，
+/// 不经验签闸。wsl 未安装 / 命令失败 → 返回**空 Vec**（前端据空降级到纯文本加项）。
+#[tauri::command]
+pub async fn list_wsl_distros() -> Result<Vec<String>, String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000; // 不弹控制台窗口
+        match std::process::Command::new("wsl.exe")
+            .args(["--list", "--quiet"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+        {
+            Ok(o) if o.status.success() => Ok(parse_wsl_list(&o.stdout)),
+            _ => Ok(Vec::new()),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(Vec::new())
+    }
+}
+
+#[cfg(test)]
+mod wsl_tests {
+    use super::parse_wsl_list;
+
+    fn utf16le(s: &str) -> Vec<u8> {
+        let mut b = Vec::new();
+        for u in s.encode_utf16() {
+            b.extend_from_slice(&u.to_le_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn parse_wsl_list_decodes_utf16le_names() {
+        let b = utf16le("Ubuntu\r\nUbuntu-22.04\r\n");
+        assert_eq!(
+            parse_wsl_list(&b),
+            vec!["Ubuntu".to_string(), "Ubuntu-22.04".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_wsl_list_empty_input() {
+        assert!(parse_wsl_list(&[]).is_empty());
+    }
+
+    #[test]
+    fn parse_wsl_list_strips_bom_and_blank_lines() {
+        let mut b = vec![0xFFu8, 0xFE];
+        b.extend_from_slice(&utf16le("Debian\r\n\r\nkali-linux\r\n"));
+        assert_eq!(
+            parse_wsl_list(&b),
+            vec!["Debian".to_string(), "kali-linux".to_string()]
+        );
+    }
+}

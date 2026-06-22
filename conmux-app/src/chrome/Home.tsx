@@ -29,6 +29,7 @@ import {
   type FC,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   addEntry,
   getLaunchEntries,
@@ -223,6 +224,10 @@ const Home: FC<HomeProps> = ({
   const [addName, setAddName] = useState("");
   const [addCommand, setAddCommand] = useState("");
   const [addCwd, setAddCwd] = useState("");
+  // WSL 启动 picker：列已装发行版供选 + 可选 CLI → 生成 `wsl -d <distro> -- <cli>`（空列表降级纯文本）。
+  const [wslDistros, setWslDistros] = useState<string[]>([]);
+  const [wslDistro, setWslDistro] = useState("");
+  const [wslCli, setWslCli] = useState("");
 
   // ===== 全键盘导航：拍平可选项（M⑤d §3）=====
   // 顺序 = [...recent(reopen), ...quick(launch), ...(overlay? running(select): [])]。
@@ -250,6 +255,15 @@ const Home: FC<HomeProps> = ({
     return () => cancelAnimationFrame(id);
   }, [overlay]);
 
+  // 加项表单打开（非编辑态）时拉一次已装 WSL 发行版（空 = 无 WSL → picker 不显，降级纯文本加项）。
+  useEffect(() => {
+    if (addOpen && editId === null) {
+      invoke<string[]>("list_wsl_distros")
+        .then(setWslDistros)
+        .catch(() => setWslDistros([]));
+    }
+  }, [addOpen, editId]);
+
   /** 关闭并清空加项 / 编辑表单。 */
   const closeForm = (): void => {
     setAddOpen(false);
@@ -257,6 +271,8 @@ const Home: FC<HomeProps> = ({
     setAddName("");
     setAddCommand("");
     setAddCwd("");
+    setWslDistro("");
+    setWslCli("");
   };
 
   /** 打开编辑表单（预填该项 name/command/cwd；提交走 updateEntry）。 */
@@ -280,6 +296,14 @@ const Home: FC<HomeProps> = ({
       addEntry({ name, command, ...(cwd ? { cwd } : {}) });
     }
     closeForm();
+  };
+
+  /** WSL picker：选发行版 / 填 CLI → 生成 `wsl -d <distro> [-- <cli>]` 写入命令字段（名空则自动建议）。 */
+  const rebuildWslCommand = (distro: string, cli: string): void => {
+    if (distro === "") return;
+    const c = cli.trim();
+    setAddCommand(`wsl -d ${distro}${c ? ` -- ${c}` : ""}`);
+    if (addName.trim() === "") setAddName(c || distro);
   };
 
   /** 激活当前选中项（⏎ / 行点击）。按类型分派；激活后 overlay 模式关闭叠层。 */
@@ -709,6 +733,58 @@ const Home: FC<HomeProps> = ({
                 }
               }}
             >
+              {editId === null && wslDistros.length > 0 && (
+                <div
+                  data-testid="conmux-home-wsl-row"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    flexBasis: "100%",
+                  }}
+                >
+                  <span
+                    style={{
+                      fontFamily: MONO,
+                      fontSize: 11,
+                      letterSpacing: 1,
+                      color: "var(--cx-text-faint)",
+                    }}
+                  >
+                    WSL
+                  </span>
+                  <select
+                    data-testid="conmux-home-wsl-distro"
+                    value={wslDistro}
+                    onChange={(e) => {
+                      const d = e.target.value;
+                      setWslDistro(d);
+                      rebuildWslCommand(d, wslCli);
+                    }}
+                    style={{ ...addInputStyle(140), padding: "0 6px" }}
+                  >
+                    <option value="">选发行版…</option>
+                    {wslDistros.map((d) => (
+                      <option key={d} value={d}>
+                        {d}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    data-testid="conmux-home-wsl-cli"
+                    value={wslCli}
+                    onChange={(e) => {
+                      const c = e.target.value;
+                      setWslCli(c);
+                      rebuildWslCommand(wslDistro, c);
+                    }}
+                    placeholder="CLI（可选，如 htop）"
+                    spellCheck={false}
+                    autoComplete="off"
+                    style={addInputStyle(150)}
+                  />
+                </div>
+              )}
               <input
                 data-testid="conmux-home-add-name"
                 value={addName}

@@ -474,6 +474,7 @@ pub fn run() {
             commands::trust_pin_executable,
             commands::trust_list,
             commands::trust_unpin,
+            commands::list_wsl_distros,
         ])
         .run(tauri::generate_context!())
         .expect("error while running conmux-app");
