@@ -20,6 +20,7 @@
 import { useEffect, useState, type FC } from "react";
 import type { SessionState, SessionStatus } from "./session-status";
 import { ConmuxBrandMark } from "./ConmuxBrandMark";
+import { WindowControls } from "./WindowControls";
 
 const STATUS_VAR: Record<SessionStatus, string> = {
   running: "var(--cx-status-running)",
@@ -326,8 +327,12 @@ const TopBar: FC<TopBarProps> = ({
   const clampY = menu ? Math.max(8, Math.min(menu.y, window.innerHeight - MENU_H - 8)) : 0;
 
   return (
+  // 无边框窗自绘标题栏：缩点条本身作窗口拖拽区（data-tauri-drag-region）——
+  // Tauri 仅当 mousedown 的「直接目标」带此属性才发起拖拽，故会话点/按钮/窗控等交互子元素
+  // （它们是事件目标且无此属性）照常可点，只有空白条体与 spacer 触发拖窗；双击拖拽区切最大化。
   <div
     data-testid="conmux-topbar"
+    data-tauri-drag-region
     style={{
       display: "flex",
       alignItems: "center",
@@ -373,8 +378,8 @@ const TopBar: FC<TopBarProps> = ({
       ))}
     </div>
 
-    {/* flex spacer */}
-    <div style={{ flex: 1 }} />
+    {/* flex spacer（同时是主拖拽区：中段大片空白） */}
+    <div data-tauri-drag-region style={{ flex: 1 }} />
 
     {/* 「+」新建会话钮（create_session powershell → 新点 + setActive）。 */}
     <button
@@ -428,6 +433,9 @@ const TopBar: FC<TopBarProps> = ({
     >
       ◐ {styleName}
     </button>
+
+    {/* 窗口控制（无边框窗自绘标题栏：最小化 / 最大化⇄还原 / 关闭），最右端。 */}
+    <WindowControls />
 
     {/* 会话点右键小菜单（scrim 捕获外点 + 视口内定位卡片；Esc 关）。 */}
     {menu && menuSession && (

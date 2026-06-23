@@ -1,10 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "conmux-app default capabilities — core event (listen/emit) for daemon-client PTY stream",
+  "description": "conmux-app default capabilities — core event (listen/emit) for daemon-client PTY stream + 无边框窗自绘标题栏窗口控制（拖动/最小化/最大化/关闭）",
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "core:event:default"
+    "core:event:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-is-maximized",
+    "core:window:allow-close"
   ]
 }
