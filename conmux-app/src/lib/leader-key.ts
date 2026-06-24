@@ -93,6 +93,69 @@ export function subscribeLeaderChord(cb: () => void): () => void {
   return () => listeners.delete(cb);
 }
 
+// ===== 直接快捷键（免前缀，opt-in，2026-06-24）=====
+//
+// 默认 OFF：守 veto「永不弄坏 CLI」——开启前 conmux 只取走前缀键一个键。开启后额外取走
+// Ctrl+Alt+H/J/K/L（直接切 pane，免两步前缀），这是用便利换 veto 安全，故须用户显式开。
+// 选 Ctrl+Alt+HJKL（非方向键）：避开 Windows Intel 显卡 Ctrl+Alt+方向 屏幕旋转热键；
+// HJKL = vim 方向，conmux 目标人群（tmux/vim 用户）熟。
+const DIRECT_KEY = "conmux.directShortcuts";
+
+function loadDirect(): boolean {
+  try {
+    return localStorage.getItem(DIRECT_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+let directOn = loadDirect();
+const directListeners = new Set<() => void>();
+
+export function getDirectShortcuts(): boolean {
+  return directOn;
+}
+
+export function setDirectShortcuts(on: boolean): void {
+  if (on === directOn) return;
+  directOn = on;
+  try {
+    localStorage.setItem(DIRECT_KEY, on ? "1" : "0");
+  } catch {
+    /* 私密模式 — 内存里仍生效 */
+  }
+  for (const cb of directListeners) cb();
+}
+
+export function subscribeDirectShortcuts(cb: () => void): () => void {
+  directListeners.add(cb);
+  return () => directListeners.delete(cb);
+}
+
+/** Ctrl+Alt+H/J/K/L 的 code → pane 导航方向（vim）。非这四键 → null。 */
+export function directNavDir(
+  e: Pick<KeyboardEvent, "ctrlKey" | "altKey" | "shiftKey" | "metaKey" | "code"> & {
+    getModifierState?: (key: string) => boolean;
+  }
+): "left" | "right" | "up" | "down" | null {
+  if (!e.ctrlKey || !e.altKey || e.shiftKey || e.metaKey) return null;
+  // AltGr 在浏览器里报成 ctrl+alt（红队 S-1）：intl 键盘 AltGr+字母组字符（{ [ @ 等）。
+  // 真按 AltGr 时不拦，把键留给终端组字 —— 守 veto，让 opt-in 在非 US 布局也不弄坏输入。
+  if (e.getModifierState?.("AltGraph")) return null;
+  switch (e.code) {
+    case "KeyH":
+      return "left";
+    case "KeyJ":
+      return "down";
+    case "KeyK":
+      return "up";
+    case "KeyL":
+      return "right";
+    default:
+      return null;
+  }
+}
+
 /**
  * KeyboardEvent 是否匹配 leader 前缀（精确修饰键）：ctrl/alt 须与配置一致，
  * shift/meta 必须未按（避免 Ctrl+Shift+Space 误中 Ctrl+Space），code 或 key 命中。

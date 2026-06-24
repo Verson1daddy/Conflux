@@ -10,7 +10,9 @@ import { useEffect, useRef, useState, type FC } from "react";
 import {
   DEFAULT_LEADER,
   formatLeaderLabel,
+  getDirectShortcuts,
   getLeaderChord,
+  setDirectShortcuts,
   setLeaderChord,
   type LeaderChord,
 } from "../lib/leader-key";
@@ -28,8 +30,15 @@ const LeaderConfig: FC<LeaderConfigProps> = ({ onClose }) => {
   const current = getLeaderChord();
   const [pending, setPending] = useState<LeaderChord | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [directOn, setDirectOn] = useState(getDirectShortcuts());
   const pendingRef = useRef<LeaderChord | null>(null);
   pendingRef.current = pending;
+
+  const toggleDirect = (): void => {
+    const next = !directOn;
+    setDirectShortcuts(next);
+    setDirectOn(next);
+  };
 
   const save = (chord: LeaderChord): void => {
     setLeaderChord(chord);
@@ -147,6 +156,66 @@ const LeaderConfig: FC<LeaderConfigProps> = ({ onClose }) => {
         >
           {pending ? formatLeaderLabel(pending) : "按下新的组合键…"}
         </div>
+
+        {/* 直接快捷键（免前缀）opt-in：默认 OFF 守 veto。开启后 Ctrl+Alt+H/J/K/L 直接切 pane。 */}
+        <button
+          type="button"
+          data-testid="conmux-direct-shortcuts-toggle"
+          role="switch"
+          aria-checked={directOn}
+          onClick={toggleDirect}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            width: "100%",
+            marginTop: 14,
+            padding: "10px 12px",
+            borderRadius: 8,
+            border: `1px solid ${directOn ? "var(--cx-accent-signal)" : "var(--cx-line-soft)"}`,
+            background: "var(--cx-surface-base)",
+            cursor: "pointer",
+            textAlign: "left",
+            fontFamily: MONO,
+          }}
+        >
+          <span
+            aria-hidden="true"
+            style={{
+              flex: "0 0 auto",
+              width: 32,
+              height: 18,
+              borderRadius: 9,
+              padding: 2,
+              boxSizing: "border-box",
+              background: directOn ? "var(--cx-accent-signal)" : "var(--cx-line-soft)",
+              display: "flex",
+              justifyContent: directOn ? "flex-end" : "flex-start",
+              transition: "background 120ms",
+            }}
+          >
+            <span
+              style={{
+                width: 14,
+                height: 14,
+                borderRadius: "50%",
+                background: "var(--cx-surface-raised)",
+              }}
+            />
+          </span>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span
+              style={{ display: "block", fontSize: 12, color: "var(--cx-text-primary)" }}
+            >
+              直接快捷键（免前缀）
+            </span>
+            <span
+              style={{ display: "block", fontSize: 10.5, color: "var(--cx-text-faint)", marginTop: 2 }}
+            >
+              Ctrl+Alt+H/J/K/L 直接切 pane（vim 方向）。开启后这几个键被 conmux 取走、不传给终端——便利换 veto 安全，故默认关。
+            </span>
+          </span>
+        </button>
 
         {error && (
           <div

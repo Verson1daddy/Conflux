@@ -5,12 +5,15 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_LEADER,
+  directNavDir,
   formatLeaderLabel,
+  getDirectShortcuts,
   getLeaderChord,
   isValidChord,
   leaderLiteral,
   matchesLeaderChord,
   resetLeaderChord,
+  setDirectShortcuts,
   setLeaderChord,
   type LeaderChord,
 } from "./leader-key";
@@ -114,5 +117,53 @@ describe("set/get/reset (内存 round-trip)", () => {
     setLeaderChord({ ctrl: false, alt: true, code: "KeyK", key: "k" });
     resetLeaderChord();
     expect(getLeaderChord()).toEqual(DEFAULT_LEADER);
+  });
+});
+
+describe("直接快捷键（opt-in）", () => {
+  const dev = (
+    over: Partial<{ ctrlKey: boolean; altKey: boolean; shiftKey: boolean; metaKey: boolean; code: string }> = {}
+  ) => ({ ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, code: "KeyH", ...over });
+
+  it("默认 OFF（守 veto）", () => {
+    setDirectShortcuts(false);
+    expect(getDirectShortcuts()).toBe(false);
+  });
+
+  it("set true/false 生效", () => {
+    setDirectShortcuts(true);
+    expect(getDirectShortcuts()).toBe(true);
+    setDirectShortcuts(false);
+    expect(getDirectShortcuts()).toBe(false);
+  });
+
+  it("directNavDir：Ctrl+Alt+H/J/K/L → vim 方向", () => {
+    expect(directNavDir(dev({ ctrlKey: true, altKey: true, code: "KeyH" }))).toBe("left");
+    expect(directNavDir(dev({ ctrlKey: true, altKey: true, code: "KeyJ" }))).toBe("down");
+    expect(directNavDir(dev({ ctrlKey: true, altKey: true, code: "KeyK" }))).toBe("up");
+    expect(directNavDir(dev({ ctrlKey: true, altKey: true, code: "KeyL" }))).toBe("right");
+  });
+
+  it("directNavDir：缺修饰键 / 带 shift / 非 HJKL → null", () => {
+    expect(directNavDir(dev({ ctrlKey: true, altKey: false, code: "KeyH" }))).toBeNull(); // 缺 Alt
+    expect(directNavDir(dev({ ctrlKey: false, altKey: true, code: "KeyH" }))).toBeNull(); // 缺 Ctrl
+    expect(directNavDir(dev({ ctrlKey: true, altKey: true, shiftKey: true, code: "KeyH" }))).toBeNull();
+    expect(directNavDir(dev({ ctrlKey: true, altKey: true, code: "KeyG" }))).toBeNull();
+  });
+
+  it("directNavDir：真 AltGr（intl 组字符）→ null，不拦（红队 S-1）", () => {
+    expect(
+      directNavDir({
+        ...dev({ ctrlKey: true, altKey: true, code: "KeyH" }),
+        getModifierState: (k) => k === "AltGraph",
+      })
+    ).toBeNull();
+    // 非 AltGr 的真 Ctrl+Alt（getModifierState 返 false）→ 仍命中。
+    expect(
+      directNavDir({
+        ...dev({ ctrlKey: true, altKey: true, code: "KeyL" }),
+        getModifierState: () => false,
+      })
+    ).toBe("right");
   });
 });

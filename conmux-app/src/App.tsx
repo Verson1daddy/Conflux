@@ -456,12 +456,16 @@ export default function App() {
       resizeSplitByPath(divider.path, ratio); // clamp 在 setRatioAtPath 内
     };
     const up = (): void => {
-      setResizing(false);
+      setResizing(false); // 红队 L-1：blur/pointercancel 也复位，防丢 mouseup 卡死 pane 指针事件
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
+      window.removeEventListener("pointercancel", up);
+      window.removeEventListener("blur", up);
     };
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
+    window.addEventListener("pointercancel", up);
+    window.addEventListener("blur", up);
   }, []);
 
   // Home overlay 点 RUNNING 行（M⑤d §2）：切到该会话 + 关叠层（焦点回终端）。
