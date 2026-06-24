@@ -9,6 +9,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import {
   XtermTerminal,
+  getRegisteredTerminal,
   initTerminalThemes,
   setTerminalTheme,
   type ProcessExitedPayload,
@@ -49,6 +50,15 @@ import {
   type SpawnUntrustedError,
 } from "./lib/sessions";
 import { parseCommand, type LaunchEntry } from "./lib/launch-registry";
+import {
+  computeRects,
+  getLayout,
+  navigateFocus,
+  reconcile,
+  splitFocused,
+  subscribeLayout,
+  toggleZoom,
+} from "./lib/layout";
 import { useLeaderKeyboard } from "./lib/leader";
 import {
   formatLeaderLabel,
@@ -121,6 +131,13 @@ export default function App() {
   );
   // daemon 重连代际（Part 2）：每次自动重连 +1，编进终端 key 强制重挂载（接新 pane 流）。
   const daemonGen = useSyncExternalStore(subscribeSessions, getDaemonGeneration);
+
+  // ===== 分屏布局（同屏 pane）：订阅 layout store（tree + 焦点 + 缩放）。 =====
+  const layout = useSyncExternalStore(subscribeLayout, getLayout);
+  // 分屏 in-flight 守卫（红队 #2）：splitPane 的 createSession 是 async，两次快速 leader+\ 会
+  // 都读到同一个 prev active → 第二次在已被 reconcile 换出的旧叶上再分裂 → 重复叶 + 丢 pane。
+  // 一次只允许一个分屏 spawn 在途，期间忽略二次触发（用户可在落定后再分）。ref 跨重渲稳定。
+  const splittingRef = useRef(false);
 
   // ===== per-session 观测者（M3-ext，feed dot 状态 + aware-header）=====
   // ref Map：instanceId → SessionObserver。随 sessions list 增删同步 start/stop。
@@ -214,6 +231,15 @@ export default function App() {
   // 中途死亡 → 点实时转灰。首拉即时，挂载起停 interval（取代旧 initDaemonConnected 单拉）。
   useEffect(() => startDaemonHeartbeat(5000), []);
 
+  // ===== 分屏布局对账（单一收敛点）：会话/activeId 变 → reconcile 维护"active 永远显示在
+  // 焦点 pane"（剪死会话 + 树空起单叶 + active 未显示则 swap 进焦点叶）。单 pane 切 tab 零回归。
+  useEffect(() => {
+    reconcile(
+      sessions.map((s) => s.instanceId),
+      activeId
+    );
+  }, [sessions, activeId]);
+
   // 风格变化（含初次）→ 写 chrome CSS 变量 + 取配对 TerminalTheme 喂 xterm。
   useEffect(() => {
     applyChromeVars(style);
@@ -253,9 +279,9 @@ export default function App() {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  // ===== leader 键盘仲裁（M⑤c §1）：capture 阶段 document keydown，tmux 式 Ctrl+Space 前缀 =====
-  // 默认全透传（veto 级：仅 Ctrl+Space 被 conmux 取走）；armed 时下一个键解释为命令（切会话 /
-  // 开面板 / leader-leader 送 NUL）后退待命。读 lib/sessions live 态，setPaletteOpen / armed
+  // ===== leader 键盘仲裁（M⑤c §1）：capture 阶段 document keydown，tmux 式前缀（默认 Ctrl+B）=====
+  // 默认全透传（veto 级：仅前缀键被 conmux 取走）；armed 时下一个键解释为命令（切会话 /
+  // 开面板 / leader-leader 送前缀字面）后退待命。读 lib/sessions live 态，setPaletteOpen / armed
   // 徽章经 App state（hook 内部 ref 镜像最新回调，listener 一次装配无 stale）。
   // M⑤d 增量：leader+h→toggle Home overlay · leader+s→cycleStyle · isBlocked→overlay 开时抑制待命。
   //
@@ -275,6 +301,33 @@ export default function App() {
     openHomeOverlay: toggleHomeOverlay,
     // leader+s → 切风格（M⑤d §1/D-4），复用缩点条换肤钮同款 cycleStyle。
     cycleStyle,
+    // leader+\/-：分屏焦点 pane（唯一加 pane 路径）——spawn 新默认会话占新叶，焦点移过去。
+    // prev=split 前 active（split 目标叶）；新会话恒默认 powershell（受信），故无需 pin UI。
+    splitPane: (dir) => {
+      // in-flight 守卫（红队 #2）：上一个分屏 spawn 未落定前忽略二次触发，杜绝重复叶竞态。
+      if (splittingRef.current) return;
+      splittingRef.current = true;
+      const prev = getActiveId();
+      void createSession()
+        .then((e) => {
+          if (prev !== null) splitFocused(prev, dir, e.instanceId);
+          getRegisteredTerminal(e.instanceId)?.focus();
+        })
+        .catch((err) => console.error("[conmux] 分屏失败:", err))
+        .finally(() => {
+          splittingRef.current = false;
+        });
+    },
+    // leader+方向：几何导航 pane 焦点 → setActive + 聚焦其终端（reconcile 不 swap，已在树中）。
+    navigatePane: (dir) => {
+      const target = navigateFocus(dir);
+      if (target) {
+        setActive(target);
+        getRegisteredTerminal(target)?.focus();
+      }
+    },
+    // leader+z：当前焦点 pane 全屏⇄还原。
+    toggleZoomPane: () => toggleZoom(),
     // Home overlay / leader 配置 modal 开时抑制 leader 待命：它们自有键盘，前缀键放行不 arm。
     isBlocked: () => homeOverlayOpenRef.current || leaderConfigOpenRef.current,
   });
@@ -359,9 +412,18 @@ export default function App() {
   });
 
   // ===== 交互回调 =====
-  const handleSelect = useCallback((instanceId: string) => {
-    setActive(instanceId);
+  // 程序化聚焦目标 pane 的终端（切会话/leader 导航后，键盘进对的 pane）。已挂载才有效。
+  const focusTerminal = useCallback((instanceId: string) => {
+    getRegisteredTerminal(instanceId)?.focus();
   }, []);
+
+  const handleSelect = useCallback(
+    (instanceId: string) => {
+      setActive(instanceId); // reconcile effect 处理布局（已显示=移焦点，未显示=swap 进焦点 pane）
+      focusTerminal(instanceId);
+    },
+    [focusTerminal]
+  );
 
   // Home overlay 点 RUNNING 行（M⑤d §2）：切到该会话 + 关叠层（焦点回终端）。
   const handleSelectRunning = useCallback((instanceId: string) => {
@@ -481,6 +543,13 @@ export default function App() {
     if (activeAttention) activeObserver?.acknowledgeAttention();
   }, [activeId, activeAttention, activeObserver]);
 
+  // ===== 分屏渲染派生：各显示中会话的矩形（分数）+ 缩放目标 + pane 数 =====
+  // 单 pane（单叶）= 全屏 = 与分屏前像素一致（零回归）；多 pane 按 rect 定位、焦点 pane 加描边。
+  const paneRects = computeRects(layout.tree);
+  const zoomedId = layout.zoomedSessionId;
+  const paneCount = zoomedId !== null ? 1 : paneRects.size;
+  const multiPane = paneCount > 1;
+
   return (
     <WindowFrame>
       <TopBar
@@ -557,6 +626,16 @@ export default function App() {
         {sessions.map((s) => {
           const isActive = s.instanceId === activeId;
           const sExit = exitInfo.get(s.instanceId) ?? null;
+          // 缩放：只显缩放会话全屏；否则按布局矩形定位；不在布局 → 隐藏（仍挂载）。
+          const rect = paneRects.get(s.instanceId) ?? null;
+          const shown =
+            zoomedId !== null ? s.instanceId === zoomedId : rect !== null;
+          const r =
+            zoomedId !== null
+              ? s.instanceId === zoomedId
+                ? { x: 0, y: 0, w: 1, h: 1 }
+                : null
+              : rect;
           return (
             <div
               key={`${s.instanceId}:${daemonGen}`}
@@ -564,11 +643,20 @@ export default function App() {
               data-active={isActive ? "true" : "false"}
               style={{
                 position: "absolute",
-                inset: 0,
-                padding: "14px 16px",
-                // CSS 仅显 active：非 active 隐藏但保持挂载（live 终端态不丢、切换零重连）。
-                display: isActive ? "block" : "none",
+                left: r ? `${r.x * 100}%` : 0,
+                top: r ? `${r.y * 100}%` : 0,
+                width: r ? `${r.w * 100}%` : "100%",
+                height: r ? `${r.h * 100}%` : "100%",
+                // 单 pane 保留原 14/16 舒适内边距（零回归）；多 pane 收紧成 8px 间隔。
+                padding: multiPane ? 8 : "14px 16px",
+                // 显示中 pane 显（保持挂载 = live 终端态不丢、切换零重连）；其余隐藏。
+                display: shown ? "block" : "none",
                 boxSizing: "border-box",
+                // 多 pane 时焦点 pane 加 accent 内描边（单 pane 无需）。
+                boxShadow:
+                  multiPane && isActive
+                    ? "inset 0 0 0 1.5px var(--cx-accent-signal)"
+                    : undefined,
               }}
             >
               <XtermTerminal

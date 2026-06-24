@@ -3,9 +3,9 @@
 // 规格真源：.workbench/coordination/handoffs/conmux_m5c_f1_contract.md
 //   §1 leader 状态机 · §2 共存不回归 · §3 待命指示 · §4 安全（veto 级）· §7 裁决。
 //
-// 核心：tmux 式 leader 前缀（默认 Ctrl+Space）。
-//   - 默认全透传，仅 Ctrl+Space 一个键被 conmux 取走（veto 级硬保证：永不弄坏 CLI）。
-//   - 按 Ctrl+Space → arm（控制待命 standby，起 1.5s 计时）；下一个键解释为 conmux 命令后 disarm。
+// 核心：tmux 式 leader 前缀（默认 Ctrl+B，可配置；旧默认 Ctrl+Space 撞中文输入法已弃，见 leader-key.ts）。
+//   - 默认全透传，仅前缀键一个键被 conmux 取走（veto 级硬保证：永不弄坏 CLI）。
+//   - 按前缀键 → arm（控制待命 standby，起 1.5s 计时）；下一个键解释为 conmux 命令后 disarm。
 //   - armed 的下一个键一律 capture 阶段消费（终端收不到）；未识别键退待命（不送终端）。
 //   - 1.5s 无键 或 esc → 自动退回透传。
 //
@@ -39,6 +39,12 @@ export interface UseLeaderKeyboardOptions {
   openHomeOverlay: () => void;
   /** leader+s → 切风格（M⑤d §1：App 传 lib/style cycleStyle，缩点条换肤钮同款）。 */
   cycleStyle: () => void;
+  /** leader+\ 竖切 / leader+- 横切：分屏焦点 pane（App spawn 新会话占新叶）。 */
+  splitPane: (dir: "v" | "h") => void;
+  /** leader+方向键：在 pane 间跳焦点（App navigateFocus + setActive + 聚焦终端）。 */
+  navigatePane: (dir: "left" | "right" | "up" | "down") => void;
+  /** leader+z：当前焦点 pane 全屏⇄还原。 */
+  toggleZoomPane: () => void;
   /**
    * 是否抑制 leader 待命（M⑤d §1 / D-2）：App 传 `() => homeOverlayOpen`。
    * 为真时未 armed 段对 Ctrl+Space 放行不 arm——Home overlay 自有键盘，
@@ -60,7 +66,7 @@ function isConmuxInputFocused(): boolean {
   return true;
 }
 
-/** 是否 leader 前缀键（可配置，lib/leader-key 读 localStorage；默认 Ctrl+Space）。 */
+/** 是否 leader 前缀键（可配置，lib/leader-key 读 localStorage；默认 Ctrl+B）。 */
 function isLeaderKey(e: KeyboardEvent): boolean {
   return matchesLeaderChord(e);
 }
@@ -134,7 +140,7 @@ export function useLeaderKeyboard(opts: UseLeaderKeyboardOptions): void {
       // ---- armed（待命）：下一个键一律消费（capture 抢在终端前），解释为命令后 disarm ----
       if (armed) {
         // 忽略纯修饰键的独立 keydown（Ctrl/Shift/Alt/Meta 抬手前会先单发一次）——
-        // 否则按 Ctrl+Space（先来 Ctrl 单 keydown）会把待命立即吃掉，leader-leader 永远走不到。
+        // 否则按前缀键（如 Ctrl+B，先来 Ctrl 单 keydown）会把待命立即吃掉，leader-leader 永远走不到。
         if (
           e.key === "Control" ||
           e.key === "Shift" ||
@@ -209,6 +215,45 @@ export function useLeaderKeyboard(opts: UseLeaderKeyboardOptions): void {
             disarm();
             return;
           }
+          case "\\": {
+            // leader+\ → 竖切（左右并排），焦点 pane 分裂 + 新会话。
+            optsRef.current.splitPane("v");
+            disarm();
+            return;
+          }
+          case "-": {
+            // leader+- → 横切（上下堆叠）。
+            optsRef.current.splitPane("h");
+            disarm();
+            return;
+          }
+          case "z":
+          case "Z": {
+            // leader+z → 焦点 pane 全屏⇄还原。
+            optsRef.current.toggleZoomPane();
+            disarm();
+            return;
+          }
+          case "ArrowLeft": {
+            optsRef.current.navigatePane("left");
+            disarm();
+            return;
+          }
+          case "ArrowRight": {
+            optsRef.current.navigatePane("right");
+            disarm();
+            return;
+          }
+          case "ArrowUp": {
+            optsRef.current.navigatePane("up");
+            disarm();
+            return;
+          }
+          case "ArrowDown": {
+            optsRef.current.navigatePane("down");
+            disarm();
+            return;
+          }
           case "Escape": {
             // 仅退待命（无命令）。
             disarm();
@@ -223,11 +268,11 @@ export function useLeaderKeyboard(opts: UseLeaderKeyboardOptions): void {
       }
 
       // ---- 未 armed ----
-      // M⑤d §1 / D-2：Home overlay 开时 Ctrl+Space 应"无操作"（overlay 自有键盘）。
-      // overlay 开时终端在 scrim 之下不可交互，故此处吞掉 Ctrl+Space（preventDefault+
-      // stopPropagation）：既不 arm，也不让 NUL 漏进底层终端，闭合 overlay 焦点 rAF 落定前
-      // 的一帧竞态（红队 M⑤d LOW-1）。其余键放行给 overlay 自己的键盘。
-      // 注意：仅 overlay 开时吞 Ctrl+Space；overlay 关时此分支不入，veto 透传完全不变。
+      // M⑤d §1 / D-2：Home overlay 开时前缀键应"无操作"（overlay 自有键盘）。
+      // overlay 开时终端在 scrim 之下不可交互，故此处吞掉前缀键（preventDefault+
+      // stopPropagation）：既不 arm，也不让前缀字面（如 Ctrl+B→0x02）漏进底层终端，闭合
+      // overlay 焦点 rAF 落定前的一帧竞态（红队 M⑤d LOW-1）。其余键放行给 overlay 自己的键盘。
+      // 注意：仅 overlay 开时吞前缀键；overlay 关时此分支不入，veto 透传完全不变。
       if (optsRef.current.isBlocked?.()) {
         if (isLeaderKey(e)) {
           e.preventDefault();
@@ -236,9 +281,9 @@ export function useLeaderKeyboard(opts: UseLeaderKeyboardOptions): void {
         return;
       }
 
-      // Ctrl+Space → arm（preventDefault + stopPropagation，避免终端收到 NUL）。
+      // 前缀键（默认 Ctrl+B）→ arm（preventDefault + stopPropagation，避免终端收到其字面字节）。
       if (isLeaderKey(e)) {
-        // D-4：焦点在 conmux 自有输入框（命令面板/Home 加项打字含 Ctrl+Space）→ 不 arm，放行。
+        // D-4：焦点在 conmux 自有输入框（命令面板/Home 加项打字）→ 不 arm，放行。
         if (isConmuxInputFocused()) return;
         e.preventDefault();
         e.stopPropagation();
