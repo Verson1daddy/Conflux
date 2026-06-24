@@ -24,10 +24,28 @@ export interface SplitNode {
   type: "split";
   /** "v" 竖分隔=左右；"h" 横分隔=上下。 */
   dir: "v" | "h";
+  /**
+   * 子树 a 占的比例（0..1，b 占 1-ratio）。默认 0.5（原固定 50/50）。
+   * 可变比例：鼠标拖分隔线 / 键盘 leader+H·L·J·K 调它。clamp 进 [MIN_RATIO, 1-MIN_RATIO]。
+   */
+  ratio: number;
   a: PaneNode;
   b: PaneNode;
 }
 export type PaneNode = LeafNode | SplitNode;
+
+/** pane 最小占比（防拖到 0/挤没）——每侧至少 12%。 */
+export const MIN_RATIO = 0.12;
+
+function clampRatio(r: number): number {
+  if (Number.isNaN(r)) return 0.5;
+  return Math.max(MIN_RATIO, Math.min(1 - MIN_RATIO, r));
+}
+
+/** 造 split 节点（ratio 默认 0.5，clamp 守护）。 */
+export function split(dir: "v" | "h", a: PaneNode, b: PaneNode, ratio = 0.5): SplitNode {
+  return { type: "split", dir, ratio: clampRatio(ratio), a, b };
+}
 
 /** 矩形（分数坐标 0..1，相对 body）。 */
 export interface Rect {
@@ -66,7 +84,7 @@ export function splitLeaf(
 ): PaneNode {
   if (node.type === "leaf") {
     if (node.sessionId !== targetSessionId) return node;
-    return { type: "split", dir, a: leaf(node.sessionId), b: leaf(newSessionId) };
+    return split(dir, leaf(node.sessionId), leaf(newSessionId));
   }
   return {
     ...node,
@@ -106,7 +124,26 @@ export function replaceLeafSession(
   };
 }
 
-/** 计算每个会话的矩形（分数坐标）。固定 50/50 分割。 */
+/** split 节点的子矩形（按 ratio 切 container）：[a 区, b 区]。computeRects/computeDividers 共用。 */
+function childRects(node: SplitNode, container: Rect): [Rect, Rect] {
+  const r = clampRatio(node.ratio);
+  if (node.dir === "v") {
+    // 竖分隔 → 左右，a 占左 ratio
+    const wa = container.w * r;
+    return [
+      { ...container, w: wa },
+      { x: container.x + wa, y: container.y, w: container.w - wa, h: container.h },
+    ];
+  }
+  // 横分隔 → 上下，a 占上 ratio
+  const ha = container.h * r;
+  return [
+    { ...container, h: ha },
+    { x: container.x, y: container.y + ha, w: container.w, h: container.h - ha },
+  ];
+}
+
+/** 计算每个会话的矩形（分数坐标）。按各 split 节点的 ratio 切分。 */
 export function computeRects(
   node: PaneNode | null,
   container: Rect = { x: 0, y: 0, w: 1, h: 1 }
@@ -117,20 +154,97 @@ export function computeRects(
     out.set(node.sessionId, container);
     return out;
   }
-  let ra: Rect;
-  let rb: Rect;
-  if (node.dir === "v") {
-    // 竖分隔 → 左右各半
-    ra = { ...container, w: container.w / 2 };
-    rb = { x: container.x + container.w / 2, y: container.y, w: container.w / 2, h: container.h };
-  } else {
-    // 横分隔 → 上下各半
-    ra = { ...container, h: container.h / 2 };
-    rb = { x: container.x, y: container.y + container.h / 2, w: container.w, h: container.h / 2 };
-  }
+  const [ra, rb] = childRects(node, container);
   for (const [k, v] of computeRects(node.a, ra)) out.set(k, v);
   for (const [k, v] of computeRects(node.b, rb)) out.set(k, v);
   return out;
+}
+
+/** 树内 split 节点的路径寻址（"a"/"b" 序列，根=[]）。鼠标拖分隔线/比例更新用。 */
+export type NodePath = ("a" | "b")[];
+
+/** 一条可拖动的分隔线：所属 split 的路径 + 方向 + 在 container 分数坐标里的位置矩形。 */
+export interface Divider {
+  path: NodePath;
+  dir: "v" | "h";
+  rect: Rect;
+}
+
+/**
+ * 收集所有 split 的分隔线矩形（分数坐标）。divider 是夹在 a/b 之间的细缝，
+ * 厚度 thickness（分数，App 据 container 像素换算渲染热区）。dir "v" → 竖线（可左右拖）；
+ * "h" → 横线（可上下拖）。
+ */
+export function computeDividers(
+  node: PaneNode | null,
+  container: Rect = { x: 0, y: 0, w: 1, h: 1 },
+  thickness = 0.012,
+  path: NodePath = []
+): Divider[] {
+  if (!node || node.type === "leaf") return [];
+  const [ra, rb] = childRects(node, container);
+  const out: Divider[] = [];
+  // 本节点的分隔线 = a/b 交界处一条细带。
+  if (node.dir === "v") {
+    const x = rb.x; // a 右缘 = b 左缘
+    out.push({
+      path,
+      dir: "v",
+      rect: { x: x - thickness / 2, y: container.y, w: thickness, h: container.h },
+    });
+  } else {
+    const y = rb.y;
+    out.push({
+      path,
+      dir: "h",
+      rect: { x: container.x, y: y - thickness / 2, w: container.w, h: thickness },
+    });
+  }
+  out.push(...computeDividers(node.a, ra, thickness, [...path, "a"]));
+  out.push(...computeDividers(node.b, rb, thickness, [...path, "b"]));
+  return out;
+}
+
+/** 取某路径上的 split 节点（不存在/非 split → null）。 */
+function nodeAtPath(node: PaneNode | null, path: NodePath): SplitNode | null {
+  let cur: PaneNode | null = node;
+  for (const step of path) {
+    if (!cur || cur.type !== "split") return null;
+    cur = step === "a" ? cur.a : cur.b;
+  }
+  return cur && cur.type === "split" ? cur : null;
+}
+
+/**
+ * 某路径节点占据的容器矩形（分数坐标）。鼠标拖分隔线时换算：mouse 在该容器内的分数位置 → ratio。
+ * 拖动期间该 split 的外层容器不变（只内部 ratio 变），故拖开始时取一次即可。
+ */
+export function containerAtPath(
+  node: PaneNode | null,
+  path: NodePath,
+  container: Rect = { x: 0, y: 0, w: 1, h: 1 }
+): Rect {
+  let cur: PaneNode | null = node;
+  let cont = container;
+  for (const step of path) {
+    if (!cur || cur.type !== "split") return cont;
+    const [ra, rb] = childRects(cur, cont);
+    cont = step === "a" ? ra : rb;
+    cur = step === "a" ? cur.a : cur.b;
+  }
+  return cont;
+}
+
+/** 不可变地设某路径 split 的 ratio（clamp 守护）。路径无效 → 原样返回。 */
+export function setRatioAtPath(node: PaneNode, path: NodePath, ratio: number): PaneNode {
+  if (path.length === 0) {
+    if (node.type !== "split") return node;
+    return { ...node, ratio: clampRatio(ratio) };
+  }
+  if (node.type !== "split") return node;
+  const [head, ...rest] = path;
+  if (head === "a") return { ...node, a: setRatioAtPath(node.a, rest, ratio) };
+  return { ...node, b: setRatioAtPath(node.b, rest, ratio) };
 }
 
 /**
@@ -186,6 +300,49 @@ export function navigate(
     }
   }
   return best;
+}
+
+/** 从根到目标叶的路径（"a"/"b" 序列）；不在树中 → null。 */
+export function findLeafPath(
+  node: PaneNode | null,
+  sessionId: string,
+  acc: NodePath = []
+): NodePath | null {
+  if (!node) return null;
+  if (node.type === "leaf") return node.sessionId === sessionId ? acc : null;
+  return (
+    findLeafPath(node.a, sessionId, [...acc, "a"]) ??
+    findLeafPath(node.b, sessionId, [...acc, "b"])
+  );
+}
+
+/**
+ * 键盘调焦点 pane 尺寸：沿焦点叶向上找最近的、方向 == axis 的祖先 split，按 grow 增减其 ratio。
+ *   axis "v"（竖分隔=左右）→ 调宽；"h"（横分隔=上下）→ 调高。
+ *   focus 在该 split 的 a 子树（左/上）→ grow 即 +step；在 b 子树（右/下）→ grow 即 -step。
+ * 该轴上无可调 split（如单 pane / 只有另一轴的 split）→ 原样返回。
+ */
+export function resizeFocusedSplit(
+  node: PaneNode | null,
+  sessionId: string,
+  axis: "v" | "h",
+  grow: boolean,
+  step = 0.05
+): PaneNode | null {
+  if (!node) return node;
+  const leafPath = findLeafPath(node, sessionId);
+  if (!leafPath) return node;
+  for (let i = leafPath.length - 1; i >= 0; i--) {
+    const prefix = leafPath.slice(0, i);
+    const sp = nodeAtPath(node, prefix);
+    if (sp && sp.dir === axis) {
+      const inA = leafPath[i] === "a";
+      const signed = grow ? step : -step;
+      const delta = inA ? signed : -signed;
+      return setRatioAtPath(node, prefix, sp.ratio + delta);
+    }
+  }
+  return node;
 }
 
 // ===== 薄 store（App 订阅；leader/App 调用动作）=====
@@ -275,7 +432,7 @@ function replaceLeafWithSplit(
 ): PaneNode {
   if (node.type === "leaf") {
     if (node.sessionId !== anchorSessionId) return node;
-    return { type: "split", dir, a: leaf(aSession), b: leaf(bSession) };
+    return split(dir, leaf(aSession), leaf(bSession));
   }
   return {
     ...node,
@@ -333,6 +490,21 @@ export function toggleZoom(): void {
   const f = state.focusedSessionId;
   if (!f) return;
   setState({ ...state, zoomedSessionId: state.zoomedSessionId === f ? null : f });
+}
+
+/** 鼠标拖分隔线：直接设某路径 split 的 ratio（clamp 在 setRatioAtPath 内）。 */
+export function resizeSplitByPath(path: NodePath, ratio: number): void {
+  if (!state.tree) return;
+  const next = setRatioAtPath(state.tree, path, ratio);
+  if (next !== state.tree) setState({ ...state, tree: next });
+}
+
+/** 键盘调焦点 pane 尺寸（leader+H/L 宽、J/K 高）。axis="v" 调宽，"h" 调高。 */
+export function resizeFocused(axis: "v" | "h", grow: boolean, step = 0.05): void {
+  const f = state.focusedSessionId;
+  if (!f || !state.tree) return;
+  const next = resizeFocusedSplit(state.tree, f, axis, grow, step);
+  if (next && next !== state.tree) setState({ ...state, tree: next });
 }
 
 /** 测试用：重置 store。 */

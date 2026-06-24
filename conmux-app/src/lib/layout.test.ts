@@ -2,15 +2,23 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   __resetLayoutForTest,
   collectSessionIds,
+  computeDividers,
   computeRects,
+  findLeafPath,
   getLayout,
   hasSession,
   leaf,
+  MIN_RATIO,
   navigate,
   navigateFocus,
   reconcile,
   removeSession,
   replaceLeafSession,
+  resizeFocused,
+  resizeFocusedSplit,
+  resizeSplitByPath,
+  setRatioAtPath,
+  split,
   splitFocused,
   splitLeaf,
   toggleZoom,
@@ -123,6 +131,112 @@ describe("layout pure ops", () => {
 
   it("navigate from 不在树 → null", () => {
     expect(navigate(leaf("s1"), "ghost", "right")).toBeNull();
+  });
+});
+
+describe("layout 可变比例（ratio / divider / resize）", () => {
+  it("split() 默认 0.5 + clamp 出界", () => {
+    expect(split("v", leaf("a"), leaf("b")).ratio).toBe(0.5);
+    expect(split("v", leaf("a"), leaf("b"), 0.99).ratio).toBe(1 - MIN_RATIO);
+    expect(split("v", leaf("a"), leaf("b"), 0.0).ratio).toBe(MIN_RATIO);
+  });
+
+  it("computeRects 按 ratio 切（竖切 0.7）", () => {
+    const t = split("v", leaf("a"), leaf("b"), 0.7);
+    const r = computeRects(t);
+    expect(r.get("a")).toEqual({ x: 0, y: 0, w: 0.7, h: 1 });
+    expect(r.get("b")).toEqual({ x: 0.7, y: 0, w: 0.30000000000000004, h: 1 });
+  });
+
+  it("computeRects 横切 0.3 高度按比例", () => {
+    const t = split("h", leaf("a"), leaf("b"), 0.3);
+    const r = computeRects(t);
+    expect(r.get("a")).toEqual({ x: 0, y: 0, w: 1, h: 0.3 });
+    expect(r.get("b")).toEqual({ x: 0, y: 0.3, w: 1, h: 0.7 });
+  });
+
+  it("computeDividers：竖切 1 条竖线在 ratio 处", () => {
+    const t = split("v", leaf("a"), leaf("b"), 0.6);
+    const ds = computeDividers(t, { x: 0, y: 0, w: 1, h: 1 }, 0.01);
+    expect(ds).toHaveLength(1);
+    expect(ds[0].path).toEqual([]);
+    expect(ds[0].dir).toBe("v");
+    expect(ds[0].rect.x).toBeCloseTo(0.6 - 0.005, 6); // 中心在 0.6，厚 0.01
+    expect(ds[0].rect.w).toBeCloseTo(0.01, 6);
+  });
+
+  it("computeDividers 嵌套：每个 split 一条，带路径", () => {
+    let t: PaneNode = leaf("s1");
+    t = splitLeaf(t, "s1", "v", "s2"); // 根 v
+    t = splitLeaf(t, "s2", "h", "s3"); // b 子树 h
+    const ds = computeDividers(t);
+    expect(ds.map((d) => d.path)).toEqual([[], ["b"]]);
+    expect(ds.map((d) => d.dir)).toEqual(["v", "h"]);
+  });
+
+  it("setRatioAtPath 更新根 + 嵌套路径 + clamp", () => {
+    let t: PaneNode = leaf("s1");
+    t = splitLeaf(t, "s1", "v", "s2");
+    t = splitLeaf(t, "s2", "h", "s3"); // 根 v、b=h split
+    t = setRatioAtPath(t, [], 0.8) as PaneNode;
+    t = setRatioAtPath(t, ["b"], 0.05) as PaneNode; // clamp → MIN_RATIO
+    if (t.type === "split") {
+      expect(t.ratio).toBe(0.8);
+      if (t.b.type === "split") expect(t.b.ratio).toBe(MIN_RATIO);
+    }
+  });
+
+  it("setRatioAtPath 无效路径 = 原样", () => {
+    const t = splitLeaf(leaf("s1"), "s1", "v", "s2");
+    expect(setRatioAtPath(t, ["a", "a"], 0.8)).toEqual(t); // a 是叶，路径越界
+  });
+
+  it("findLeafPath：根到叶的 a/b 序列", () => {
+    let t: PaneNode = leaf("s1");
+    t = splitLeaf(t, "s1", "v", "s2");
+    t = splitLeaf(t, "s2", "h", "s3"); // s1=[a], s2=[b,a], s3=[b,b]
+    expect(findLeafPath(t, "s1")).toEqual(["a"]);
+    expect(findLeafPath(t, "s2")).toEqual(["b", "a"]);
+    expect(findLeafPath(t, "s3")).toEqual(["b", "b"]);
+    expect(findLeafPath(t, "ghost")).toBeNull();
+  });
+
+  it("resizeFocusedSplit：v 轴 focus 在 a（左）grow → ratio 增", () => {
+    const t = splitLeaf(leaf("s1"), "s1", "v", "s2"); // s1 左(a) | s2 右(b)
+    const grown = resizeFocusedSplit(t, "s1", "v", true, 0.1);
+    if (grown && grown.type === "split") expect(grown.ratio).toBeCloseTo(0.6, 6);
+  });
+
+  it("resizeFocusedSplit：v 轴 focus 在 b（右）grow → ratio 减（右侧变宽）", () => {
+    const t = splitLeaf(leaf("s1"), "s1", "v", "s2");
+    const grown = resizeFocusedSplit(t, "s2", "v", true, 0.1);
+    if (grown && grown.type === "split") expect(grown.ratio).toBeCloseTo(0.4, 6);
+  });
+
+  it("resizeFocusedSplit：该轴上无 split → 原样（单 pane / 仅另一轴）", () => {
+    expect(resizeFocusedSplit(leaf("s1"), "s1", "v", true)).toEqual(leaf("s1"));
+    const h = splitLeaf(leaf("s1"), "s1", "h", "s2"); // 只有 h split
+    expect(resizeFocusedSplit(h, "s1", "v", true)).toEqual(h); // 没 v 轴可调
+  });
+});
+
+describe("layout store resize 动作", () => {
+  beforeEach(() => __resetLayoutForTest());
+
+  it("resizeFocused 调焦点 pane 宽（v 轴）", () => {
+    reconcile(["s1"], "s1");
+    splitFocused("s1", "v", "s2"); // 焦点 s2（右/b）
+    resizeFocused("v", true, 0.1); // s2 grow → 右侧变宽 → root ratio 减到 0.4
+    const tree = getLayout().tree;
+    if (tree && tree.type === "split") expect(tree.ratio).toBeCloseTo(0.4, 6);
+  });
+
+  it("resizeSplitByPath 直接设根 ratio", () => {
+    reconcile(["s1"], "s1");
+    splitFocused("s1", "v", "s2");
+    resizeSplitByPath([], 0.75);
+    const tree = getLayout().tree;
+    if (tree && tree.type === "split") expect(tree.ratio).toBe(0.75);
   });
 });
 

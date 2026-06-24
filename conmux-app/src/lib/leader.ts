@@ -46,6 +46,11 @@ export interface UseLeaderKeyboardOptions {
   /** leader+z：当前焦点 pane 全屏⇄还原。 */
   toggleZoomPane: () => void;
   /**
+   * leader+Shift+方向键：调焦点 pane 大小。axis "v"=宽（左右），"h"=高（上下）；
+   * grow=true 变大。约定：Shift+→ 变宽 / Shift+← 变窄 / Shift+↑ 变高 / Shift+↓ 变矮。
+   */
+  resizePane: (axis: "v" | "h", grow: boolean) => void;
+  /**
    * 是否抑制 leader 待命（M⑤d §1 / D-2）：App 传 `() => homeOverlayOpen`。
    * 为真时未 armed 段对 Ctrl+Space 放行不 arm——Home overlay 自有键盘，
    * 不该再起待命。更保守（不增拦截面），veto 安全只增不减。
@@ -234,23 +239,28 @@ export function useLeaderKeyboard(opts: UseLeaderKeyboardOptions): void {
             disarm();
             return;
           }
+          // 方向键：Shift 按下 = 调焦点 pane 大小；否则 = 跳焦点 pane。
           case "ArrowLeft": {
-            optsRef.current.navigatePane("left");
+            if (e.shiftKey) optsRef.current.resizePane("v", false);
+            else optsRef.current.navigatePane("left");
             disarm();
             return;
           }
           case "ArrowRight": {
-            optsRef.current.navigatePane("right");
+            if (e.shiftKey) optsRef.current.resizePane("v", true);
+            else optsRef.current.navigatePane("right");
             disarm();
             return;
           }
           case "ArrowUp": {
-            optsRef.current.navigatePane("up");
+            if (e.shiftKey) optsRef.current.resizePane("h", true);
+            else optsRef.current.navigatePane("up");
             disarm();
             return;
           }
           case "ArrowDown": {
-            optsRef.current.navigatePane("down");
+            if (e.shiftKey) optsRef.current.resizePane("h", false);
+            else optsRef.current.navigatePane("down");
             disarm();
             return;
           }

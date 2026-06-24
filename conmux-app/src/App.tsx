@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -51,13 +52,18 @@ import {
 } from "./lib/sessions";
 import { parseCommand, type LaunchEntry } from "./lib/launch-registry";
 import {
+  computeDividers,
   computeRects,
+  containerAtPath,
   getLayout,
   navigateFocus,
   reconcile,
+  resizeFocused,
+  resizeSplitByPath,
   splitFocused,
   subscribeLayout,
   toggleZoom,
+  type Divider,
 } from "./lib/layout";
 import { useLeaderKeyboard } from "./lib/leader";
 import {
@@ -138,6 +144,10 @@ export default function App() {
   // 都读到同一个 prev active → 第二次在已被 reconcile 换出的旧叶上再分裂 → 重复叶 + 丢 pane。
   // 一次只允许一个分屏 spawn 在途，期间忽略二次触发（用户可在落定后再分）。ref 跨重渲稳定。
   const splittingRef = useRef(false);
+  // 拖分隔线调 pane 大小：body 容器 ref（取像素 bounds 换算 ratio）+ resizing 态（拖动时把
+  // pane 层 pointerEvents 关掉，免 xterm 抢鼠标/误选文本）。
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [resizing, setResizing] = useState(false);
 
   // ===== per-session 观测者（M3-ext，feed dot 状态 + aware-header）=====
   // ref Map：instanceId → SessionObserver。随 sessions list 增删同步 start/stop。
@@ -328,6 +338,8 @@ export default function App() {
     },
     // leader+z：当前焦点 pane 全屏⇄还原。
     toggleZoomPane: () => toggleZoom(),
+    // leader+Shift+方向：调焦点 pane 大小（v 轴宽 / h 轴高，grow=变大）。reconcile 不动（仅改 ratio）。
+    resizePane: (axis, grow) => resizeFocused(axis, grow),
     // Home overlay / leader 配置 modal 开时抑制 leader 待命：它们自有键盘，前缀键放行不 arm。
     isBlocked: () => homeOverlayOpenRef.current || leaderConfigOpenRef.current,
   });
@@ -424,6 +436,33 @@ export default function App() {
     },
     [focusTerminal]
   );
+
+  // 拖分隔线调 pane 大小（鼠标）：down 时取 body 像素 bounds + 该 split 外层容器（拖动中不变），
+  // move 时把鼠标位置换算成该 split 的 ratio 实时写回；拖动期间关 pane 层 pointerEvents 防 xterm
+  // 抢鼠标。window 级 listener 保证拖出热区也跟手。
+  const startDividerDrag = useCallback((e: ReactMouseEvent, divider: Divider) => {
+    e.preventDefault();
+    const bodyEl = bodyRef.current;
+    if (!bodyEl) return;
+    const box = bodyEl.getBoundingClientRect();
+    if (box.width === 0 || box.height === 0) return;
+    const cont = containerAtPath(getLayout().tree, divider.path);
+    setResizing(true);
+    const move = (ev: MouseEvent): void => {
+      const ratio =
+        divider.dir === "v"
+          ? ((ev.clientX - box.left) / box.width - cont.x) / cont.w
+          : ((ev.clientY - box.top) / box.height - cont.y) / cont.h;
+      resizeSplitByPath(divider.path, ratio); // clamp 在 setRatioAtPath 内
+    };
+    const up = (): void => {
+      setResizing(false);
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  }, []);
 
   // Home overlay 点 RUNNING 行（M⑤d §2）：切到该会话 + 关叠层（焦点回终端）。
   const handleSelectRunning = useCallback((instanceId: string) => {
@@ -576,6 +615,7 @@ export default function App() {
           （mount-all 各 pane 绝对定位叠放，padding 在 pane 内以免与 body 重复）。
           mount-all（D-1）：每会话一个 XtermTerminal，CSS 仅显 active（保 live 态、切换零重连）。 */}
       <div
+        ref={bodyRef}
         data-testid="conmux-body"
         style={{
           flex: 1,
@@ -641,6 +681,11 @@ export default function App() {
               key={`${s.instanceId}:${daemonGen}`}
               data-testid={`conmux-pane-${s.instanceId}`}
               data-active={isActive ? "true" : "false"}
+              // 点击 pane 即聚焦它（鼠标交互 #1）：capture 阶段 setActive，不 preventDefault →
+              // xterm 仍正常收 mousedown（光标/选区）。多 pane 时换焦点 pane，单 pane 无副作用。
+              onMouseDownCapture={() => {
+                if (s.instanceId !== activeId) setActive(s.instanceId);
+              }}
               style={{
                 position: "absolute",
                 left: r ? `${r.x * 100}%` : 0,
@@ -652,6 +697,8 @@ export default function App() {
                 // 显示中 pane 显（保持挂载 = live 终端态不丢、切换零重连）；其余隐藏。
                 display: shown ? "block" : "none",
                 boxSizing: "border-box",
+                // 拖分隔线期间关 pane 指针事件 → 鼠标移过别的 pane 不被 xterm 抢（光标/选区）。
+                pointerEvents: resizing ? "none" : undefined,
                 // 多 pane 时焦点 pane 加 accent 内描边（单 pane 无需）。
                 boxShadow:
                   multiPane && isActive
@@ -694,6 +741,39 @@ export default function App() {
             </div>
           );
         })}
+        {/* 分隔线（鼠标拖调 pane 大小 #1+#2）：多 pane 且非缩放时，每个 split 一条可拖热区。
+            热区透明、中心一条 hairline，hover/拖动时显 accent；cursor 随方向。zIndex 高于 pane。 */}
+        {multiPane &&
+          zoomedId === null &&
+          computeDividers(layout.tree).map((d, i) => (
+            <div
+              key={`divider-${d.path.join("") || "root"}-${i}`}
+              data-testid={`conmux-divider-${d.dir}`}
+              onMouseDown={(e) => startDividerDrag(e, d)}
+              style={{
+                position: "absolute",
+                left: `${d.rect.x * 100}%`,
+                top: `${d.rect.y * 100}%`,
+                width: `${d.rect.w * 100}%`,
+                height: `${d.rect.h * 100}%`,
+                cursor: d.dir === "v" ? "col-resize" : "row-resize",
+                zIndex: 10,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                background: "transparent",
+              }}
+            >
+              {/* 中心 hairline：竖线/横线，随风格 accent，半透常态、拖动态由父 cursor 提示。 */}
+              <div
+                style={{
+                  background: "var(--cx-line-hairline)",
+                  width: d.dir === "v" ? 1 : "100%",
+                  height: d.dir === "v" ? "100%" : 1,
+                }}
+              />
+            </div>
+          ))}
         {/* 0 会话（降级态 / 全部关闭）→ Home 仪表盘（M⑤b D-2，替换 M④「无会话」兜底）：
             RECENT 重开 + QUICK LAUNCH 快捷启动 + 加项；不留空白、可一键起会话。 */}
         {sessions.length === 0 && (
