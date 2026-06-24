@@ -100,8 +100,9 @@ describe("formatLeaderLabel", () => {
 });
 
 describe("set/get/reset (内存 round-trip)", () => {
-  it("默认 = Ctrl+Space", () => {
+  it("默认 = Ctrl+B（旧 Ctrl+Space 撞中文输入法已改）", () => {
     expect(getLeaderChord()).toEqual(DEFAULT_LEADER);
+    expect(DEFAULT_LEADER).toEqual({ ctrl: true, alt: false, code: "KeyB", key: "b" });
   });
   it("set 合法值生效；非法值被忽略", () => {
     setLeaderChord({ ctrl: true, alt: false, code: "KeyB", key: "b" });

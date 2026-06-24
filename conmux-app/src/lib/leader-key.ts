@@ -19,12 +19,18 @@ export interface LeaderChord {
   key: string;
 }
 
-/** 默认前缀 = Ctrl+Space（M⑤c 原值）。 */
+/**
+ * 默认前缀 = Ctrl+B（tmux 自身默认）。
+ *
+ * 2026-06-24 改：原默认 Ctrl+Space 在中文 Windows 上与输入法「中/英 切换」全局热键冲突——
+ * 按 Ctrl+Space 被输入法吞掉，conmux 根本收不到 → leader 在中文环境形同失效。改 Ctrl+B
+ * 避开输入法（tmux 老用户也熟），仍可经 lib/leader-key 重配（localStorage 持久）。
+ */
 export const DEFAULT_LEADER: LeaderChord = {
   ctrl: true,
   alt: false,
-  code: "Space",
-  key: " ",
+  code: "KeyB",
+  key: "b",
 };
 
 /** 校验：形状合法 + 必须带 Ctrl 或 Alt（veto 安全）+ code 非空非纯修饰键。 */
@@ -77,7 +83,7 @@ export function setLeaderChord(chord: LeaderChord): void {
   notify();
 }
 
-/** 恢复默认（Ctrl+Space）。 */
+/** 恢复默认（Ctrl+B）。 */
 export function resetLeaderChord(): void {
   setLeaderChord({ ...DEFAULT_LEADER });
 }
