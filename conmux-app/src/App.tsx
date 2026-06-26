@@ -793,7 +793,8 @@ export default function App() {
       </div>
 
       <StatusBar
-        paneCount={sessions.length}
+        paneCount={paneCount}
+        sessionCount={sessions.length}
         daemonConnected={daemonConnected}
         leaderArmed={leaderArmed}
         leaderLabel={leaderLabel}

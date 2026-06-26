@@ -19,8 +19,10 @@ const META_TEXT: React.CSSProperties = {
 };
 
 interface StatusBarProps {
-  /** 运行中的 pane 数（M④ 多会话 = 当前活跃会话数）。 */
+  /** 当前屏上可见 pane 数（分屏时 = 布局矩形数；不分屏 = 1）。 */
   paneCount: number;
+  /** 总会话数（缩点条上的会话点总数）。与 paneCount 不等时显 "可见/总"。 */
+  sessionCount?: number;
   /** daemon 连接态（降级时 false → 运行点变暗）。 */
   daemonConnected: boolean;
   /** leader 待命态（M⑤c，armed 时显 ⌨ LEADER 徽章；让用户知道处于待命，不吞键无感）。 */
@@ -31,10 +33,16 @@ interface StatusBarProps {
 
 const StatusBar: FC<StatusBarProps> = ({
   paneCount,
+  sessionCount,
   daemonConnected,
   leaderArmed = false,
   leaderLabel = "⌃B",
-}) => (
+}) => {
+  // 可见 pane（分屏矩形数）；transient 为 0 时退回总会话数，避免闪 "0/N"。
+  const total = sessionCount ?? paneCount;
+  const visible = paneCount > 0 ? paneCount : total;
+  const paneLabel = visible !== total ? `${visible}/${total}` : `${visible}`;
+  return (
   <div
     data-testid="conmux-statusbar"
     style={{
@@ -86,7 +94,7 @@ const StatusBar: FC<StatusBarProps> = ({
     )}
     <span style={META_TEXT}>DAEMON</span>
     <span style={META_TEXT} data-testid="conmux-pane-count">
-      {paneCount} PANES
+      {paneLabel} PANES
     </span>
     <span style={META_TEXT}>UTF-8</span>
 
@@ -98,6 +106,7 @@ const StatusBar: FC<StatusBarProps> = ({
       WIN ⇄ WSL
     </span>
   </div>
-);
+  );
+};
 
 export { StatusBar };
