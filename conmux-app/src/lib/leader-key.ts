@@ -93,12 +93,14 @@ export function subscribeLeaderChord(cb: () => void): () => void {
   return () => listeners.delete(cb);
 }
 
-// ===== 直接快捷键（免前缀，opt-in，2026-06-24）=====
+// ===== 直接快捷键（免前缀，opt-in，2026-06-24；2026-06-27 增分屏/缩放）=====
 //
 // 默认 OFF：守 veto「永不弄坏 CLI」——开启前 conmux 只取走前缀键一个键。开启后额外取走
-// Ctrl+Alt+H/J/K/L（直接切 pane，免两步前缀），这是用便利换 veto 安全，故须用户显式开。
-// 选 Ctrl+Alt+HJKL（非方向键）：避开 Windows Intel 显卡 Ctrl+Alt+方向 屏幕旋转热键；
-// HJKL = vim 方向，conmux 目标人群（tmux/vim 用户）熟。
+// 一小撮 Ctrl+Alt 组合（免两步前缀），这是用便利换 veto 安全，故须用户显式开：
+//   - Ctrl+Alt+H/J/K/L → 跳焦点 pane（vim 方向）
+//   - Ctrl+Alt+\ → 竖切 · Ctrl+Alt+- → 横切 · Ctrl+Alt+Z → 缩放（对应 leader 的 \ - z）
+// 选 Ctrl+Alt+（非方向键）：避开 Windows Intel 显卡 Ctrl+Alt+方向 屏幕旋转热键；
+// HJKL = vim 方向，conmux 目标人群（tmux/vim 用户）熟。真 AltGr 一律不拦（见各函数）。
 const DIRECT_KEY = "conmux.directShortcuts";
 
 function loadDirect(): boolean {
@@ -151,6 +153,29 @@ export function directNavDir(
       return "up";
     case "KeyL":
       return "right";
+    default:
+      return null;
+  }
+}
+
+/**
+ * Ctrl+Alt+\ / - / Z 的 code → pane 布局命令（对应 leader 的 \ 竖切 / - 横切 / z 缩放）。
+ * 非这三键 → null。真 AltGr 不拦（同 directNavDir，守 intl 键盘组字符）。
+ */
+export function directPaneCmd(
+  e: Pick<KeyboardEvent, "ctrlKey" | "altKey" | "shiftKey" | "metaKey" | "code"> & {
+    getModifierState?: (key: string) => boolean;
+  }
+): "split-v" | "split-h" | "zoom" | null {
+  if (!e.ctrlKey || !e.altKey || e.shiftKey || e.metaKey) return null;
+  if (e.getModifierState?.("AltGraph")) return null;
+  switch (e.code) {
+    case "Backslash":
+      return "split-v";
+    case "Minus":
+      return "split-h";
+    case "KeyZ":
+      return "zoom";
     default:
       return null;
   }

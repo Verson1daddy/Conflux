@@ -212,7 +212,7 @@ const LeaderConfig: FC<LeaderConfigProps> = ({ onClose }) => {
             <span
               style={{ display: "block", fontSize: 10.5, color: "var(--cx-text-faint)", marginTop: 2 }}
             >
-              Ctrl+Alt+H/J/K/L 直接切 pane（vim 方向）。开启后这几个键被 conmux 取走、不传给终端——便利换 veto 安全，故默认关。
+免两步前缀：Ctrl+Alt+H/J/K/L 跳 pane（vim 向）· Ctrl+Alt+\ 竖切 / - 横切 / Z 缩放。开启后这几个键被 conmux 取走、不传给终端——便利换 veto 安全，故默认关。
             </span>
           </span>
         </button>

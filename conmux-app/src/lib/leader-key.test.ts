@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_LEADER,
   directNavDir,
+  directPaneCmd,
   formatLeaderLabel,
   getDirectShortcuts,
   getLeaderChord,
@@ -165,5 +166,23 @@ describe("直接快捷键（opt-in）", () => {
         getModifierState: () => false,
       })
     ).toBe("right");
+  });
+
+  it("directPaneCmd：Ctrl+Alt+\\ / - / Z → 竖切/横切/缩放", () => {
+    expect(directPaneCmd(dev({ ctrlKey: true, altKey: true, code: "Backslash" }))).toBe("split-v");
+    expect(directPaneCmd(dev({ ctrlKey: true, altKey: true, code: "Minus" }))).toBe("split-h");
+    expect(directPaneCmd(dev({ ctrlKey: true, altKey: true, code: "KeyZ" }))).toBe("zoom");
+  });
+
+  it("directPaneCmd：缺修饰键 / shift / 非这三键 / 真 AltGr → null", () => {
+    expect(directPaneCmd(dev({ ctrlKey: true, altKey: false, code: "Backslash" }))).toBeNull();
+    expect(directPaneCmd(dev({ ctrlKey: true, altKey: true, shiftKey: true, code: "Backslash" }))).toBeNull();
+    expect(directPaneCmd(dev({ ctrlKey: true, altKey: true, code: "KeyH" }))).toBeNull(); // HJKL 归 nav
+    expect(
+      directPaneCmd({
+        ...dev({ ctrlKey: true, altKey: true, code: "Backslash" }),
+        getModifierState: (k) => k === "AltGraph",
+      })
+    ).toBeNull();
   });
 });

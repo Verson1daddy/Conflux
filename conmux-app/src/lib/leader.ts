@@ -27,6 +27,7 @@ import { injectStdin } from "@conmux/terminal-core";
 import { getActiveId, getSessions, setActive } from "./sessions";
 import {
   directNavDir,
+  directPaneCmd,
   getDirectShortcuts,
   leaderLiteral,
   matchesLeaderChord,
@@ -296,8 +297,9 @@ export function useLeaderKeyboard(opts: UseLeaderKeyboardOptions): void {
         return;
       }
 
-      // 直接快捷键（opt-in，默认 OFF）：Ctrl+Alt+H/J/K/L 免前缀直接切 pane。
-      // 这是**唯一**未 armed 段除前缀键外的额外拦截，且仅在用户显式开启时生效（getDirectShortcuts）；
+      // 直接快捷键（opt-in，默认 OFF）：免前缀直接操作 pane。
+      //   Ctrl+Alt+H/J/K/L → 跳焦点 · Ctrl+Alt+\ 竖切 / - 横切 / Z 缩放。
+      // 这是未 armed 段**唯一**除前缀键外的额外拦截，且仅在用户显式开启时生效（getDirectShortcuts）；
       // 默认 OFF 时此分支不入，veto 透传面与开启前完全一致。输入框聚焦时不拦（让打字正常）。
       if (getDirectShortcuts() && !isConmuxInputFocused()) {
         const dir = directNavDir(e);
@@ -305,6 +307,15 @@ export function useLeaderKeyboard(opts: UseLeaderKeyboardOptions): void {
           e.preventDefault();
           e.stopPropagation();
           optsRef.current.navigatePane(dir);
+          return;
+        }
+        const pane = directPaneCmd(e);
+        if (pane !== null) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (pane === "split-v") optsRef.current.splitPane("v");
+          else if (pane === "split-h") optsRef.current.splitPane("h");
+          else optsRef.current.toggleZoomPane();
           return;
         }
       }
