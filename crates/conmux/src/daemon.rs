@@ -27,7 +27,7 @@ use crate::event::{MuxNotify, PaneEventSink};
 use crate::pane::PaneHost;
 use crate::pipe::{process_image_path, try_connect, ConnectOutcome, PipeListener, PipeStream, PipeWriter};
 use crate::protocol::{MuxOp, MuxPayload, MuxReply, MuxRequest, WireFrame, PROTOCOL_VERSION};
-use crate::types::{InjectionSource, PaneId};
+use crate::types::{InjectionSource, PaneId, PaneLifecycle};
 use crate::wire::{read_frame, write_frame, WireError};
 use crate::ConmuxError;
 
@@ -448,7 +448,8 @@ fn serve_connection<R: Read>(
             Ok(WireFrame::Request(req)) => {
                 let kill_server = matches!(req.op, MuxOp::KillServer);
                 let reply = build_reply(req, shared, conn);
-                conn.enqueue(WireFrame::Reply(reply), 256);
+                let bytes = reply_bytes(&reply);
+                conn.enqueue(WireFrame::Reply(reply), bytes);
                 if kill_server {
                     return ConnOutcome::KillServerRequested;
                 }
@@ -637,10 +638,23 @@ fn run_exit_sweep(shared: Arc<DaemonShared>) {
 }
 
 /// 一趟 sweep：poll_exit 各 pane，首次转 Exited 广播 PaneExited（swept 去重 + 清理已移除）。
+///
+/// **S-1 代际化（2026-07-02 审计）**：respawn 复用同 `PaneId`（`pane.rs::respawn` =
+/// remove + kill + spawn 同 id）。swept 若只按 PaneId 永久去重，旧代际退出被广播后，
+/// 新代际的退出会被永久挡在 sweep 兜底之外（只剩不可靠的 reader-EOF 路径）。
+/// 修复依赖的不变量：**被 sweep 广播过的 pane，其同代际表内 lifecycle 已被 poll_exit
+/// 写回为 `Exited` 且不可逆**——因此再次观测到非 `Exited`（Spawning/Running）必是
+/// respawn 出的新代际 ⇒ 清 swept 标记，新代际退出可再次广播。该判据对"新代际在首次
+/// sweep 前就快速退出"也成立：表内 lifecycle 只由 poll_exit 写回，新代际未被 poll 前
+/// 恒为 Running。
 fn sweep_exits_once(shared: &Arc<DaemonShared>, swept: &mut HashSet<PaneId>) {
     let panes = shared.host.list_panes();
     let live: HashSet<PaneId> = panes.iter().map(|s| s.pane_id.clone()).collect();
     for state in &panes {
+        // 代际检测：已 sweep 的 pane 观测到非 Exited ⇒ 新代际，允许再次广播。
+        if !matches!(state.lifecycle, PaneLifecycle::Exited(_)) {
+            swept.remove(&state.pane_id);
+        }
         if swept.contains(&state.pane_id) {
             continue;
         }
@@ -678,6 +692,32 @@ fn notify_bytes(notify: &MuxNotify) -> usize {
     match notify {
         MuxNotify::PaneOutput { data, .. } => data.len() + 64,
         _ => 128,
+    }
+}
+
+/// 应答近似字节数（背压记账）。
+///
+/// **S-2（2026-07-02 审计）**：此前一切应答固定按 256B 记账，而 Captured/AttachSnapshot
+/// 携带 base64 大载荷（1MiB ring → ~1.4MB 帧）——8MiB 队列上界最坏对应 32768 帧 ×
+/// ~1.4MB ≈ 45GB 真实内存（Capture 又无 Attach 那样的限速）。按内容量记账后，
+/// `MAX_QUEUE_BYTES` 重新成为真实内存上界：慢客户端排队少量大帧即触发背压断连。
+fn reply_bytes(reply: &MuxReply) -> usize {
+    match reply {
+        MuxReply::Ok { payload, .. } => match payload {
+            MuxPayload::Captured(c) => c.data_base64.len().saturating_add(128),
+            MuxPayload::AttachSnapshot {
+                mode_preamble_b64,
+                history_b64,
+                ..
+            } => mode_preamble_b64
+                .len()
+                .saturating_add(history_b64.len())
+                .saturating_add(192),
+            MuxPayload::Panes(panes) => panes.len().saturating_mul(256).saturating_add(64),
+            MuxPayload::Themes(themes) => themes.len().saturating_mul(1024).saturating_add(64),
+            _ => 256,
+        },
+        MuxReply::Err { .. } => 256,
     }
 }
 
@@ -1029,6 +1069,121 @@ mod tests {
         );
 
         let _ = shared.host.kill(&pane_id);
+    }
+
+    /// S-1（2026-07-02 审计）：respawn 复用同 PaneId——旧代际退出被 sweep 广播后，
+    /// 新代际的退出必须能再次被 sweep 广播（此前 swept 按 PaneId 永久去重 ⇒ 新代际
+    /// 退出事件被永久挡在 sweep 兜底之外，仅剩不可靠的 reader-EOF 路径）。
+    /// real ConPTY：两代皆 cmd /c exit N 快退，退出码区分代际。
+    #[test]
+    fn exit_sweep_rebroadcasts_after_respawn() {
+        let shared = test_shared();
+        let pane_id = PaneId("sweep-respawn".into());
+        let cmd_abs = std::path::PathBuf::from(
+            std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into()),
+        )
+        .join("System32\\cmd.exe")
+        .to_string_lossy()
+        .into_owned();
+        let spawn_req = |exit_code: &str| crate::pane::SpawnRequest {
+            pane_id: pane_id.clone(),
+            command: crate::pane::CommandSpec {
+                program: cmd_abs.clone(),
+                args: vec!["/c".into(), format!("exit {exit_code}")],
+                cwd: None,
+                env: vec![],
+            },
+            size: PaneSize { rows: 24, cols: 80 },
+            adapter_id: "shell".into(),
+            display_name: None,
+            created_at: 0,
+        };
+        shared.host.spawn(spawn_req("7")).expect("spawn 第一代快退 pane");
+
+        let (conn, rx) = test_conn();
+        conn.subscriptions.lock().unwrap().insert(pane_id.clone());
+        shared.conns.lock().unwrap().insert(1, Arc::clone(&conn));
+
+        let mut swept = HashSet::new();
+
+        // 第一代退出 → 广播 exit 7。
+        let mut got: Option<Option<i32>> = None;
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(100));
+            sweep_exits_once(&shared, &mut swept);
+            for f in drain_frames(&rx) {
+                if let WireFrame::Notify(MuxNotify::PaneExited { exit_code, .. }) = f {
+                    got = Some(exit_code);
+                }
+            }
+            if got.is_some() {
+                break;
+            }
+        }
+        assert_eq!(got, Some(Some(7)), "第一代退出应被 sweep 广播");
+
+        // respawn 同 id（第二代，exit 9）。
+        shared
+            .host
+            .respawn(&pane_id, spawn_req("9"))
+            .expect("respawn 第二代快退 pane");
+
+        // 新代际退出 → 必须再次被广播（旧实现在此永久沉默）。
+        let mut got2: Option<Option<i32>> = None;
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(100));
+            sweep_exits_once(&shared, &mut swept);
+            for f in drain_frames(&rx) {
+                if let WireFrame::Notify(MuxNotify::PaneExited { exit_code, .. }) = f {
+                    got2 = Some(exit_code);
+                }
+            }
+            if got2.is_some() {
+                break;
+            }
+        }
+        assert_eq!(
+            got2,
+            Some(Some(9)),
+            "respawn 后新代际的退出必须再次被 sweep 广播（S-1 代际化）"
+        );
+
+        let _ = shared.host.kill(&pane_id);
+    }
+
+    /// S-2：应答背压记账按内容量——Capture 大帧不得再按固定 256B 记账（8MiB 队列
+    /// 上界曾最坏对应 ~45GB 真实内存的放大洞）。
+    #[test]
+    fn reply_bytes_scales_with_payload() {
+        let big = "A".repeat(2 * 1024 * 1024);
+        let captured = MuxReply::Ok {
+            correlation_id: 1,
+            payload: MuxPayload::Captured(crate::capture::CaptureResult {
+                data_base64: big.clone(),
+                first_abs_line: 0,
+                last_abs_line: 0,
+                truncated: false,
+                effectively_full: false,
+            }),
+        };
+        assert!(
+            reply_bytes(&captured) >= big.len(),
+            "Capture 帧应按 base64 内容长度记账"
+        );
+
+        let small = MuxReply::Ok {
+            correlation_id: 2,
+            payload: MuxPayload::Sent,
+        };
+        assert_eq!(reply_bytes(&small), 256, "小应答维持固定近似记账");
+
+        let err = MuxReply::Err {
+            correlation_id: 3,
+            error: ConmuxError::Unsupported {
+                message: "x".into(),
+            },
+        };
+        assert_eq!(reply_bytes(&err), 256, "错误应答维持固定近似记账");
     }
 
     /// D-7：同连接 <500ms 内两次 Attach 同 pane，第二次回 Busy（限速防快照放大）。
