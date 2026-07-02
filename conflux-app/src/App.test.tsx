@@ -17,6 +17,7 @@ describe("App event bridge", () => {
     vi.doUnmock("./components/workspace/CloseConfirmModal");
     vi.doUnmock("./components/workspace/OnboardingWizard");
     vi.doUnmock("./components/workspace/QuickTour");
+    vi.doUnmock("./lib/event-listener");
     vi.resetModules();
     vi.unstubAllGlobals();
   });
@@ -88,6 +89,11 @@ describe("App event bridge", () => {
       CloseConfirmModal: () => null,
     }));
 
+    // C2（2026-07-02 审计）：App 挂载即调 onJumpBackRequested→真 listen→unhandled rejection。
+    vi.doMock("./lib/event-listener", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("./lib/event-listener")>()),
+      onJumpBackRequested: vi.fn(() => Promise.resolve(() => undefined)),
+    }));
     const { default: App } = await import("./App");
 
     let renderer!: TestRenderer.ReactTestRenderer;
@@ -170,6 +176,11 @@ describe("App event bridge", () => {
       CloseConfirmModal: () => null,
     }));
 
+    // C2（2026-07-02 审计）：App 挂载即调 onJumpBackRequested→真 listen→unhandled rejection。
+    vi.doMock("./lib/event-listener", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("./lib/event-listener")>()),
+      onJumpBackRequested: vi.fn(() => Promise.resolve(() => undefined)),
+    }));
     const { default: App } = await import("./App");
 
     let renderer!: TestRenderer.ReactTestRenderer;
@@ -258,6 +269,11 @@ describe("App event bridge", () => {
       QuickTour: () => createElement("aside", { "data-testid": "quick-tour" }),
     }));
 
+    // C2（2026-07-02 审计）：App 挂载即调 onJumpBackRequested→真 listen→unhandled rejection。
+    vi.doMock("./lib/event-listener", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("./lib/event-listener")>()),
+      onJumpBackRequested: vi.fn(() => Promise.resolve(() => undefined)),
+    }));
     const { default: App } = await import("./App");
 
     let renderer!: TestRenderer.ReactTestRenderer;

@@ -378,16 +378,44 @@ fn to_agent_state_detail(
     }
 }
 
+/// 去载荷副本：PtyOutput 的 `data` 是读线程高频大块（base64 整块输出），协调缓冲
+/// 只需要其时间戳语义（静默检测 latest_ts）——置空 data 避免逐块 clone。
+fn strip_event_payload(event: &ConfluxEvent) -> ConfluxEvent {
+    match event {
+        ConfluxEvent::PtyOutput {
+            instance_id,
+            seq,
+            timestamp,
+            ..
+        } => ConfluxEvent::PtyOutput {
+            instance_id: instance_id.clone(),
+            data: String::new(),
+            seq: *seq,
+            timestamp: *timestamp,
+        },
+        other => other.clone(),
+    }
+}
+
 /// C-Δ1: 协调器触发主函数
 ///
 /// 在每个事件 emit 后调用：
-/// 1. 缓冲事件（每 10 分钟窗口，超过则淘汰）
-/// 2. 检查是否满足协调条件（Coordinator::should_coordinate）
-/// 3. 若满足，聚合上下文并构建调度指令
-/// 4. 通过唯一注入入口 inject_with_policy(OrchestrationAuto) 注入到目标 PTY
-/// 5. 发出 CoordinationCommand 事件
+/// 1. env 门（`auto_injection_enabled`，默认 off）——关闭态直接返回，零缓冲零扫描
+/// 2. 缓冲事件（10 分钟窗口，超过淘汰；PtyOutput 去载荷只留时间戳语义）
+/// 3. 检查是否满足协调条件（Coordinator::should_coordinate）
+/// 4. 若满足，聚合上下文并构建调度指令
+/// 5. 通过唯一注入入口 inject_with_policy(OrchestrationAuto) 注入到目标 PTY
+/// 6. 发出 CoordinationCommand 事件
 fn trigger_coordinator(app: &AppHandle, state: &crate::AppState, event: &ConfluxEvent) {
     if matches!(event, ConfluxEvent::CoordinationCommand { .. }) {
+        return;
+    }
+
+    // 2026-07-02 审计（读线程性能债）：env 门**前置**。默认 off 且生产无设置点——
+    // 此前关闭态仍对每个事件（含每块 PtyOutput，PaneHost 读线程高频调用）clone 进
+    // 10 分钟缓冲、再整缓冲 clone 一份扫描，纯属死路开销。门前置后关闭态零缓冲
+    // 零扫描；可观察差异仅少一条 debug 日志（关闭态本就不注入）。开关语义不变。
+    if !Coordinator::auto_injection_enabled() {
         return;
     }
 
@@ -398,7 +426,9 @@ fn trigger_coordinator(app: &AppHandle, state: &crate::AppState, event: &Conflux
         let mut buf = state.recent_events.write();
         buf.retain(|(ts, _)| now.saturating_sub(*ts) < window_secs);
         let ts = extract_event_timestamp(event);
-        buf.push((ts, event.clone()));
+        // PtyOutput 在协调判定里只贡献"最近活跃时间戳"（静默检测的 latest_ts）——
+        // 按去载荷形式入缓冲（data 置空），读线程不再 clone 整块输出数据。
+        buf.push((ts, strip_event_payload(event)));
     }
 
     let events_to_check = {
@@ -407,11 +437,6 @@ fn trigger_coordinator(app: &AppHandle, state: &crate::AppState, event: &Conflux
     };
 
     if !Coordinator::should_coordinate(&events_to_check) {
-        return;
-    }
-
-    if !Coordinator::auto_injection_enabled() {
-        log::debug!("Coordinator: 自动 stdin 注入已关闭，跳过本次协调注入");
         return;
     }
 
