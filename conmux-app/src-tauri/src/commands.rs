@@ -496,14 +496,41 @@ fn read_complete_lines(path: &std::path::Path, offset: u64) -> std::io::Result<(
     Ok((lines, new_offset))
 }
 
+/// session-id 形态校验（B2，2026-07-02 审计 S1）：只放行 hex + `-` 的 UUID 形态字符，
+/// 拒绝一切路径语义字符（`/` `\` `.` 等）——id 会被拼进文件名，fail-closed 防逃逸。
+fn is_valid_session_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+}
+
+/// 取单个文件 mtime（ms since epoch）；拿不到 → None。
+fn file_mtime_ms(path: &std::path::Path) -> Option<f64> {
+    let m = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
+    Some(
+        m.duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as f64)
+            .unwrap_or(0.0),
+    )
+}
+
 /// 读 Claude Code 会话 JSONL 尾部增量（M⑥ §2/§4，**无 State**）。
-/// §2.1 sanitize cwd → `<home>/.claude/projects/<sanitized>/` → 选最新 `.jsonl` →
+/// §2.1 sanitize cwd → `<home>/.claude/projects/<sanitized>/` → 选目标 `.jsonl` →
 /// 从 `offset` 读到 EOF（半行不返回）→ 返回 `{lines, offset, file, mtimeMs}` JSON 字符串。
+///
+/// 文件选择（B2，2026-07-02 审计 S1 串台修复）：
+///   - `session_id` 有值且形态合法 → **精确锚定** `<session_id>.jsonl`；文件尚未出现
+///     （claude 未写盘）→ 返回空**等待**，绝不回退 mtime（回退即重新引入串台）。
+///   - `session_id` 形态非法 → 拒绝（返回空），不静默回退。
+///   - `session_id` 无值（老会话 / 非注入启动）→ 沿用 mtime 最新（已知同 cwd 多活会话
+///     有串台风险，注入路径已消除主场景）。
 ///
 /// 降级语义优先（不 Err、不 panic）：cwd 空 / home 拿不到 / 目录不存在 / 无 jsonl /
 /// 读失败 → 返回 `{"lines":[],"offset":0}`。坏行 / 半行不在此打日志（L-3，前端 parser try/catch）。
 #[tauri::command]
-pub async fn read_claude_jsonl(cwd: String, offset: u64) -> Result<String, String> {
+pub async fn read_claude_jsonl(
+    cwd: String,
+    offset: u64,
+    session_id: Option<String>,
+) -> Result<String, String> {
     let empty = || r#"{"lines":[],"offset":0}"#.to_string();
     if cwd.trim().is_empty() {
         return Ok(empty());
@@ -516,7 +543,18 @@ pub async fn read_claude_jsonl(cwd: String, offset: u64) -> Result<String, Strin
         .join(".claude")
         .join("projects")
         .join(sanitize_cwd(&cwd));
-    let (path, mtime_ms) = match newest_jsonl(&dir) {
+    let target = match session_id.as_deref() {
+        Some(id) if is_valid_session_id(id) => {
+            let p = dir.join(format!("{id}.jsonl"));
+            match file_mtime_ms(&p) {
+                Some(mtime) if p.is_file() => Some((p, mtime)),
+                _ => None, // 目标会话文件尚未出现 → 诚实空等（不回退 mtime，防串台）。
+            }
+        }
+        Some(_) => None, // 非法形态：fail-closed。
+        None => newest_jsonl(&dir),
+    };
+    let (path, mtime_ms) = match target {
         Some(v) => v,
         None => return Ok(empty()),
     };
@@ -721,6 +759,29 @@ pub async fn list_wsl_distros() -> Result<Vec<String>, String> {
     #[cfg(not(windows))]
     {
         Ok(Vec::new())
+    }
+}
+
+#[cfg(test)]
+mod session_id_tests {
+    use super::is_valid_session_id;
+
+    #[test]
+    fn accepts_uuid_shape() {
+        assert!(is_valid_session_id("87cd893d-b486-4728-a2b6-0fee08f4b31b"));
+        assert!(is_valid_session_id("ABCDEF01-2345")); // hex 大小写 + '-' 宽松形态即可
+    }
+
+    #[test]
+    fn rejects_path_semantics_fail_closed() {
+        // id 拼进文件名——一切路径语义字符必须拒绝（B2 防逃逸）。
+        assert!(!is_valid_session_id(""));
+        assert!(!is_valid_session_id("../evil"));
+        assert!(!is_valid_session_id("..\\evil"));
+        assert!(!is_valid_session_id("a/b"));
+        assert!(!is_valid_session_id("a.jsonl"));
+        assert!(!is_valid_session_id("a".repeat(65).as_str())); // 超长（纯 hex 也拒）
+        assert!(!is_valid_session_id("g123")); // 非 hex 字母
     }
 }
 

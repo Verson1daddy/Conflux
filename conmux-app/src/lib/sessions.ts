@@ -40,6 +40,13 @@ export interface SessionEntry {
   launchCommand?: string;
   /** 启动工作目录（spec.cwd）；无则继承当前目录。 */
   cwd?: string;
+  /**
+   * B2（2026-07-02 审计 S1）：裸 claude 快捷启动注入的 `--session-id` UUID。
+   * JSONL 观测按它精确锚定 `<id>.jsonl`，消除同 cwd 多活会话按 mtime 串台。
+   * 仅注入路径的会话有值；daemon 重连 resync 重建的条目丢失该值（观测降级回
+   * mtime 选文件，已知残留，与 launchName/launchCommand 的 resync 丢失同类）。
+   */
+  claudeSessionId?: string;
 }
 
 /** RECENT 条目（最近关闭的可重开会话）。 */
@@ -321,11 +328,22 @@ export function parseSpawnUntrustedError(e: unknown): SpawnUntrustedError | null
  *   - 其它错误：原字符串抛出（调用方降级处理，如 toast）；store 不变。
  */
 export async function createSession(spec?: CreateSpec): Promise<SessionEntry> {
+  // B2（2026-07-02 审计 S1）：裸 claude 启动（program=claude、用户零 args）注入
+  // `--session-id <uuid>`，JSONL 观测据此精确锚定 `<uuid>.jsonl`（消除同 cwd 多活
+  // 会话按 mtime 串台）。用户给了任何显式 args（含自带 --session-id / -c / -p）→
+  // 一律不动原命令（veto 纪律）。RECENT 存的 launchCommand 仍按**原始** spec 重建
+  // （见下方 rebuildCommand 调用）——重开走本路径重新生成新 id，绝不重放旧 id。
+  let invokeArgs = spec?.args ?? null;
+  let claudeSessionId: string | undefined;
+  if (isBareClaudeLaunch(spec?.program, spec?.args)) {
+    claudeSessionId = crypto.randomUUID();
+    invokeArgs = ["--session-id", claudeSessionId];
+  }
   let info: SessionInfo;
   try {
     info = await invoke<SessionInfo>("create_session", {
       program: spec?.program ?? null,
-      args: spec?.args ?? null,
+      args: invokeArgs,
       cwd: spec?.cwd ?? null,
     });
   } catch (e) {
@@ -344,6 +362,7 @@ export async function createSession(spec?: CreateSpec): Promise<SessionEntry> {
   if (spec?.program !== undefined) {
     entry.launchCommand = rebuildCommand(spec.program, spec.args);
   }
+  if (claudeSessionId !== undefined) entry.claudeSessionId = claudeSessionId;
   // 去重插入（后端 paneId 自增不应碰撞，仍防御）。
   if (!sessions.some((s) => s.instanceId === entry.instanceId)) {
     sessions = [...sessions, entry];
@@ -351,6 +370,18 @@ export async function createSession(spec?: CreateSpec): Promise<SessionEntry> {
   activeId = entry.instanceId;
   notify();
   return entry;
+}
+
+/**
+ * 裸 claude 启动判定（B2 注入门，纯函数导出供单测）：program basename 为
+ * claude / claude.cmd / claude.exe / claude.ps1（大小写无关，容路径与引号），
+ * 且用户未给任何 args。任何显式 args → false（不碰用户命令）。
+ */
+export function isBareClaudeLaunch(program?: string, args?: string[]): boolean {
+  if (program === undefined) return false;
+  if (args !== undefined && args.length > 0) return false;
+  const base = program.trim().replace(/["']/g, "").split(/[\\/]/).pop() ?? "";
+  return /^claude(\.(cmd|exe|ps1))?$/i.test(base);
 }
 
 /**

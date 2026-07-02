@@ -199,7 +199,13 @@ export default function App() {
     for (const s of sessions) {
       if (!map.has(s.instanceId)) {
         const launchIsClaude = /\bclaude\b/i.test(s.launchCommand ?? "");
-        const obs = new SessionObserver(s.instanceId, s.cwd, launchIsClaude);
+        // B2：注入启动的 claude 会话携带 session-id → JSONL 观测精确锚定（防串台）。
+        const obs = new SessionObserver(
+          s.instanceId,
+          s.cwd,
+          launchIsClaude,
+          s.claudeSessionId,
+        );
         map.set(s.instanceId, obs);
         obs.start();
       }

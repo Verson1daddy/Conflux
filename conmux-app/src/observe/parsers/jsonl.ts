@@ -15,6 +15,7 @@
 //     toolu_… 或 call_…）；user 行 content 含 `tool_result`（tool_use_id 指回完成的 tool_use）。
 
 import type { AwareStatePatch } from "./types";
+import type { SubagentNode } from "../types";
 
 // ---- model → context window 查表（S-3 / D-8，原始 ID 前缀匹配）----
 //
@@ -120,6 +121,18 @@ export interface JsonlAccum {
   wfOrder: string[];
   /** 最近一次 Skill tool_use 的 input.skill（标"recent"，非伪 live）。 */
   recentSkill: string | null;
+  /**
+   * 子 agent 派发跟踪（2026-07-02 审计 P0-1）：tool_use id → 节点。
+   * ground truth（2026-07-02 本机实测，~/.claude/projects/<sanitized>/*.jsonl）：
+   * 派发 = assistant content 的 tool_use，`name:"Agent"`（旧版名 "Task" 兼容收），
+   * input 含 subagent_type / description；user 行 tool_result.tool_use_id 指回 = 完成。
+   * sidechain 不写主文件（实测 isSidechain:true 0 行）、子 agent 转录在会话子目录
+   * （read_claude_jsonl 不扫）→ 无嵌套误报 / 双计。完成项**保留**（会话级历史），
+   * 与 activeWf 的"完成即删"语义不同。
+   */
+  subagents: Map<string, SubagentNode>;
+  /** 子 agent 派发序（tool_use id，首次观测序）。 */
+  subOrder: string[];
 }
 
 /** 全新累加器（新会话 / 切文件时重建）。 */
@@ -132,6 +145,8 @@ export function initJsonlAccum(): JsonlAccum {
     activeWf: new Map(),
     wfOrder: [],
     recentSkill: null,
+    subagents: new Map(),
+    subOrder: [],
   };
 }
 
@@ -231,6 +246,24 @@ function scanAssistantTools(msg: Record<string, unknown>, accum: JsonlAccum): vo
       if (typeof input?.skill === "string") {
         accum.recentSkill = input.skill;
       }
+    } else if ((name === "Agent" || name === "Task") && typeof id === "string") {
+      // 子 agent 派发（P0-1 ground truth 2026-07-02：当前版名 "Agent"，"Task" 旧版兼容）。
+      const input = b.input as Record<string, unknown> | undefined;
+      const type =
+        typeof input?.subagent_type === "string" && input.subagent_type.length > 0
+          ? input.subagent_type
+          : "agent"; // 省略 subagent_type = 平台默认——用中性词，不臆造具体类型名。
+      const description =
+        typeof input?.description === "string" ? input.description : "";
+      if (!accum.subagents.has(id)) {
+        accum.subOrder.push(id);
+        accum.subagents.set(id, {
+          type,
+          description,
+          status: "running",
+          detail: null, // JSONL 无 "Done(…)" 摘要行——不编造 detail。
+        });
+      }
     }
   }
 }
@@ -248,6 +281,14 @@ function scanUserToolResults(msg: Record<string, unknown>, accum: JsonlAccum): v
       accum.activeWf.delete(id);
       const idx = accum.wfOrder.indexOf(id);
       if (idx >= 0) accum.wfOrder.splice(idx, 1);
+    }
+    // 子 agent 完成（P0-1）：tool_result 指回派发 id → done（粘性终态）；节点保留
+    // （会话级历史，区别于 activeWf 的完成即删）。
+    if (typeof id === "string") {
+      const node = accum.subagents.get(id);
+      if (node !== undefined && node.status !== "done") {
+        accum.subagents.set(id, { ...node, status: "done" });
+      }
     }
   }
 }
@@ -282,6 +323,16 @@ function accumToPatch(accum: JsonlAccum): AwareStatePatch {
 
   // recentSkill：最近 Skill tool_use 的 input.skill（标"recent"）。
   patch.recentSkill = accum.recentSkill;
+
+  // subagents（P0-1）：JSONL 是结构化权威源（tool_use/tool_result 对账，不受 TUI 改版
+  // 影响）。**只在观测到过派发时写**——写空数组会让 mergePatch 的 accumulateSubagents
+  // 把 PTY 已累计项全部误标 historic。
+  if (accum.subOrder.length > 0) {
+    patch.subagents = accum.subOrder
+      .map((id) => accum.subagents.get(id))
+      .filter((n): n is SubagentNode => n !== undefined)
+      .map((n) => ({ ...n }));
+  }
 
   return patch;
 }

@@ -101,6 +101,12 @@ export class SessionObserver {
    * （当前 claude alt-screen TUI 不触发 sniff）。App 据 SessionEntry.launchCommand 传入。
    */
   private readonly launchIsClaude: boolean;
+  /**
+   * B2（2026-07-02 审计 S1）：注入启动携带的 claude `--session-id`。有值 →
+   * read_claude_jsonl 精确锚定 `<id>.jsonl`（消除同 cwd 多活会话 mtime 串台）；
+   * 无值（老会话 / 非注入启动 / resync 丢失）→ 后端沿用 mtime 最新（已知残留）。
+   */
+  private readonly launchSessionId: string | null;
   private state: AwareState = initialAwareState();
   private readonly registry = new ParserRegistry();
 
@@ -126,13 +132,23 @@ export class SessionObserver {
   private jsonlFile: string | null = null; // 当前会话 JSONL basename（变 → 重置 offset/accum）。
   private jsonlAccum: JsonlAccum = initJsonlAccum();
   private jsonlPolling = false; // 单飞：避免轮询重入（前一轮 invoke 未回时跳过本轮）。
+  // P0-1（2026-07-02 审计）：JSONL 源已观测到 ≥1 次子 agent 派发 → 它成为 subagents
+  // 权威源，PTY 正则提取的 subagents 被丢弃（16KB 窗口 + 工具黑名单是误报源；JSONL
+  // tool_use/tool_result 结构化对账不受 TUI 改版影响）。文件切换（新会话）时复位。
+  private jsonlSubagentsSeen = false;
 
   private readonly decoder = new TextDecoder("utf-8", { fatal: false });
 
-  constructor(instanceId: string, launchCwd?: string, launchIsClaude?: boolean) {
+  constructor(
+    instanceId: string,
+    launchCwd?: string,
+    launchIsClaude?: boolean,
+    launchSessionId?: string,
+  ) {
     this.instanceId = instanceId;
     this.launchCwd = launchCwd ?? null;
     this.launchIsClaude = launchIsClaude ?? false;
+    this.launchSessionId = launchSessionId ?? null;
   }
 
   /** 启动观测（幂等）。返回的函数停止并清理订阅 / 定时器。 */
@@ -279,6 +295,11 @@ export class SessionObserver {
 
     // 喂 parser 去 ANSI 文本（只写它能诚实确定的字段）。
     const patch = parser.parse(stripped, this.strippedBuffer);
+    // P0-1：JSONL 已观测到派发 → PTY 正则的 subagents 不再入账（权威源让位），
+    // patch 其余字段照喂。
+    if (this.jsonlSubagentsSeen && patch.subagents !== undefined) {
+      delete patch.subagents;
+    }
     if (this.mergePatch(next, patch)) dirty = true;
 
     if (dirty) this.commit(next);
@@ -420,6 +441,7 @@ export class SessionObserver {
       const raw = await invoke<string>("read_claude_jsonl", {
         cwd,
         offset: this.jsonlOffset,
+        sessionId: this.launchSessionId, // B2：有值 → 后端精确锚定 <id>.jsonl。
       });
       if (!this.started) return; // 轮询期间被停 → 丢弃。
       const result = JSON.parse(raw) as JsonlReadResult;
@@ -435,6 +457,7 @@ export class SessionObserver {
         this.jsonlOffset = 0;
         this.jsonlAccum = initJsonlAccum();
         this.jsonlFile = file;
+        this.jsonlSubagentsSeen = false; // 新会话：权威让位复位（P0-1）。
         // 本轮 lines 是按旧 offset 读的旧文件尾段——丢弃，下一轮从 0 读新文件。
         return;
       }
@@ -450,6 +473,10 @@ export class SessionObserver {
       if (lines.length > 0) {
         const { patch } = parseJsonlLines(lines, this.jsonlAccum);
         if (!stale) {
+          // P0-1：本会话 JSONL 观测到过派发 → subagents 权威源切到 JSONL。
+          if (patch.subagents !== undefined && patch.subagents.length > 0) {
+            this.jsonlSubagentsSeen = true;
+          }
           // fresh claude jsonl（model 是 claude 族）→ JSONL **权威**置 isAgent/parserId +
           // 喂字段（绕开脆弱 PTY sniff，D-10：当前 claude alt-screen TUI 不触发 sniff）。
           // 非 claude model / 还无真实消息 → 仅喂 patch，不擅自置 agent（诚实）。

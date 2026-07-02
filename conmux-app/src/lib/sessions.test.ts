@@ -10,10 +10,35 @@
 import { describe, expect, it } from "vitest";
 import {
   applyRecentPush,
+  isBareClaudeLaunch,
   isRecentEntry,
   parseRecentJson,
   type RecentEntry,
 } from "./sessions";
+
+// ===== B2（2026-07-02 审计 S1）：裸 claude 启动判定（--session-id 注入门）=====
+describe("isBareClaudeLaunch", () => {
+  it("裸 claude（含 shim 扩展名 / 路径 / 大小写）→ true", () => {
+    expect(isBareClaudeLaunch("claude")).toBe(true);
+    expect(isBareClaudeLaunch("claude", [])).toBe(true);
+    expect(isBareClaudeLaunch("Claude.CMD")).toBe(true);
+    expect(isBareClaudeLaunch("C:\\Users\\me\\bin\\claude.exe")).toBe(true);
+    expect(isBareClaudeLaunch("/usr/local/bin/claude.ps1")).toBe(true);
+  });
+
+  it("用户给了任何显式 args → false（不碰用户命令，veto 纪律）", () => {
+    expect(isBareClaudeLaunch("claude", ["-c"])).toBe(false);
+    expect(isBareClaudeLaunch("claude", ["--session-id", "abc"])).toBe(false);
+  });
+
+  it("非 claude 程序 / 无 program → false", () => {
+    expect(isBareClaudeLaunch(undefined)).toBe(false);
+    expect(isBareClaudeLaunch("powershell")).toBe(false);
+    expect(isBareClaudeLaunch("claudex")).toBe(false);
+    expect(isBareClaudeLaunch("not-claude")).toBe(false);
+    expect(isBareClaudeLaunch("wsl")).toBe(false);
+  });
+});
 
 const entry = (over: Partial<RecentEntry> = {}): RecentEntry => ({
   name: "x",

@@ -348,3 +348,106 @@ describe("parseJsonlLines — robustness (L-3)", () => {
     expect(patch.tokensUsed).toBeUndefined();
   });
 });
+
+// ===== 子 agent 派发跟踪（P0-1，ground truth 2026-07-02 本机 jsonl 实测）=====
+// 派发 = tool_use name:"Agent"（旧版名 "Task" 兼容），input.subagent_type/description；
+// tool_result 指回 = done（粘性，节点保留——区别于 activeWf 完成即删）。
+describe("parseJsonlLines · subagents (P0-1)", () => {
+  function dispatch(opts: {
+    id: string;
+    name?: string;
+    subagent_type?: string;
+    description?: string;
+  }): unknown {
+    const input: Record<string, unknown> = { prompt: "…" };
+    if (opts.subagent_type !== undefined) input.subagent_type = opts.subagent_type;
+    if (opts.description !== undefined) input.description = opts.description;
+    return { type: "tool_use", id: opts.id, name: opts.name ?? "Agent", input };
+  }
+
+  it("Agent tool_use 派发 → running 节点（type/description 取 input 真值）", () => {
+    const { patch } = parseJsonlLines(
+      [
+        asst({
+          model: "claude-opus-4-8",
+          content: [
+            dispatch({ id: "toolu_a", subagent_type: "Explore", description: "Scan files" }),
+          ],
+        }),
+      ],
+      initJsonlAccum(),
+    );
+    expect(patch.subagents).toEqual([
+      { type: "Explore", description: "Scan files", status: "running", detail: null },
+    ]);
+  });
+
+  it("旧版名 Task 兼容收", () => {
+    const { patch } = parseJsonlLines(
+      [
+        asst({
+          model: "claude-opus-4-8",
+          content: [
+            dispatch({ id: "toolu_t", name: "Task", subagent_type: "Plan", description: "Plan it" }),
+          ],
+        }),
+      ],
+      initJsonlAccum(),
+    );
+    expect(patch.subagents?.[0]).toMatchObject({ type: "Plan", status: "running" });
+  });
+
+  it("tool_result 指回 → done 粘性且节点保留", () => {
+    const accum = initJsonlAccum();
+    parseJsonlLines(
+      [
+        asst({
+          model: "claude-opus-4-8",
+          content: [dispatch({ id: "toolu_d", subagent_type: "Explore", description: "x" })],
+        }),
+      ],
+      accum,
+    );
+    const { patch } = parseJsonlLines([userToolResult("toolu_d")], accum);
+    expect(patch.subagents).toHaveLength(1);
+    expect(patch.subagents?.[0]).toMatchObject({ status: "done", detail: null });
+  });
+
+  it("省略 subagent_type / description → 中性 'agent' + 空描述（不臆造）", () => {
+    const { patch } = parseJsonlLines(
+      [asst({ model: "claude-opus-4-8", content: [dispatch({ id: "toolu_n" })] })],
+      initJsonlAccum(),
+    );
+    expect(patch.subagents?.[0]).toMatchObject({
+      type: "agent",
+      description: "",
+      status: "running",
+    });
+  });
+
+  it("未观测到派发 → patch 不写 subagents（防把 PTY 累计项误标 historic）", () => {
+    const { patch } = parseJsonlLines(
+      [asst({ model: "claude-opus-4-8", usage: REAL_USAGE })],
+      initJsonlAccum(),
+    );
+    expect(patch.subagents).toBeUndefined();
+  });
+
+  it("同 id 重复不重计；多派发保持首次观测序", () => {
+    const accum = initJsonlAccum();
+    const { patch } = parseJsonlLines(
+      [
+        asst({
+          model: "claude-opus-4-8",
+          content: [
+            dispatch({ id: "toolu_1", subagent_type: "Explore", description: "one" }),
+            dispatch({ id: "toolu_1", subagent_type: "Explore", description: "one" }),
+            dispatch({ id: "toolu_2", subagent_type: "Plan", description: "two" }),
+          ],
+        }),
+      ],
+      accum,
+    );
+    expect(patch.subagents?.map((n) => n.description)).toEqual(["one", "two"]);
+  });
+});
