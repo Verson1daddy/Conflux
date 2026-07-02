@@ -96,6 +96,16 @@ const B1Row: FC<{ s: AwareState }> = ({ s }) => {
       >
         {s.cwd ?? "—"}
       </span>
+      {/* P1-a：claude 会话 cwd 未知 → JSONL 富观测阻断的诚实提示（原静默失效）。 */}
+      {s.jsonlBlockedNoCwd && (
+        <span
+          data-testid="aware-jsonl-blocked"
+          title="无法定位 Claude Code 会话文件（cwd 未知）——模型/ctx/Σ 等富观测字段不可用。给启动项配工作目录即可恢复。"
+          style={{ flex: "0 0 auto", color: "var(--cx-text-faint)" }}
+        >
+          富观测停用
+        </span>
+      )}
     </div>
   );
 };

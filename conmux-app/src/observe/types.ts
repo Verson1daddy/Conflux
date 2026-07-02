@@ -99,6 +99,13 @@ export interface AwareState {
    * 用户切到该会话即 acknowledge 清除（你看了就不再"需注意"）。
    */
   attention: boolean;
+  /**
+   * P1-a（2026-07-02 审计）：claude 启动意图会话的 JSONL 富观测因 **cwd 未知**被阻断
+   * （observer 无法定位会话文件）。此前是静默失效（字段恒「—」，用户不知何故）——
+   * 现在显式置真，UI 渲染诚实提示；cwd 后到（OSC7 / 用户配置）即清。
+   * 非 claude 会话恒 false。
+   */
+  jsonlBlockedNoCwd: boolean;
 }
 
 /** 观测起始的初始状态（全 null / running / 0ms，诚实空态）。 */
@@ -106,6 +113,7 @@ export function initialAwareState(): AwareState {
   return {
     status: "running",
     attention: false,
+    jsonlBlockedNoCwd: false,
     activity: null,
     elapsedMs: 0,
     cwd: null,

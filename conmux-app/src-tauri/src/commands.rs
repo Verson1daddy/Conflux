@@ -712,8 +712,10 @@ fn extract_frontmatter_field(content: &str, field: &str) -> Option<String> {
 // conmux-app 经 daemon 客户端，spawn 实际在 daemon 进程内执行（信任校验也在 daemon）。
 // **Slice 3 关键变化**：pin 现走 daemon `PinExecutable` IPC（同 SharedTrustStore Arc，
 // 内存态即时生效 + 存盘），免重启 daemon。IPC 失败（daemon 不可达 / 旧版无此 op）回退
-// 直写 `trust.toml`——下次 daemon 重启加载即见（向后兼容）。unpin/list 仍直读文件
-// （daemon 未暴露 unpin IPC；list 是只读快照，无需即时）。
+// 直写 `trust.toml`——下次 daemon 重启加载即见（向后兼容）。
+// **P1-b（2026-07-02）**：unpin 同样走 `UnpinExecutable` IPC（与 pin 对称——原直写
+// 文件在 daemon 重启前不生效，收权慢于授权）；IPC 失败同样回退直写。list 仍直读文件
+// （只读快照，无需即时）。
 
 /// pin 一个可执行文件：算 SHA-256 + 写 pinned_targets + 存盘。
 /// path 必须为绝对路径（与内核 spawn 守卫一致）。
@@ -769,9 +771,39 @@ pub async fn trust_list() -> Result<conmux::TrustStore, String> {
     Ok(conmux::TrustStore::load_or_create())
 }
 
-/// 移除 pin（存盘）。
+/// 移除 pin（P1-b：优先 daemon `UnpinExecutable` IPC 即时生效；IPC 不可用回退直写）。
 #[tauri::command]
-pub async fn trust_unpin(path: String) -> Result<(), String> {
+pub async fn trust_unpin(
+    #[allow(unused_variables)] state: State<'_, ConmuxState>,
+    path: String,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use conmux::protocol::{MuxOp, MuxPayload};
+        let ipc_ok = {
+            let mut guard = lock(&state.control);
+            match guard.as_mut() {
+                Some(control) => {
+                    match control.request(MuxOp::UnpinExecutable { path: path.clone() }) {
+                        Ok(MuxPayload::Unpinned) => true,
+                        Ok(other) => {
+                            eprintln!("[trust_unpin] IPC 应答非预期: {other:?}，回退直写");
+                            false
+                        }
+                        Err(e) => {
+                            eprintln!("[trust_unpin] IPC 失败，回退直写: {e}");
+                            false
+                        }
+                    }
+                }
+                None => false,
+            }
+        };
+        if ipc_ok {
+            return Ok(());
+        }
+    }
+    // 回退：直写文件（向后兼容；运行中 daemon 内存态不受影响，重启后生效）。
     let mut store = conmux::TrustStore::load_or_create();
     store.unpin(&path)
 }

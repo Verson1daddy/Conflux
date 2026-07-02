@@ -437,7 +437,18 @@ export class SessionObserver {
   private async pollJsonl(): Promise<void> {
     if (!this.started || this.jsonlPolling) return;
     const cwd = this.state.cwd ?? this.launchCwd;
-    if (cwd == null || cwd.length === 0) return; // cwd 未知 → 诚实降级（不 invoke），新字段保「—」。
+    if (cwd == null || cwd.length === 0) {
+      // P1-a：cwd 未知 → 富观测阻断。原静默失效（字段恒「—」），现显式置标记
+      // 让 UI 渲染诚实提示（aware-header B1 行）。
+      if (!this.state.jsonlBlockedNoCwd) {
+        this.commit({ ...this.state, jsonlBlockedNoCwd: true });
+      }
+      return;
+    }
+    // cwd 已知（OSC7 后到 / 配置）→ 清阻断标记。
+    if (this.state.jsonlBlockedNoCwd) {
+      this.commit({ ...this.state, jsonlBlockedNoCwd: false });
+    }
 
     this.jsonlPolling = true;
     try {

@@ -502,6 +502,17 @@ fn build_reply(req: MuxRequest, shared: &Arc<DaemonShared>, conn: &ConnHandle) -
                 message: "此 daemon 未装配信任库（测试态），不支持 pin".into(),
             }),
         },
+        // P1-b：unpin 对称走 IPC（同 SharedTrustStore Arc 即时生效 + 存盘）——此前
+        // 只有客户端直写文件，运行中 daemon 内存态不受影响，收权慢于授权。
+        MuxOp::UnpinExecutable { path } => match &shared.trust_store {
+            Some(store) => store
+                .unpin(&path)
+                .map(|_| MuxPayload::Unpinned)
+                .map_err(|e| ConmuxError::Unsupported { message: e }),
+            None => Err(ConmuxError::Unsupported {
+                message: "此 daemon 未装配信任库（测试态），不支持 unpin".into(),
+            }),
+        },
         // D-5 订阅：维护本连接订阅集（fan-out 据此投递）。
         MuxOp::Subscribe { pane_id } => {
             conn.subscriptions.lock().unwrap_or_else(recover).insert(pane_id);
@@ -1192,6 +1203,29 @@ mod tests {
             },
         };
         assert_eq!(reply_bytes(&err), 256, "错误应答维持固定近似记账");
+    }
+
+    /// P1-b：未装配信任库的 daemon 对 UnpinExecutable 诚实拒绝（镜像 pin 语义），
+    /// 客户端据此回退直写文件。
+    #[test]
+    fn unpin_without_trust_store_is_unsupported() {
+        let mut r = reader_with(&[
+            hello(PROTOCOL_VERSION),
+            request(MuxOp::UnpinExecutable {
+                path: "C:\\shim\\x.cmd".into(),
+            }),
+        ]);
+        let (conn, rx) = test_conn();
+        let shared = test_shared();
+        serve_connection(&mut r, Some(1234), &shared, &conn);
+        let replies = drain_frames(&rx);
+        assert!(matches!(
+            replies.last(),
+            Some(WireFrame::Reply(MuxReply::Err {
+                error: ConmuxError::Unsupported { .. },
+                ..
+            }))
+        ));
     }
 
     /// D-7：同连接 <500ms 内两次 Attach 同 pane，第二次回 Busy（限速防快照放大）。

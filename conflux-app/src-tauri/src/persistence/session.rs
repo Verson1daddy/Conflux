@@ -60,8 +60,11 @@ pub fn insert_session_event(conn: &Connection, event: &ConfluxEvent) -> Result<(
 
     let timestamp = extract_timestamp(event);
 
-    // D-0702-002：event_id 落真值（uuid，供去重/关联）；source_kind 按变体诚实归类
-    // （歧义 NULL）；correlation_id 暂无上游关联真源 → 诚实 NULL（不填造值）。
+    // D-0702-002：event_id 落真值（uuid）——注意口径（红队 2026-07-02）：此 id 在
+    // INSERT 时生成 = **行唯一 ID**，同一逻辑事件重放/重写会得到不同 id，不能承担
+    // 端到端去重；真正的事件级去重需在事件构造处生成 id（登记，未做）。
+    // source_kind 按变体诚实归类（歧义 NULL）；correlation_id 暂无上游关联真源 →
+    // 诚实 NULL（不填造值）。
     let event_id = uuid::Uuid::new_v4().to_string();
     let source_kind = source_kind_of(event);
 
