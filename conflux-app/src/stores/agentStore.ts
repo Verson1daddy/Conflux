@@ -53,7 +53,8 @@ export interface DiscussionMessage {
   body: string;
   /** Extracted code blocks from body (from backend or parsed locally) */
   codeBlocks: CodeBlock[] | null;
-  deliveryState?: "pending" | "confirmed" | "failed";
+  /** logged = paused 期间发送：仅入讨论记录，未注入任何 agent（红队 2026-07-02 MUST-FIX）。 */
+  deliveryState?: "pending" | "confirmed" | "failed" | "logged";
   deliveryError?: string | null;
 }
 
@@ -719,14 +720,18 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       // D-0702-001（诚实化）：paused 此前只是前端标志，注入照发——文案却宣称
       // "Agents are frozen"。现在 pause 有真实语义：暂停期间消息只入讨论记录，
       // **不注入任何参与 agent**（targetIds 置空；恢复后新消息恢复广播）。
-      const targetIds = state.discussion.paused
+      const paused = state.discussion.paused;
+      const targetIds = paused
         ? []
         : state.discussion.sandboxInstanceIds.length > 0
           ? state.discussion.sandboxInstanceIds
           : [...state.discussion.participantIds];
       sendMessageWithInjection(discussionId, trimmed, targetIds)
         .then((backendMsg) => {
-          // Replace the optimistic message with the backend-confirmed one
+          // Replace the optimistic message with the backend-confirmed one.
+          // 红队 MUST-FIX（2026-07-02）：paused 路径没有注入任何 agent——置 "logged"
+          // 而非 "confirmed"，否则消息行显 "Delivered" 与 footer "not sent to any
+          // agent" 自相矛盾（复活假成功）。
           const confirmed = toFrontendMessage(backendMsg, get().instances);
           set((s) => ({
             discussion: {
@@ -736,7 +741,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
                   ? {
                       ...confirmed,
                       interject: true,
-                      deliveryState: "confirmed",
+                      deliveryState: paused ? "logged" : "confirmed",
                       deliveryError: null,
                     }
                   : m,

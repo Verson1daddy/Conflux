@@ -512,6 +512,18 @@ fn file_mtime_ms(path: &std::path::Path) -> Option<f64> {
     )
 }
 
+/// 轮换陈旧阈值（ms）：锚定文件超此时长无写入且目录存在严格更新的 jsonl
+/// → 判定 claude 已内部轮换会话（/clear 等），降级跟随最新文件（F1）。
+const JSONL_ROTATION_STALE_MS: f64 = 120_000.0;
+
+fn rotation_stale(mtime_ms: f64) -> bool {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as f64)
+        .unwrap_or(0.0);
+    now_ms - mtime_ms > JSONL_ROTATION_STALE_MS
+}
+
 /// 读 Claude Code 会话 JSONL 尾部增量（M⑥ §2/§4，**无 State**）。
 /// §2.1 sanitize cwd → `<home>/.claude/projects/<sanitized>/` → 选目标 `.jsonl` →
 /// 从 `offset` 读到 EOF（半行不返回）→ 返回 `{lines, offset, file, mtimeMs}` JSON 字符串。
@@ -547,7 +559,23 @@ pub async fn read_claude_jsonl(
         Some(id) if is_valid_session_id(id) => {
             let p = dir.join(format!("{id}.jsonl"));
             match file_mtime_ms(&p) {
-                Some(mtime) if p.is_file() => Some((p, mtime)),
+                Some(mtime) if p.is_file() => {
+                    // F1（红队 2026-07-02 MUST-FIX）：claude 内部会话轮换（/clear 等）
+                    // 换写新 <newid>.jsonl，锚定文件从此静默但仍存在——恒锚定会把观测
+                    // 冻死在旧会话（前端 file-change 复位链永不触发、权威标记压制 PTY
+                    // 降级）。降级规则：锚定文件陈旧且目录存在**严格更新**的 jsonl →
+                    // 跟随最新文件（前端 file-change 重置 offset/accum/权威标记）。
+                    // 诚实残留：此窗口内同 cwd 另一活跃会话会被跟上（= B2 前旧行为），
+                    // 属"锚点已死、无更好锚"的降级；UI 侧活跃度门照常兜底。
+                    if rotation_stale(mtime) {
+                        match newest_jsonl(&dir) {
+                            Some((np, nm)) if nm > mtime => Some((np, nm)),
+                            _ => Some((p, mtime)),
+                        }
+                    } else {
+                        Some((p, mtime))
+                    }
+                }
                 _ => None, // 目标会话文件尚未出现 → 诚实空等（不回退 mtime，防串台）。
             }
         }

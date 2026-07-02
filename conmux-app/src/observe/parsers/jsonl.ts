@@ -283,7 +283,9 @@ function scanUserToolResults(msg: Record<string, unknown>, accum: JsonlAccum): v
       if (idx >= 0) accum.wfOrder.splice(idx, 1);
     }
     // 子 agent 完成（P0-1）：tool_result 指回派发 id → done（粘性终态）；节点保留
-    // （会话级历史，区别于 activeWf 的完成即删）。
+    // （会话级历史，区别于 activeWf 的完成即删）。口径（红队 NIT 登记）：done =
+    // "该派发已终结"（含 Esc 中断 / is_error 的错误返回）——不读 is_error 细分，
+    // 观测层只声明终结事实，不宣称成功。
     if (typeof id === "string") {
       const node = accum.subagents.get(id);
       if (node !== undefined && node.status !== "done") {

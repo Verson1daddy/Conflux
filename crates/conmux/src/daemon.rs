@@ -1128,6 +1128,12 @@ mod tests {
             .respawn(&pane_id, spawn_req("9"))
             .expect("respawn 第二代快退 pane");
 
+        // 防 flake（红队 2026-07-02）：gen1 的 reader-EOF 路径可能在 phase-1 break 后
+        // 才迟到落帧 PaneExited(7)（ConPTY EOF 时序不定）——先清残帧，且下方只认
+        // exit 9（stale 7 忽略）。本测试锚定"新代际退出事件可再次到达订阅者"，
+        // 不区分 sweep/reader 来源（gen2 reader-EOF 也可能自发 9，见红队登记）。
+        let _ = drain_frames(&rx);
+
         // 新代际退出 → 必须再次被广播（旧实现在此永久沉默）。
         let mut got2: Option<Option<i32>> = None;
         for _ in 0..30 {
@@ -1135,7 +1141,9 @@ mod tests {
             sweep_exits_once(&shared, &mut swept);
             for f in drain_frames(&rx) {
                 if let WireFrame::Notify(MuxNotify::PaneExited { exit_code, .. }) = f {
-                    got2 = Some(exit_code);
+                    if exit_code == Some(9) {
+                        got2 = Some(exit_code);
+                    }
                 }
             }
             if got2.is_some() {

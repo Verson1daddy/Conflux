@@ -172,13 +172,19 @@ export default function App() {
           tryScroll();
         },
       });
-    }).then((fn) => {
-      if (disposed) {
-        fn();
-        return;
-      }
-      unlisten = fn;
-    });
+    })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      })
+      // 红队 NIT（2026-07-02）：非 Tauri 环境 / 事件桥断时 listen 会 reject——
+      // 兜住避免 unhandled rejection（jump-back 降级为不可用，不影响其余功能）。
+      .catch((err) => {
+        console.warn("[App] onJumpBackRequested listen failed:", err);
+      });
     return () => {
       disposed = true;
       unlisten?.();

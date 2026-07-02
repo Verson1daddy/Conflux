@@ -335,6 +335,49 @@ describe("agentStore discussion backend lifecycle", () => {
     expect(lastMessage?.deliveryState).toBe("failed");
     expect(lastMessage?.deliveryError).toContain("sandbox rejected input");
   });
+
+  // 红队 MUST-FIX（2026-07-02）：paused 期间发送 = 仅入记录不注入——deliveryState
+  // 必须是 "logged"（非 "confirmed"），且注入目标为空数组（不发给任何 agent）。
+  it("marks paused interjects as logged (not delivered) with zero injection targets", async () => {
+    discussionMocks.sendMessageWithInjection.mockResolvedValue({
+      id: "backend-msg-paused",
+      discussion_id: "discussion-1",
+      sender: { type: "User" },
+      content: "Note for the log",
+      round: 1,
+      created_at: 3000,
+      code_blocks: null,
+    });
+
+    const { useAgentStore } = await import("./agentStore");
+    useAgentStore.getState().setInstances([agent("primary", { is_pinned: true })]);
+    useAgentStore.setState((state) => ({
+      discussion: {
+        ...state.discussion,
+        open: true,
+        step: 4,
+        discussionId: "discussion-1",
+        backendState: "active",
+        participantIds: new Set(["primary"]),
+        sandboxInstanceIds: ["sandbox-1"],
+        paused: true,
+      },
+    }));
+
+    useAgentStore.getState().interjectDiscussion("Note for the log");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // targetIds 必须为空：暂停期间不注入任何参与 agent。
+    expect(discussionMocks.sendMessageWithInjection).toHaveBeenCalledWith(
+      "discussion-1",
+      "Note for the log",
+      [],
+    );
+    const messages = useAgentStore.getState().discussion.messages;
+    const lastMessage = messages[messages.length - 1];
+    expect(lastMessage?.deliveryState).toBe("logged");
+  });
 });
 
 describe("agentStore instance snapshots", () => {

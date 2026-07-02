@@ -333,6 +333,8 @@ export async function createSession(spec?: CreateSpec): Promise<SessionEntry> {
   // 会话按 mtime 串台）。用户给了任何显式 args（含自带 --session-id / -c / -p）→
   // 一律不动原命令（veto 纪律）。RECENT 存的 launchCommand 仍按**原始** spec 重建
   // （见下方 rebuildCommand 调用）——重开走本路径重新生成新 id，绝不重放旧 id。
+  // 兼容性（红队 NIT 登记）：依赖 claude CLI 支持 --session-id（2026-07 当前版已验
+  // 证支持）；老版不识该 flag 会在终端 pane 可见地报 unknown option 并退出（非静默）。
   let invokeArgs = spec?.args ?? null;
   let claudeSessionId: string | undefined;
   if (isBareClaudeLaunch(spec?.program, spec?.args)) {

@@ -136,6 +136,9 @@ export class SessionObserver {
   // 权威源，PTY 正则提取的 subagents 被丢弃（16KB 窗口 + 工具黑名单是误报源；JSONL
   // tool_use/tool_result 结构化对账不受 TUI 改版影响）。文件切换（新会话）时复位。
   private jsonlSubagentsSeen = false;
+  // F1(b)（红队 MUST-FIX 兜底）：锚定文件连续陈旧且无新行的轮数——达阈值即复位
+  // 权威标记，恢复 PTY 降级观测（主修复 = 后端轮换降级跟随最新文件）。
+  private jsonlStaleRounds = 0;
 
   private readonly decoder = new TextDecoder("utf-8", { fatal: false });
 
@@ -458,6 +461,7 @@ export class SessionObserver {
         this.jsonlAccum = initJsonlAccum();
         this.jsonlFile = file;
         this.jsonlSubagentsSeen = false; // 新会话：权威让位复位（P0-1）。
+        this.jsonlStaleRounds = 0;
         // 本轮 lines 是按旧 offset 读的旧文件尾段——丢弃，下一轮从 0 读新文件。
         return;
       }
@@ -470,11 +474,28 @@ export class SessionObserver {
       // 文件，与"最近"冲突（gate 已判该文件非 live）。Σ↑↓ 同理（死会话累计冒充当前）。
       const stale = mtimeMs !== null && Date.now() - mtimeMs > JSONL_STALE_MS;
 
+      // F1(b)（红队 MUST-FIX 兜底）：锚定文件持续陈旧且无新行 → JSONL 源可能已死
+      // （轮换后新文件未出现 / claude 退出）。连续 3 轮复位权威标记，PTY 降级恢复；
+      // JSONL 复活（新派发/文件切换）会再次接管。
+      if (stale && lines.length === 0) {
+        this.jsonlStaleRounds += 1;
+        if (this.jsonlStaleRounds >= 3) this.jsonlSubagentsSeen = false;
+      } else {
+        this.jsonlStaleRounds = 0;
+      }
+
       if (lines.length > 0) {
         const { patch } = parseJsonlLines(lines, this.jsonlAccum);
         if (!stale) {
           // P0-1：本会话 JSONL 观测到过派发 → subagents 权威源切到 JSONL。
           if (patch.subagents !== undefined && patch.subagents.length > 0) {
+            if (!this.jsonlSubagentsSeen) {
+              // F2（红队 SHOULD-FIX）：首次切换权威源先清 PTY 残留再合并——PTY 描述
+              // 键受 ')' / 80 字符截断，与 JSONL 完整 description 键不同，直接累加会
+              // 把同一派发显示成两条（PTY 条永远 historic running）。JSONL 从 offset 0
+              // 读起含完整会话历史，全量替换无损。
+              this.state = { ...this.state, subagents: [] };
+            }
             this.jsonlSubagentsSeen = true;
           }
           // fresh claude jsonl（model 是 claude 族）→ JSONL **权威**置 isAgent/parserId +

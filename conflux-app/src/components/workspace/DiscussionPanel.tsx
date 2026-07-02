@@ -1114,6 +1114,8 @@ function deliveryLabel(msg: DiscussionMessage): string | null {
     return msg.deliveryError ?? "Failed to reach the agents.";
   }
   if (msg.deliveryState === "confirmed") return "Delivered";
+  // paused 期间：仅入记录、未注入任何 agent（红队 2026-07-02 MUST-FIX，与 footer 口径一致）。
+  if (msg.deliveryState === "logged") return "Logged (not delivered)";
   return null;
 }
 
