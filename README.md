@@ -27,9 +27,9 @@ Instead of another chat UI, Conflux treats agent work as a set of real sessions,
 
 - **One visual workspace for many agent CLIs** — manage real Claude Code, Codex, Aider, OpenCode, and future adapters from one Windows desktop app.
 - **Real terminal sessions, not mock cards** — sessions are backed by PTY processes and rendered through xterm.js.
-- **Attention surfaces for background agents** — Top Island, Sidebar, Float Ball, tray, notifications, and permission UI help surface what needs you now.
+- **Attention surfaces for background agents** — Top Island, Sidebar, tray, notifications, and permission UI help surface what needs you now.
 - **Canvas-first agent workbench** — draggable cards, compact previews, expanded terminals, search, settings, status bar, and session history.
-- **Cross-agent discussion layer** — start structured discussions, send interjections, review outputs, and keep artifacts tied to the session lifecycle.
+- **Broadcast discussions (user → agents)** — send one message into every participating agent's session at once, with per-agent delivery status, review flow, and artifacts tied to the session lifecycle. Agents do not talk to each other: their replies stay in their own terminals and are not routed back into the chatroom.
 - **Artifacts and review flow** — extract code blocks, pin or draft important outputs, and close discussions with an explicit review state.
 - **Event timeline** — inspect session events from SQLite-backed persistence. V1 calls this an event timeline, not full terminal replay.
 - **Framework-neutral architecture** — adapters are modeled as definitions, installations, real sessions, visual cards, and orchestration targets.
@@ -223,8 +223,8 @@ Conflux 的方向是把这些 agent 工作变成一个可观察、可接管、�
 - **真实 PTY 会话**：通过 Windows ConPTY / `portable-pty` 启动和管理 CLI。
 - **内置适配器**：Claude Code、Codex、Aider、OpenCode。
 - **可视化工作台画布**：Agent 卡片、终端预览、展开态终端、搜索、设置、状态栏。
-- **注意力层**：Top Island、Sidebar、Float Ball、通知、权限 UI、系统托盘。
-- **讨论系统**：跨 agent discussion、interject、隐藏 sandbox 实例、结束讨论 review。
+- **注意力层**：Top Island、Sidebar、通知、权限 UI、系统托盘。
+- **广播式讨论（用户 → agents）**：一条消息同时注入全部参与 agent 的会话（含逐 agent 送达状态）、隐藏 sandbox 实例、结束讨论 review。agent 之间**不**互相对话——各自的回复留在各自终端，不回流聊天室。
 - **Artifacts 生命周期**：代码块提取、pin/draft、review snapshot。
 - **Session Event Timeline**：基于 SQLite 的事件时间线；V1 明确不是完整终端录像回放。
 - **自动化验证**：前端 typecheck/test/build、Rust check/lib tests 已形成基线。

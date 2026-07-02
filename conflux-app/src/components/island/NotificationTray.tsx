@@ -64,6 +64,8 @@ interface NotificationCardProps {
 const NotificationCard: FC<NotificationCardProps> = ({ notif, isPinned, onDismiss, onReply, removalState }) => {
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
+  // D-0702-001：注入失败的真实错误态（原实现被上游吞错，卡片永远显示假成功）。
+  const [sendError, setSendError] = useState<string | null>(null);
 
   const agentName = notif.source_adapter_name || notif.source_instance_id || "Agent";
   const dotColor = STATUS_COLORS[notif.level] ?? "#6B7280";
@@ -71,9 +73,13 @@ const NotificationCard: FC<NotificationCardProps> = ({ notif, isPinned, onDismis
   const handleSend = useCallback(async () => {
     if (!reply.trim() || sending) return;
     setSending(true);
+    setSendError(null);
     try {
       await onReply(notif, reply);
       setReply("");
+    } catch (err) {
+      // 注入失败如实呈现（保留输入内容供重试），不播成功动画。
+      setSendError(err instanceof Error ? err.message : String(err));
     } finally {
       setSending(false);
     }
@@ -155,6 +161,22 @@ const NotificationCard: FC<NotificationCardProps> = ({ notif, isPinned, onDismis
       >
         {notif.content}
       </p>
+
+      {/* 注入失败错误行（D-0702-001：真实失败态，替代假成功） */}
+      {sendError !== null && (
+        <p
+          role="alert"
+          style={{
+            fontFamily: "'Geist Sans', sans-serif",
+            fontSize: 11,
+            color: "#E5707A",
+            margin: 0,
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          Reply failed: {sendError}
+        </p>
+      )}
 
       {/* Reply row */}
       <div className="flex items-center" style={{ gap: 8 }}>
@@ -278,10 +300,9 @@ const NotificationTray: FC<NotificationTrayProps> = ({ visible, onClose }) => {
 
   const handleReply = useCallback(
     async (notif: NotificationItem, replyText: string) => {
-      // Try backend; ignore failure so demo still works
-      try {
-        await injectStdin(notif.source_instance_id, replyText + PTY_ENTER);
-      } catch { /* no PTY yet — demo mode */ }
+      // D-0702-001（诚实化）：原实现吞注入错误后仍无条件播 success 动画（假成功）。
+      // 现在失败原样抛给卡片显示错误态，只有真注入成功才播 success 移除。
+      await injectStdin(notif.source_instance_id, replyText + PTY_ENTER);
       await animateRemoval(notif.id, "success");
     },
     [animateRemoval]

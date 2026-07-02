@@ -21,7 +21,6 @@ import {
   toggleArtifactPin as toggleDiscussionArtifactPinInList,
   upsertArtifactsForMessage,
 } from "@/lib/discussion-artifacts";
-import { adapterIdentityColor } from "@/lib/agent-visuals";
 import { parseCodeBlocks, toFrontendMessage } from "@/lib/discussion-utils";
 import { getLiveAgentInstances } from "@/lib/workspace-status";
 
@@ -246,62 +245,9 @@ export function agentDisplayLabel(info: AgentInstanceInfo): string {
     : info.adapter_name;
 }
 
-/** Build opening demo messages so the chatroom isn't empty on entry. */
-function buildOpeningMessages(
-  direction: string,
-  participants: AgentInstanceInfo[]
-): DiscussionMessage[] {
-  if (participants.length === 0) return [];
-  const primary = participants[0];
-  const second = participants[1];
-  const now = Date.now();
-  const topic = direction.trim() || "the current task";
-
-  const msgs: DiscussionMessage[] = [
-    {
-      id: `m-${now}-1`,
-      authorInstanceId: primary.instance_id,
-      authorName: primary.adapter_name,
-      initials: initialsOf(primary.adapter_name),
-      avatarBg: colorOfAdapter(primary.adapter_id),
-      round: 1,
-      interject: false,
-      time: now,
-      body: `Kicking off the discussion. Goal: ${topic}. ${
-        second ? `${second.adapter_name}, want to share your angle first?` : "Who's first?"
-      }`,
-      codeBlocks: null,
-    },
-  ];
-
-  if (second) {
-    msgs.push({
-      id: `m-${now}-2`,
-      authorInstanceId: second.instance_id,
-      authorName: second.adapter_name,
-      initials: initialsOf(second.adapter_name),
-      avatarBg: colorOfAdapter(second.adapter_id),
-      round: 1,
-      interject: false,
-      time: now + 1,
-      body: `Sure. From my analysis, the main tradeoff here is between correctness and speed; I'd lean toward the safer path first and optimize once we have a baseline.`,
-      codeBlocks: null,
-    });
-  }
-
-  return msgs;
-}
-
-function initialsOf(name: string): string {
-  const parts = name.trim().split(/\s+/);
-  if (parts.length === 0) return "?";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[1][0]).toUpperCase();
-}
-
-function colorOfAdapter(adapterId: string): string {
-  return adapterIdentityColor(adapterId);
-}
+// D-0702-001（诚实化）：原 buildOpeningMessages 用两条硬编码英文台词冒充参与 agent 的
+// 发言（agent 回复本无回流路径，台词是纯演出）——已删除。聊天室以真实空态开场，
+// 内容只来自用户真实发言（interject 真注入各参与 agent 的沙箱 stdin）。
 
 // ===== Store =====
 
@@ -595,18 +541,17 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       const info = liveInstances.get(id);
       if (info) participants.push(info);
     });
-    const openers = buildOpeningMessages(state.discussion.direction, participants);
     const participantIds = participants.map((participant) => participant.instance_id);
     const topic = state.discussion.direction;
     const maxRounds = state.discussion.rules.maxRounds;
 
-    // Optimistic UI: switch to chatroom immediately
+    // Optimistic UI: switch to chatroom immediately（D-0702-001：空态开场，不再注入假台词）
     set((s) => ({
       discussion: {
         ...s.discussion,
         step: 4,
-        messages: openers,
-        artifacts: collectArtifacts(openers),
+        messages: [],
+        artifacts: collectArtifacts([]),
         currentRound: 1,
         paused: false,
         backendState: "starting",
@@ -771,9 +716,14 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
     // B3/B3.1: Send to backend + inject into sandbox PTYs (not workspace instances)
     const discussionId = state.discussion.discussionId;
     if (discussionId && state.discussion.backendState !== "failed") {
-      const targetIds = state.discussion.sandboxInstanceIds.length > 0
-        ? state.discussion.sandboxInstanceIds
-        : [...state.discussion.participantIds];
+      // D-0702-001（诚实化）：paused 此前只是前端标志，注入照发——文案却宣称
+      // "Agents are frozen"。现在 pause 有真实语义：暂停期间消息只入讨论记录，
+      // **不注入任何参与 agent**（targetIds 置空；恢复后新消息恢复广播）。
+      const targetIds = state.discussion.paused
+        ? []
+        : state.discussion.sandboxInstanceIds.length > 0
+          ? state.discussion.sandboxInstanceIds
+          : [...state.discussion.participantIds];
       sendMessageWithInjection(discussionId, trimmed, targetIds)
         .then((backendMsg) => {
           // Replace the optimistic message with the backend-confirmed one

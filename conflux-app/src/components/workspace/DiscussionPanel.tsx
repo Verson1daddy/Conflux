@@ -1144,7 +1144,7 @@ const ChatroomFooter: FC<{
   };
 
   const placeholder = paused
-    ? `Talk to ${primaryName} (paused)...`
+    ? "Log a note (paused, not sent to agents)..."
     : `Interject to ${primaryName}...`;
 
   return (
@@ -1161,7 +1161,7 @@ const ChatroomFooter: FC<{
         fontFamily: "'Geist Sans', sans-serif",
         fontSize: 10, fontWeight: 500, color: COLORS.textMuted,
       }}>
-        {paused ? "Agents are frozen; your message goes directly to the primary" : "Ctrl+Enter sends an interject with visible delivery status"}
+        {paused ? "Paused: messages are recorded to the log but not sent to any agent" : "Ctrl+Enter sends an interject with visible delivery status"}
       </span>
       <div className="flex items-center" style={{ gap: 10 }}>
         <div
