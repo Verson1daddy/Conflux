@@ -540,12 +540,17 @@ export default function App() {
   // Home QUICK LAUNCH chip → parse 命令 → 起为新会话（D-1，携带 launchName）。
   const handleLaunch = useCallback((entry: LaunchEntry) => {
     const { program, args } = parseCommand(entry.command);
-    void createSession({
+    const spec: CreateSpec = {
       name: entry.name,
       program,
       args,
       ...(entry.cwd ? { cwd: entry.cwd } : {}),
-    }).catch(handleCreateError);
+    };
+    // finding-5（2026-07-02 活体 e2e 暴露）：`.catch(handleCreateError)` 只传 error、
+    // 不传 spec → pin 重试用 undefined spec 起成默认 powershell（快捷启动的未签名
+    // CLI 被 pin 后重试变成 powershell、丢原命令）。显式传 spec 让 pin 逃生口重试
+    // 原命令（含 B2 的 --session-id 注入）。
+    void createSession(spec).catch((e) => handleCreateError(e, spec));
   }, [handleCreateError]);
 
   // Home RECENT → 重开（parse 原命令 → 起为新会话，携带 launchName/cwd）。

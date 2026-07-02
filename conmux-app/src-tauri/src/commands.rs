@@ -134,19 +134,51 @@ pub(crate) fn resolve_on_path(program: &str) -> Option<std::path::PathBuf> {
     }
     let path_var = std::env::var_os("PATH")?;
     let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
-    for dir in std::env::split_paths(&path_var) {
-        let bare = dir.join(program); // 原名（可能已含 .exe，或无后缀 shim 脚本）。
-        if bare.is_file() {
+    let dirs: Vec<std::path::PathBuf> = std::env::split_paths(&path_var).collect();
+    resolve_in_dirs(program, &dirs, &pathext, |p| p.is_file())
+}
+
+/// resolve_on_path 的纯核心（可测，无 env 依赖）：在给定 `dirs` 下按 `pathext` 解析
+/// `program`，用 `is_file` 判定文件存在（生产传 `Path::is_file`，测试传桩）。
+///
+/// finding-4（2026-07-02 活体 e2e 暴露）：无 PATHEXT 扩展名的 bare（npm 的无后缀 sh
+/// shim，如 `D:\...\claude`）在 Windows 上 CreateProcess 直起 / `cmd /c` 都跑不起来
+/// （sh shebang 脚本），却因 bare 无条件优先把同目录可执行的 `claude.cmd` 挤掉 →
+/// cmd-wrap 跑一个 sh 脚本、claude 起不来。修：**PATHEXT 候选优先于任何无扩展名
+/// bare**；无扩展名 bare 仅作全局最末 fallback（保留罕见"无扩展名真 exe"兜底；非
+/// Windows 上 PATHEXT 默认候选不存在 → 仍回 fallback，等价原行为）。program 自带可
+/// 执行扩展名（"foo.exe"）时 bare 直接优先、不降级。
+fn resolve_in_dirs(
+    program: &str,
+    dirs: &[std::path::PathBuf],
+    pathext: &str,
+    is_file: impl Fn(&std::path::Path) -> bool,
+) -> Option<std::path::PathBuf> {
+    let has_exec_ext = std::path::Path::new(program)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| {
+            let dot = format!(".{e}");
+            pathext.split(';').any(|x| x.eq_ignore_ascii_case(&dot))
+        })
+        .unwrap_or(false);
+    let mut bare_fallback: Option<std::path::PathBuf> = None;
+    for dir in dirs {
+        let bare = dir.join(program);
+        if has_exec_ext && is_file(&bare) {
             return Some(bare);
         }
         for ext in pathext.split(';').filter(|s| !s.is_empty()) {
             let cand = dir.join(format!("{program}{ext}"));
-            if cand.is_file() {
+            if is_file(&cand) {
                 return Some(cand);
             }
         }
+        if !has_exec_ext && bare_fallback.is_none() && is_file(&bare) {
+            bare_fallback = Some(bare);
+        }
     }
-    None
+    bare_fallback
 }
 
 /// 快捷启动 program 是否需 shell 包裹（finding-3）：解析到非 `.exe`（npm shim 的 .cmd /
@@ -787,6 +819,71 @@ pub async fn list_wsl_distros() -> Result<Vec<String>, String> {
     #[cfg(not(windows))]
     {
         Ok(Vec::new())
+    }
+}
+
+#[cfg(test)]
+mod resolve_tests {
+    use super::resolve_in_dirs;
+    use std::path::{Path, PathBuf};
+
+    // 真实 PATHEXT 大写；候选拼成 `mycli.CMD`，Windows FS 大小写不敏感命中小写真实文件。
+    const PATHEXT: &str = ".COM;.EXE;.BAT;.CMD";
+
+    fn dirs(paths: &[&str]) -> Vec<PathBuf> {
+        paths.iter().map(PathBuf::from).collect()
+    }
+    // 小写文件名（模拟 Windows FS 大小写不敏感的 is_file 判定）。
+    fn name_lc(p: &Path) -> String {
+        p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_ascii_lowercase()
+    }
+    // 解析结果的小写 basename（跨大写 PATHEXT / 平台分隔符稳定比较）。
+    fn got_name(got: &Option<PathBuf>) -> Option<String> {
+        got.as_ref().map(|p| name_lc(p))
+    }
+
+    // finding-4：无后缀 sh shim 与 .cmd 同目录时，必须解析到可执行的 .cmd（非无后缀）。
+    #[test]
+    fn prefers_pathext_over_bare_shim_same_dir() {
+        // 存在集：npm 全局装的无后缀 `mycli`（sh 脚本）+ `mycli.cmd`（大小写不敏感命中）。
+        let present = |p: &Path| matches!(name_lc(p).as_str(), "mycli" | "mycli.cmd");
+        let got = resolve_in_dirs("mycli", &dirs(&["bin"]), PATHEXT, present);
+        assert_eq!(got_name(&got).as_deref(), Some("mycli.cmd"));
+        assert!(got.unwrap().ends_with(PathBuf::from("bin").join("mycli.CMD")));
+    }
+
+    // PATHEXT 候选优先于**任何目录**的无后缀 bare（跨目录也不被 sh shim 抢走）。
+    #[test]
+    fn pathext_in_later_dir_beats_bare_shim_in_earlier_dir() {
+        let present = |p: &Path| {
+            let n = name_lc(p);
+            (p.starts_with("a") && n == "mycli") || (p.starts_with("b") && n == "mycli.cmd")
+        };
+        let got = resolve_in_dirs("mycli", &dirs(&["a", "b"]), PATHEXT, present);
+        assert_eq!(got_name(&got).as_deref(), Some("mycli.cmd"));
+        assert!(got.unwrap().starts_with("b"));
+    }
+
+    // program 自带可执行扩展名 → bare 直接优先（不降级）。
+    #[test]
+    fn explicit_exec_ext_takes_bare() {
+        let present = |p: &Path| name_lc(p) == "foo.exe";
+        let got = resolve_in_dirs("foo.exe", &dirs(&["bin"]), PATHEXT, present);
+        assert_eq!(got_name(&got).as_deref(), Some("foo.exe"));
+    }
+
+    // 只有无后缀 bare（无 PATHEXT 候选）→ fallback 命中（保留兜底，非 Windows 等价原行为）。
+    #[test]
+    fn bare_only_falls_back() {
+        let present = |p: &Path| name_lc(p) == "tool";
+        let got = resolve_in_dirs("tool", &dirs(&["bin"]), PATHEXT, present);
+        assert_eq!(got_name(&got).as_deref(), Some("tool"));
+    }
+
+    #[test]
+    fn not_found_returns_none() {
+        let got = resolve_in_dirs("nope", &dirs(&["bin"]), PATHEXT, |_| false);
+        assert_eq!(got, None);
     }
 }
 
