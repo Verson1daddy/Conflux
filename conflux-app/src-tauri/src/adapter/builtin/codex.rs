@@ -47,6 +47,7 @@ impl CodexAdapter {
             name: "Codex".to_string(),
             command: "codex".to_string(),
             default_args: vec![],
+            // sandbox/full 为空 ⇒ AgentMode 切换只是标签（见 claude_code.rs D-0702-002 登记）。
             sandbox_args: vec![],
             full_args: vec![],
             status_patterns,

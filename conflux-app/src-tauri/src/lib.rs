@@ -389,6 +389,14 @@ pub fn run() {
             commands::adapter::get_adapter_config,
             commands::adapter::unregister_adapter,
             commands::adapter::detect_adapter_auth,
+            // D-0702-002 死接线收口：以下四命令实现已存在（commands/adapter.rs）但
+            // 一直未注册——前端 tauri-bridge 调用即报错，find_coordination_target 的
+            // primary 腿因此不可达。注册使其可达；前端偏好仍走 localStorage（冻结口
+            // 径不重接线），何时迁移由解冻后决定。
+            commands::adapter::set_favorite_adapters,
+            commands::adapter::get_favorite_adapters,
+            commands::adapter::set_primary_adapter,
+            commands::adapter::get_primary_adapter,
             // BE-4: 编排操作
             commands::orchestration::start_discussion,
             commands::orchestration::send_discussion_message,

@@ -536,7 +536,7 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                     lineHeight: 1.5,
                   }}
                 >
-                  V1 preview of the policy tiers. Runtime permission policy is still controlled per session.
+                  Preview only — selecting a tier does not change any real permission yet (stored locally, not enforced). Runtime permission prompts are handled per session.
                 </p>
 
                 <div className="flex flex-col" style={{ gap: 10 }}>

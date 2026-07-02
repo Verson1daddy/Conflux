@@ -75,6 +75,10 @@ impl ClaudeCodeAdapter {
             // shows up unchanged in the Conflux card terminal, which matches
             // the "user runs the real CLI" contract.
             default_args: vec![],
+            // D-0702-002 诚实登记：sandbox/full 两档参数为空 ⇒ AgentMode 切换只是
+            // 标签，不改变 CLI 真实权限（kill+respawn 相同参数）。UI 无入口调用
+            // set_agent_mode，Settings 权限档也已明示 preview-only。若未来实做隔离，
+            // claude 可填 `--permission-mode` 系列参数——那是产品决策，非补空即成。
             sandbox_args: vec![],
             full_args: vec![],
             status_patterns,

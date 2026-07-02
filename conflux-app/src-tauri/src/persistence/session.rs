@@ -4,7 +4,35 @@
 
 use rusqlite::{params, Connection};
 
-use crate::core::{ConfluxError, ConfluxEvent, InstanceId, SessionEvent, SessionSummary};
+use crate::core::{
+    ConfluxError, ConfluxEvent, InjectionSource, InstanceId, SessionEvent, SessionSummary,
+};
+
+/// source_kind 粗粒度归类（schema §2.2 约定值：hook|pty|runtime|user_action|system）。
+///
+/// D-0702-002 死接线收口：event_id/source_kind 两列此前建而不写（恒 NULL，事件
+/// 关联/去重链断）。诚实原则：变体自身能确定的才归类；歧义的（PermissionRequested
+/// 可能来自 hook relay 或 PTY 刮屏，事件体不携带来源）→ None（NULL，不猜）。
+fn source_kind_of(event: &ConfluxEvent) -> Option<&'static str> {
+    match event {
+        ConfluxEvent::PtyOutput { .. } | ConfluxEvent::ProcessExited { .. } => Some("pty"),
+        ConfluxEvent::AgentStatusChanged { .. }
+        | ConfluxEvent::TaskCompleted { .. }
+        | ConfluxEvent::ErrorOccurred { .. }
+        | ConfluxEvent::SubAgentSpawned { .. }
+        | ConfluxEvent::SubAgentCompleted { .. } => Some("runtime"),
+        ConfluxEvent::PermissionRequested { .. } => None, // hook 或刮屏均可能，不猜。
+        ConfluxEvent::StdinInjected { source, .. } => Some(match source {
+            InjectionSource::UserDirect
+            | InjectionSource::PermissionResponse
+            | InjectionSource::DiscussionUserMessage => "user_action",
+            InjectionSource::OrchestrationAuto => "system",
+        }),
+        // 当前唯一生产路径 = 用户 send_discussion_message（MessageSender 硬编码 User）。
+        ConfluxEvent::DiscussionMessage { .. } => Some("user_action"),
+        ConfluxEvent::CoordinationCommand { .. } => Some("system"),
+    }
+}
 
 /// 将一个 ConfluxEvent 序列化后写入 session_events 表
 ///
@@ -32,9 +60,14 @@ pub fn insert_session_event(conn: &Connection, event: &ConfluxEvent) -> Result<(
 
     let timestamp = extract_timestamp(event);
 
+    // D-0702-002：event_id 落真值（uuid，供去重/关联）；source_kind 按变体诚实归类
+    // （歧义 NULL）；correlation_id 暂无上游关联真源 → 诚实 NULL（不填造值）。
+    let event_id = uuid::Uuid::new_v4().to_string();
+    let source_kind = source_kind_of(event);
+
     conn.execute(
-        "INSERT INTO session_events (instance_id, event_type, data, timestamp) VALUES (?1, ?2, ?3, ?4)",
-        params![instance_id, event_type, data, timestamp],
+        "INSERT INTO session_events (instance_id, event_type, data, timestamp, event_id, source_kind) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![instance_id, event_type, data, timestamp, event_id, source_kind],
     )
     .map_err(|e| ConfluxError::DatabaseError {
         message: format!("session_events 写入失败: {}", e),
