@@ -64,3 +64,15 @@ export function deriveStatusFromAware(s: AwareState): SessionStatus {
       return "idle";
   }
 }
+
+/**
+ * App 级重渲门控签名（F1，2026-07-03 P2 根部债）：App 对每个 observer 的订阅原本
+ * 任一 commit 即 bump 全 App 重渲——而 observer 的 elapsed tick **每秒必 commit**，
+ * N 会话 ≈ N Hz 全 App 重渲（"几十会话"目标的根部性能债）。App 实际只消费三个
+ * 语义字段（缩点 dot 的 status、attention 脉冲、Home RUNNING 行的 activity；
+ * exited 由 status 编码；elapsed 由 AwareHeader 自订阅局部渲染）——签名不变则
+ * 不 bump。加字段进 App 消费面时**必须**同步扩此签名（否则该字段变化不触发重渲）。
+ */
+export function awareDotSignature(s: AwareState): string {
+  return `${s.status}|${s.attention ? 1 : 0}|${s.activity ?? ""}`;
+}
