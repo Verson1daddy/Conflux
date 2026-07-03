@@ -36,3 +36,35 @@ describe("AwareHeader · P1-a 富观测阻断提示", () => {
     r.unmount();
   });
 });
+
+// G1（2026-07-03）：hook 已确证 → 深度感知标注（仅 agent 会话，诚实正向标注）。
+describe("AwareHeader · G1 钩子感知标注", () => {
+  it("agent 会话 + hookObserved=true → 渲染 ◆ 钩子感知", () => {
+    const r = create(
+      createElement(AwareHeader, {
+        observer: fakeObserver({ isAgent: true, hookObserved: true }),
+      }),
+    );
+    expect(r.root.findAllByProps({ "data-testid": "aware-hook-active" }).length).toBe(1);
+    expect(JSON.stringify(r.toJSON())).toContain("钩子感知");
+    r.unmount();
+  });
+
+  it("hookObserved=false（未确证）→ 不标注（不承诺、不据未亮断言不工作）", () => {
+    const r = create(
+      createElement(AwareHeader, { observer: fakeObserver({ isAgent: true }) }),
+    );
+    expect(r.root.findAllByProps({ "data-testid": "aware-hook-active" }).length).toBe(0);
+    r.unmount();
+  });
+
+  it("shell 会话即便 hookObserved=true 也不标注（非 agent 无 hook 语义）", () => {
+    const r = create(
+      createElement(AwareHeader, {
+        observer: fakeObserver({ isAgent: false, hookObserved: true }),
+      }),
+    );
+    expect(r.root.findAllByProps({ "data-testid": "aware-hook-active" }).length).toBe(0);
+    r.unmount();
+  });
+});

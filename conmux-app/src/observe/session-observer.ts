@@ -454,8 +454,20 @@ export class SessionObserver {
       const lines = Array.isArray(res.lines) ? res.lines : [];
       this.hookOffset =
         typeof res.offset === "number" ? res.offset : this.hookOffset;
-      if (lines.length > 0 && countAttentionEvents(lines) > 0 && !this.state.attention) {
-        this.commit({ ...this.state, attention: true });
+      if (lines.length > 0) {
+        // hookObserved：收到任何 relay 行即证明 hook 链路通（G1，诚实标注已确证）。
+        // attention：仅在册 attention 类型（permission_prompt/idle_prompt）才置。
+        const next = { ...this.state };
+        let dirty = false;
+        if (!next.hookObserved) {
+          next.hookObserved = true;
+          dirty = true;
+        }
+        if (countAttentionEvents(lines) > 0 && !next.attention) {
+          next.attention = true;
+          dirty = true;
+        }
+        if (dirty) this.commit(next);
       }
     } catch {
       // relay 不可用 → 诚实降级（不 log 行内容，L-3）。

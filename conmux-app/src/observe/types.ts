@@ -106,6 +106,14 @@ export interface AwareState {
    * 非 claude 会话恒 false。
    */
   jsonlBlockedNoCwd: boolean;
+  /**
+   * G1（2026-07-03）：该会话的 Notification hook relay 是否已产出过 ≥1 条事件。
+   * true = hook 链路**已确证**在工作（relay 真写过文件）——诚实标注已确证的深度
+   * 感知能力，**非承诺**：false 不代表 hook 不工作，可能只是还没触发权限框/空闲
+   * 提问。故只正向标注（确证才亮），不据 false 断言"未激活"。非 claude / 未注入
+   * hook 的会话恒 false。
+   */
+  hookObserved: boolean;
 }
 
 /** 观测起始的初始状态（全 null / running / 0ms，诚实空态）。 */
@@ -114,6 +122,7 @@ export function initialAwareState(): AwareState {
     status: "running",
     attention: false,
     jsonlBlockedNoCwd: false,
+    hookObserved: false,
     activity: null,
     elapsedMs: 0,
     cwd: null,

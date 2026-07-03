@@ -205,6 +205,21 @@ const B6Row: FC<{ s: AwareState; skillCount: number | null }> = ({
           </span>
         </>
       )}
+      {/* G1：hook relay 已产出过事件 → 标注已确证的深度感知（诚实：确证才亮，
+          不据未亮断言 hook 不工作）。让用户知道该会话的 attention 有 claude 结构化
+          信号增强（权限框/空闲提问），非仅 BEL/退出。 */}
+      {!isShell && s.hookObserved && (
+        <>
+          <span>·</span>
+          <span
+            data-testid="aware-hook-active"
+            title="Claude 会话钩子已激活：权限请求 / 空闲提问经结构化信号驱动需注意脉冲（补终端响铃抓不到的场景）。"
+            style={{ flex: "0 0 auto", color: "var(--cx-accent-signal)" }}
+          >
+            ◆ 钩子感知
+          </span>
+        </>
+      )}
     </div>
   );
 };
