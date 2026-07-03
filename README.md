@@ -1,306 +1,235 @@
-<div align="center">
-  <img src="conflux-app/app-icon.png" alt="Conflux logo" width="104" height="104" />
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg">
+    <img alt="Conflux" src="conflux-app/app-icon.png" width="96" height="96">
+  </picture>
+</p>
 
-# Conflux
+<h1 align="center">Conflux</h1>
 
-### The Windows-first control plane for AI coding agents.
+<p align="center">
+  <img alt="platform: windows" src="https://img.shields.io/badge/platform-Windows-0a7?style=flat-square">
+  <img alt="stack: Tauri 2 + React" src="https://img.shields.io/badge/stack-Tauri%202%20%2B%20React-4b9?style=flat-square">
+  <img alt="license: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue?style=flat-square">
+  <img alt="status: V1 · early" src="https://img.shields.io/badge/status-V1%20·%20early-orange?style=flat-square">
+</p>
 
-Run Claude Code, Codex, Aider, OpenCode, and future agent CLIs in one local visual workspace — with real PTY sessions, attention surfaces, discussions, artifacts, and session timelines.
+<p align="center">
+  <b>A supervision desk for many CLI coding agents, running side by side on one canvas.</b><br>
+  Like a terminal multiplexer for AI agents — Windows-native, real PTY sessions, and it tells you the moment an agent needs you.
+</p>
 
-[English](#english) · [中文](#中文)
+<p align="center">
+  <a href="#english">English</a> · <a href="#中文">中文</a>
+</p>
 
-</div>
+<p align="center">
+  <img src="docs/demo.gif" alt="Conflux in action — placeholder, to be added" width="82%"><br>
+  <sub><i>Demo GIF placeholder — <code>docs/demo.gif</code> (to be added)</i></sub>
+</p>
 
 ---
 
 <a id="english"></a>
 
-## Why this matters
+## What is Conflux?
 
-AI coding agents are no longer just chat boxes. They run in terminals, wait for approvals, edit files, spawn sub-agents, produce artifacts, and ask humans to jump back at exactly the right moment.
+Conflux is a **Windows desktop workbench for running and supervising several real CLI coding agents at once** — Claude Code, Codex, Aider, OpenCode, and other agent CLIs. Each agent runs as a genuine PTY session (ConPTY + xterm.js), laid out as cards on a single canvas.
 
-Conflux is built for that moment: **a local desktop workbench that lets you stop babysitting every terminal while still staying in control of every agent.**
+The problem it solves: once you have three or four agents working in parallel, you can't watch four terminals. Conflux is built so you **don't have to babysit each one** — it surfaces the one that needs you, lets you jump straight to the moment it asked, and keeps a full audit trail of what happened while you were looking away.
 
-Instead of another chat UI, Conflux treats agent work as a set of real sessions, cards, events, permissions, discussions, and reviews.
+It is not another chat UI. Agent work is treated as real sessions, cards, attention signals, permission requests, and a replayable event timeline.
 
-## What Conflux does
+## Why Conflux?
 
-- **One visual workspace for many agent CLIs** — manage real Claude Code, Codex, Aider, OpenCode, and future adapters from one Windows desktop app.
-- **Real terminal sessions, not mock cards** — sessions are backed by PTY processes and rendered through xterm.js.
-- **Attention surfaces for background agents** — Top Island, Sidebar, tray, notifications, and permission UI help surface what needs you now.
-- **Canvas-first agent workbench** — draggable cards, compact previews, expanded terminals, search, settings, status bar, and session history.
-- **Broadcast discussions (user → agents)** — send one message into every participating agent's session at once, with per-agent delivery status, review flow, and artifacts tied to the session lifecycle. Agents do not talk to each other: their replies stay in their own terminals and are not routed back into the chatroom.
-- **Artifacts and review flow** — extract code blocks, pin or draft important outputs, and close discussions with an explicit review state.
-- **Event timeline** — inspect session events from SQLite-backed persistence. V1 calls this an event timeline, not full terminal replay.
-- **Framework-neutral architecture** — adapters are modeled as definitions, installations, real sessions, visual cards, and orchestration targets.
+- **Windows-native** — runs directly on ConPTY. No WSL, no Unix compatibility layer. Windows is the primary target, not an afterthought.
+- **Many agents, one canvas** — open multiple real CLI agents at the same time; each is a live PTY session rendered through xterm.js, not a mock card.
+- **Attention that finds you** — a Dynamic Island, a sidebar, and a system tray route each agent's status to you. For Claude Code sessions the signal comes from an authoritative **hook**, not screen-scraping — so "this one is waiting on you" is a real event, not a guess.
+- **Jump back to the exact moment** — click a notification and Conflux takes you straight to the pane and the point in the session that triggered it. No hunting across terminals.
+- **Step in without breaking flow** — expand any card to a two-way terminal and type directly into that agent's session, then collapse it back into the grid.
+- **You hold the gate** — permission requests from agents surface as an approval UI; nothing runs past a gate you didn't clear.
+- **Everything is on the record** — every event is written to a local SQLite store, and the session timeline can be replayed after the fact.
 
-## Current status
+## Install
 
-Conflux is in **active V1 hardening**.
+> Conflux is **Windows-only** and currently at **V1 / early**. There are no prebuilt installers yet — build from source.
 
-The runtime skeleton is implemented and covered by automated validation, including frontend typecheck/tests/build and Rust checks/tests. It is not yet a V1 release candidate: Windows smoke evidence, compact-mode recording, final visual-contract validation, and performance baselines are still being closed.
+### Prerequisites
 
-Use it as an early project, reference implementation, or development workbench — not as polished production software yet.
+- Windows 10/11
+- [Rust](https://rustup.rs/) (1.77+) and the MSVC toolchain
+- [Node.js](https://nodejs.org/) 18+ and npm
+- [Tauri 2 prerequisites for Windows](https://tauri.app/start/prerequisites/) (WebView2 is bundled on Windows 11)
 
-## Product model
+### Build from source
 
-Conflux keeps the core model separated so it can grow beyond one or two hardcoded CLIs:
+```powershell
+git clone https://github.com/Verson1daddy/Conflux.git
+cd Conflux\conflux-app
 
-```text
-AdapterDefinition
-  -> AdapterInstallation
-  -> AgentSession
-  -> CardView
-  -> WorkspaceOrchestration
+npm install
+npm run tauri:build      # produces a Windows bundle under src-tauri\target\release
 ```
 
-| Layer | What it means |
-|---|---|
-| `AdapterDefinition` | What an agent CLI framework is: command, args, parser profile, capabilities. |
-| `AdapterInstallation` | Whether it is installed, authenticated, runnable, and session-capable on this machine. |
-| `AgentSession` | A real running CLI process/session with cwd, status, events, timestamps, and lifecycle. |
-| `CardView` | The visual projection of a session on the canvas. |
-| `WorkspaceOrchestration` | Discussions, notifications, permissions, pinned targets, artifacts, and reviews across sessions. |
+### Run in dev
 
-## Tech stack
-
-| Area | Stack |
-|---|---|
-| Desktop runtime | Tauri 2 |
-| Backend | Rust 2021, Tokio, rusqlite, portable-pty |
-| Frontend | React 18, TypeScript, Vite |
-| State | Zustand + local storage where appropriate |
-| Terminal | xterm.js with fit, web-links, and WebGL addons |
-| Styling | Tailwind CSS, custom CSS tokens, design token files |
-| Tests | Vitest, React Test Renderer, Rust tests |
-
-## Repository map
-
-```text
-conflux-app/
-  src/                  React + TypeScript frontend
-    components/         Workspace, island, card, discussion, session UI
-    hooks/              Runtime and layout hooks
-    lib/                IPC bridge, compact mode, event utilities, view models
-    stores/             Zustand stores for workspace/agent/island state
-    types/              Shared frontend contracts
-  src-tauri/            Rust + Tauri backend
-    src/adapter/        Builtin and TOML adapter registry
-    src/commands/       Tauri IPC commands
-    src/core/           Shared Rust types, events, errors
-    src/orchestration/  Discussion and coordinator logic
-    src/persistence/    SQLite schema, session/events/workspace persistence
-    src/pty/            PTY process management and output parsing
-    src/tray.rs         System tray integration
-
-design/                 Icons, design handoffs, design tokens, Pencil source
-.workbench/coordination/  Project workflow, reports, research, handoffs (relocated)
-docs/                   Specs, plans, and roadmap notes
+```powershell
+cd Conflux\conflux-app
+npm install
+npm run tauri:dev
 ```
 
 ## Quick start
 
-### Prerequisites
+1. Launch Conflux.
+2. Add an agent — pick its CLI (Claude Code / Codex / Aider / OpenCode) and a working directory. Conflux spawns it as a real PTY session and drops a card onto the canvas.
+3. Add a few more. Let them run. Watch the **Dynamic Island** and **tray** instead of the terminals.
+4. When one needs you, the notification points at it — click to **jump back** to that pane and the exact moment.
+5. Expand its card to type into the session directly, approve or reject any permission request, then collapse it and move on.
 
-- Windows 11 is the primary target.
-- Node.js and npm.
-- Rust toolchain compatible with Rust 1.77+.
-- Tauri 2 prerequisites for Windows.
-- At least one supported agent CLI installed if you want to create real sessions:
-  - Claude Code: `claude`
-  - Codex: `codex`
-  - Aider: `aider`
-  - OpenCode: `opencode`
+## Features
 
-### Install
+- **Multi-agent canvas** — several live CLI agents as cards you can arrange, expand, and collapse.
+- **Real PTY sessions** — ConPTY-backed processes rendered with xterm.js, with full ANSI/color fidelity, not read-only mockups.
+- **Attention routing** — Dynamic Island + sidebar + system tray surface which agent needs attention. Claude Code status is driven by an authoritative hook signal, not screen-scraping.
+- **Semantic jump-back** — notifications carry a location; one click returns you to the pane and moment that triggered them.
+- **Two-way intervention** — expand a card into an interactive terminal to steer an agent mid-run.
+- **Permission approvals** — agent permission requests surface as a gate you clear before anything proceeds.
+- **SQLite event audit + timeline replay** — every event is persisted locally and the session history can be replayed.
+- **Broadcast to agents** — the discussion panel lets you send one prompt out to multiple agents at once.
+- **Crafted UI** — an Apple-meets-magazine aesthetic with glass surfaces and a considered type system (Fraunces / Geist / JetBrains Mono).
 
-```bash
-cd conflux-app
-npm install
-```
+> **Scope note (honest boundaries).** Conflux supervises agents; it does not orchestrate them. The discussion panel is a **one-way broadcast** from you to N agents — agents do **not** reply into a shared chat and do **not** talk to each other. There is **no** automatic task-orchestration engine that decides work on its own. The attention layer surfaces through a two-state Dynamic Island, a sidebar, and the system tray (Float Ball is not part of it). You stay the decision-maker in the loop.
 
-### Run
+## Architecture
 
-```bash
-npm run tauri:dev
-```
+Conflux is a two-layer workspace:
 
-Frontend-only iteration:
+- **`conmux`** — a standalone Rust crate: the Windows terminal-multiplexing + agent-isolation runtime (ConPTY, PTY session management). No Tauri dependency.
+- **`conflux-app`** — the Tauri 2 + React product layer (canvas, attention surfaces, permission UI, audit/timeline) built on top of `conmux`.
 
-```bash
-npm run dev
-```
+## Configuration
 
-### Build
+Agent CLIs are configured through adapters (Claude Code, Codex, Aider, OpenCode), each with its own command, arguments, and working directory. Configuration lives with the app; the ergonomics are still evolving in V1 — expect this surface to change.
 
-```bash
-npm run tauri:build
-```
+## Status & roadmap
 
-## Verification
+Conflux is **V1, Windows-only, and early**. It is a working workbench, not a finished product.
 
-From `conflux-app/`:
+- Prebuilt / signed installers
+- Broader adapter coverage and easier adapter configuration
+- Hardening of the attention and permission layers
+- Timeline / audit UX polish
 
-```bash
-npm run typecheck
-npm test -- --run
-npm run build
-cargo check --manifest-path src-tauri/Cargo.toml
-cargo test --manifest-path src-tauri/Cargo.toml --lib -- --nocapture
-```
+Feedback and issues are welcome — this is the stage where they shape the product most.
 
-## Roadmap
+## Contributing
 
-### V1 — Trustworthy local workbench
+Conflux is early and moving fast. If you want to build from source, file an issue, or send a focused PR, please open a discussion first so we can point you at the current contracts. Build instructions are above.
 
-- Real session creation and terminal input semantics.
-- No ghost cards or ghost sessions after failures.
-- Unified runtime state across cards, TopBar, Island, Sidebar, timeline, and persistence.
-- Discussion artifacts, end-discussion review, and event timeline lifecycle.
-- Windows compact-mode smoke tests and performance baseline.
+## License
 
-### V1.5 — Adapter Manifest
-
-- Local adapter manifest import/export.
-- Compatibility validation.
-- Capability profiles for framework behavior.
-- Configurable healthcheck and auth probes.
-
-### V2 — Workflow Review
-
-- Review summaries generated from local session events, discussions, and artifacts.
-- Optional API enhancement without making cloud services a requirement.
-- Review surfaces inside cards, discussion flows, and session timeline.
-
-### V2.5 — Workflow / Persona / Policy Library
-
-- Reusable workflow presets.
-- Persona and policy presets.
-- Budget and quality gate presets.
-- Capability-profile-driven role suggestions.
-
-### V3+ — Lightweight ecosystem
-
-- File-first and GitHub-first sharing of adapters, workflows, layouts, and notification rules.
-- No account system as a prerequisite.
-- Compatibility checks and risk warnings before any heavier marketplace/community layer.
-
-## Non-goals for V1
-
-Conflux V1 intentionally does not include marketplace/community, accounts, comments/ratings, cloud template distribution, full multi-framework auto-routing, or full terminal replay.
-
-The goal is to make the local agent workbench reliable first.
+Licensed under **MIT OR Apache-2.0** (as declared for the `conmux` crate). A root license file has not yet been committed to this repository — that will land before any prebuilt binaries are distributed.
 
 ---
 
 <a id="中文"></a>
 
-## 中文
+## Conflux 是什么
 
-## Conflux 是什么？
+Conflux 是一个 **在 Windows 桌面上并行运行、并统一监管多个真实 CLI 编程 agent 的工作台** —— Claude Code、Codex、Aider、OpenCode 等 agent CLI。每个 agent 都是一个真实的 PTY 会话（ConPTY + xterm.js），以卡片形式铺在同一块画布上。
 
-Conflux 是一个 **Windows 优先的 AI Coding Agent 控制面**。
+它要解决的问题很具体：当你同时跑三四个 agent，你没法同时盯四个终端。Conflux 的设计目标就是让你 **不必逐个盯守** —— 它把"现在需要你处理的那个"浮出来，让你一键跳回它当初发问的那一刻，并且在你没看的时候把一切都记进审计。
 
-它不是另一个聊天窗口，而是一个本地桌面工作台：把 Claude Code、Codex、Aider、OpenCode 以及未来更多 agent CLI 放到同一个可视化空间里，用真实终端会话、画布卡片、灵动岛/侧边栏注意力层、讨论面板、产物抽屉和事件时间线组织起来。
+它不是又一个聊天 UI。Agent 的工作被当成真实的会话、卡片、注意力信号、权限请求，以及一条可回放的事件时间线。
 
-核心目标是：**让你不用一直盯着每个终端，但关键时刻仍然能准确接管。**
+## 为什么用 Conflux
 
-## 它解决什么问题？
+- **Windows 原生** —— 直接跑在 ConPTY 上，不依赖 WSL、不装类 Unix 兼容层。Windows 是首要目标平台，不是顺带支持。
+- **多 agent，一块画布** —— 同时打开多个真实 CLI agent，每个都是活的 PTY 会话、由 xterm.js 渲染，而非假卡片。
+- **会来找你的注意力路由** —— 灵动岛、侧栏、系统托盘把每个 agent 的状态送到你面前。Claude Code 会话的信号来自权威 **hook**，不是刮屏猜测 —— 所以"这个在等你"是一个真实事件，而不是估计。
+- **一键跳回触发处** —— 点通知，Conflux 直接把你带到那个分屏、带到触发它的那个位置。不用在多个终端里翻找。
+- **不打断心流地介入** —— 展开任意卡片进入双向终端，直接往那个 agent 的会话里打字，处理完再收回网格。
+- **闸门在你手里** —— agent 的权限请求以审批 UI 形式浮现；没经你放行的东西不会往下走。
+- **一切留痕** —— 每个事件都写入本地 SQLite，会话时间线可事后回放。
 
-当 AI coding agent 从“问答工具”变成“后台执行体”后，开发者会遇到新问题：
+## 安装
 
-- 多个 agent 分散在不同终端、IDE、窗口里；
-- 权限请求、错误、完成状态很容易被错过；
-- 产物、讨论、复盘和真实 session 生命周期割裂；
-- 多框架协作很难被人类理解和管理；
-- 纯终端缺少总览，纯聊天 UI 又丢失了真实运行态。
+> Conflux **仅支持 Windows**，当前处于 **V1 / early**。暂无预编译安装包，请从源码构建。
 
-Conflux 的方向是把这些 agent 工作变成一个可观察、可接管、可复盘的本地控制面。
+### 前置要求
 
-## 当前已经实现的能力
+- Windows 10/11
+- [Rust](https://rustup.rs/)（1.77+）及 MSVC 工具链
+- [Node.js](https://nodejs.org/) 18+ 与 npm
+- [Tauri 2 的 Windows 前置依赖](https://tauri.app/start/prerequisites/)（Windows 11 已内置 WebView2）
 
-- **Tauri 2 桌面壳层**：Rust 后端 + React/TypeScript 前端。
-- **真实 PTY 会话**：通过 Windows ConPTY / `portable-pty` 启动和管理 CLI。
-- **内置适配器**：Claude Code、Codex、Aider、OpenCode。
-- **可视化工作台画布**：Agent 卡片、终端预览、展开态终端、搜索、设置、状态栏。
-- **注意力层**：Top Island、Sidebar、通知、权限 UI、系统托盘。
-- **广播式讨论（用户 → agents）**：一条消息同时注入全部参与 agent 的会话（含逐 agent 送达状态）、隐藏 sandbox 实例、结束讨论 review。agent 之间**不**互相对话——各自的回复留在各自终端，不回流聊天室。
-- **Artifacts 生命周期**：代码块提取、pin/draft、review snapshot。
-- **Session Event Timeline**：基于 SQLite 的事件时间线；V1 明确不是完整终端录像回放。
-- **自动化验证**：前端 typecheck/test/build、Rust check/lib tests 已形成基线。
+### 从源码构建
 
-## 当前状态
+```powershell
+git clone https://github.com/Verson1daddy/Conflux.git
+cd Conflux\conflux-app
 
-Conflux 目前处于 **V1 hardening / 预发布收口阶段**。
-
-代码骨架和主路径已经接起来，但还不能宣称是正式 V1 RC。剩余重点包括 Windows 实机 smoke、compact mode 录屏证据、视觉契约复核和性能基线。
-
-如果你对多 agent CLI 工作台、Windows 桌面 agent 控制面、AI coding workflow 可视化感兴趣，现在是很适合关注和参与的阶段。
-
-## 架构模型
-
-Conflux 使用五层模型，避免把产品写死成某一个 CLI 的外壳：
-
-```text
-AdapterDefinition
-  -> AdapterInstallation
-  -> AgentSession
-  -> CardView
-  -> WorkspaceOrchestration
+npm install
+npm run tauri:build      # 产物在 src-tauri\target\release 下
 ```
 
-- `AdapterDefinition`：一个 agent CLI 框架是什么。
-- `AdapterInstallation`：它在当前机器上是否安装、登录、可运行。
-- `AgentSession`：一次真实运行中的 CLI 会话。
-- `CardView`：这个 session 在画布上的视觉投影。
-- `WorkspaceOrchestration`：跨 session 的讨论、通知、权限、产物和复盘。
+### 开发模式运行
 
-## 开发启动
-
-```bash
-cd conflux-app
+```powershell
+cd Conflux\conflux-app
 npm install
 npm run tauri:dev
 ```
 
-前端单独调试：
+## 快速上手
 
-```bash
-npm run dev
-```
+1. 启动 Conflux。
+2. 添加一个 agent —— 选它的 CLI（Claude Code / Codex / Aider / OpenCode）和工作目录。Conflux 把它作为真实 PTY 会话拉起，并在画布上放一张卡片。
+3. 多加几个，让它们跑。盯 **灵动岛** 和 **托盘**，而不是盯终端。
+4. 当某个需要你，通知会指向它 —— 点一下 **跳回** 到那个分屏、那一刻。
+5. 展开卡片直接往会话里打字，批准或拒绝权限请求，然后收起，继续下一件事。
 
-构建：
+## 功能
 
-```bash
-npm run tauri:build
-```
+- **多 agent 画布** —— 多个活的 CLI agent 以卡片呈现，可排布、展开、收起。
+- **真实 PTY 会话** —— ConPTY 支撑的进程，由 xterm.js 渲染，完整 ANSI/配色，不是只读样稿。
+- **注意力路由** —— 灵动岛 + 侧栏 + 系统托盘浮现哪个 agent 需要处理。Claude Code 状态由权威 hook 信号驱动，非刮屏。
+- **语义 jump-back** —— 通知携带位置信息，一键回到触发它的分屏与时刻。
+- **双向介入** —— 展开卡片进入交互式终端，运行途中直接操控 agent。
+- **权限审批** —— agent 的权限请求以闸门形式浮现，放行后才继续。
+- **SQLite 事件审计 + 时间线回放** —— 每个事件本地持久化，会话历史可回放。
+- **广播给 agent** —— 讨论面板可把一条 prompt 一次发给多个 agent。
+- **考究的界面** —— 苹果 × 杂志风、玻璃质感，配合成体系的字体（Fraunces / Geist / JetBrains Mono）。
 
-验证：
+> **边界说明（老实话）。** Conflux 监管 agent，但不编排它们。讨论面板是从你到 N 个 agent 的 **单向广播** —— agent **不会** 把回复汇进一个共享聊天室，**不会** 彼此对话。**没有** 自动决定任务的编排引擎。注意力层由两态灵动岛、侧栏与系统托盘构成（Float Ball 已删，不在其中）。决策权始终在你手里。
 
-```bash
-npm run typecheck
-npm test -- --run
-npm run build
-cargo check --manifest-path src-tauri/Cargo.toml
-cargo test --manifest-path src-tauri/Cargo.toml --lib -- --nocapture
-```
+## 架构
 
-## 路线图
+Conflux 是两层结构：
 
-- **V1**：稳定本地多 agent CLI 工作台，收口真实 session、终端输入、失败语义、compact mode、discussion/artifacts、事件时间线。
-- **V1.5**：Adapter Manifest，让更多 CLI 能以本地 manifest 方式接入。
-- **V2**：Workflow Review，基于本地事件、讨论、产物生成复盘。
-- **V2.5**：Workflow / Persona / Policy Library，把多 agent 协作纪律沉淀成可复用预设。
-- **V3+**：轻量生态，文件优先、GitHub 优先地分享 adapter、workflow、layout、notification rules。
+- **`conmux`** —— 独立 Rust crate：Windows 终端多路复用 + agent 隔离运行时（ConPTY、PTY 会话管理），不依赖 Tauri。
+- **`conflux-app`** —— 基于 `conmux` 的 Tauri 2 + React 产品层（画布、注意力面、权限 UI、审计/时间线）。
 
-## V1 暂不做什么？
+## 配置
 
-V1 不做 marketplace、账号系统、云端社区、评分评论、重度 workflow 商店、完整自动路由，也不承诺完整终端录像回放。
+Agent CLI 通过适配器配置（Claude Code / Codex / Aider / OpenCode），各有自己的命令、参数与工作目录。配置随应用存放；V1 阶段这块手感仍在演进，预期会变。
 
-Conflux 会先把本地运行态做可信，再逐步进入更大的协作和生态层。
+## 状态与路线
 
----
+Conflux 目前 **V1、仅 Windows、early**。它是一个能用的工作台，而非成品。
 
-## License
+- 预编译 / 签名安装包
+- 更广的适配器覆盖与更简单的适配器配置
+- 注意力层与权限层的硬化
+- 时间线 / 审计体验打磨
 
-No root license file is currently present in this repository. Add a license before distributing binaries or accepting external contributions.
+欢迎反馈与 issue —— 现在正是最能影响产品走向的阶段。
+
+## 贡献
+
+Conflux 尚早、迭代很快。若你想从源码构建、提 issue 或发一个聚焦的 PR，请先开一个 discussion，我们好把当前的契约指给你。构建步骤见上文。
+
+## 许可
+
+采用 **MIT OR Apache-2.0**（如 `conmux` crate 所声明）。仓库根目录尚未提交 license 文件 —— 在分发任何预编译产物之前会补上。
