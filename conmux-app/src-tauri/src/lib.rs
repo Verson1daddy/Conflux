@@ -455,6 +455,8 @@ pub fn run() {
         .setup(|app| {
             let state = setup_state(&app.handle().clone());
             app.manage(state);
+            // 隐私 L-3（SHOULD-FIX）：清理崩溃/强杀残留的陈旧 hook 文件（含 stdin 明文）。
+            commands::gc_stale_hook_files();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -470,6 +472,10 @@ pub fn run() {
             commands::reconnect_daemon,
             commands::kill_session,
             commands::read_claude_jsonl,
+            commands::get_hook_out_dir,
+            commands::write_hook_settings,
+            commands::read_hook_events,
+            commands::cleanup_hook_events,
             commands::list_available_skills,
             commands::trust_pin_executable,
             commands::trust_list,

@@ -25,6 +25,7 @@ import { ParserRegistry } from "./registry";
 import { parseOsc7Cwd } from "./osc7";
 import { stripAnsi, extractOscTitle } from "./ansi";
 import { accumulateSubagents } from "./subagent-accum";
+import { countAttentionEvents } from "./hook-events";
 import {
   type JsonlAccum,
   initJsonlAccum,
@@ -139,6 +140,9 @@ export class SessionObserver {
   // F1(b)（红队 MUST-FIX 兜底）：锚定文件连续陈旧且无新行的轮数——达阈值即复位
   // 权威标记，恢复 PTY 降级观测（主修复 = 后端轮换降级跟随最新文件）。
   private jsonlStaleRounds = 0;
+  // ===== G1 hook relay 源（2026-07-03）：注入的 Notification hook 落盘 ndjson =====
+  private hookOffset = 0; // relay 文件读进度（同 jsonlOffset 语义）。
+  private hookPolling = false; // 单飞防重入。
 
   private readonly decoder = new TextDecoder("utf-8", { fatal: false });
 
@@ -420,11 +424,44 @@ export class SessionObserver {
   private startJsonlSource(): void {
     if (this.jsonlStarted || !this.started) return;
     this.jsonlStarted = true;
-    // 立即跑一轮（不等首个节拍），后续按节拍。
+    // 立即跑一轮（不等首个节拍），后续按节拍。G1：hook relay 源共用同一节拍
+    // （事件稀疏——permission/idle 级，无需独立 timer）。
     void this.pollJsonl();
+    void this.pollHooks();
     this.jsonlTimer = setInterval(() => {
       void this.pollJsonl();
+      void this.pollHooks();
     }, JSONL_POLL_MS);
+  }
+
+  /**
+   * 一轮 hook relay 增量读（G1）：注入启动的会话（launchSessionId 有值）才有 relay
+   * 文件可读；在册 attention 类型（permission_prompt/idle_prompt）→ 置 attention
+   * （与 BEL 同语义：真结构化信号，用户切到该会话即 ack 清除）。
+   * 失败/文件未出现 → 静默降级（BEL+退出口径仍在，两源并存互不压制——attention
+   * 是幂等布尔，无双发面）。
+   */
+  private async pollHooks(): Promise<void> {
+    if (!this.started || this.launchSessionId == null || this.hookPolling) return;
+    this.hookPolling = true;
+    try {
+      const raw = await invoke<string>("read_hook_events", {
+        hookId: this.launchSessionId,
+        offset: this.hookOffset,
+      });
+      if (!this.started) return;
+      const res = JSON.parse(raw) as { lines?: string[]; offset?: number };
+      const lines = Array.isArray(res.lines) ? res.lines : [];
+      this.hookOffset =
+        typeof res.offset === "number" ? res.offset : this.hookOffset;
+      if (lines.length > 0 && countAttentionEvents(lines) > 0 && !this.state.attention) {
+        this.commit({ ...this.state, attention: true });
+      }
+    } catch {
+      // relay 不可用 → 诚实降级（不 log 行内容，L-3）。
+    } finally {
+      this.hookPolling = false;
+    }
   }
 
   /**

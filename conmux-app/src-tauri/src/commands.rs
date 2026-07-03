@@ -637,6 +637,125 @@ pub async fn read_claude_jsonl(
     serde_json::to_string(&payload).map_err(|e| format!("序列化失败: {e}"))
 }
 
+// ===== hooks attention 增强（G1，2026-07-03；spike = research/claude-hooks-spike-2026-07-03）=====
+//
+// 裸 claude 启动注入 per-session Notification hook（--settings 内联 JSON，hooks 数组与
+// 用户全局**合并**不覆盖，issue #11392 实测背书）。relay = PowerShell exec-form 把 stdin
+// JSON 追加到 hooks 目录 <hook_id>.ndjson；前端 observer 增量读文件驱动 attention。
+// hook 是 claude 自发的**结构化事实**（非刮屏非猜测，符合诚实观测铁律）；relay 失效 →
+// 该会话静默回退 BEL+退出口径（Notification 非阻断事件，不会卡 claude）。
+
+/// hooks relay 输出目录基（%LOCALAPPDATA%，缺失回退 %TEMP%）。
+fn hook_base_dir() -> Option<std::path::PathBuf> {
+    std::env::var("LOCALAPPDATA")
+        .or_else(|_| std::env::var("TEMP"))
+        .ok()
+        .map(|b| std::path::Path::new(&b).join("conmux").join("hooks"))
+}
+
+/// 建好并返回 hooks relay 输出目录（前端据此拼 relay ndjson 目标路径写进 settings JSON）。
+#[tauri::command]
+pub async fn get_hook_out_dir() -> Result<String, String> {
+    let dir = hook_base_dir().ok_or_else(|| "LOCALAPPDATA/TEMP 均不可用".to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建 hooks 目录失败: {e}"))?;
+    Ok(dir.to_string_lossy().into_owned())
+}
+
+/// 把 per-session hook settings JSON 写到 `<hookDir>\<hook_id>.settings.json`，返回绝对路径。
+///
+/// **红队 MUST-FIX（2026-07-03，BLOCK）**：原前端把 settings JSON **内联**进
+/// `--settings <json>`，经 npm-shim 的 `cmd /c` 包裹时——portable-pty 因 JSON 含 `"`
+/// 而按 MSVCRT 规则把整串包引号 + 内部 `\"` 转义，但 cmd.exe 不认 `\"`、对每个裸 `"`
+/// 翻转引号态，把 matcher 里的字面 `|` 甩出引号态被当**管道**：claude 起不来（实测
+/// cmd exit 255）+ 元字符注入 sink（实测 `| whoami>PWNED` 真执行）。改为写文件传
+/// **路径**——path = UUID+env 派生（无 cmd 元字符），命令行只剩纯路径（无 `"`/`|`），
+/// portable-pty 引号包裹即安全。hook_id 形态校验 fail-closed（同 read/cleanup）。
+#[tauri::command]
+pub async fn write_hook_settings(
+    hook_id: String,
+    settings_json: String,
+) -> Result<String, String> {
+    if !is_valid_session_id(&hook_id) {
+        return Err("非法 hook_id".to_string());
+    }
+    let dir = hook_base_dir().ok_or_else(|| "LOCALAPPDATA/TEMP 均不可用".to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建 hooks 目录失败: {e}"))?;
+    let path = dir.join(format!("{hook_id}.settings.json"));
+    std::fs::write(&path, settings_json.as_bytes())
+        .map_err(|e| format!("写 settings 失败: {e}"))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// 启动期清理陈旧 hook 文件（SHOULD-FIX 隐私 L-3，2026-07-03）：app 崩溃/强杀后
+/// removeSession 的尽力清理漏掉的 relay/settings 残留（含 hook stdin 明文——message
+/// 文本 / 项目路径）会永久累积。删 mtime 超 24h 的 `*.ndjson` / `*.settings.json`。
+/// 尽力而为，任何错误忽略（绝不阻断启动）。非 command——lib.rs setup 时直接调。
+pub fn gc_stale_hook_files() {
+    const MAX_AGE_SECS: u64 = 24 * 60 * 60;
+    let Some(dir) = hook_base_dir() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !(name.ends_with(".ndjson") || name.ends_with(".settings.json")) {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|m| now.duration_since(m).ok())
+            .map(|age| age.as_secs() > MAX_AGE_SECS)
+            .unwrap_or(false);
+        if stale {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// 读 hook relay ndjson 尾部增量（offset 语义/降级口径同 read_claude_jsonl）。
+/// hook_id 形态校验 fail-closed（复用 is_valid_session_id：hex+'-'，防路径逃逸）；
+/// 文件未出现（尚无任何通知）→ 诚实空等。
+#[tauri::command]
+pub async fn read_hook_events(hook_id: String, offset: u64) -> Result<String, String> {
+    let empty = || r#"{"lines":[],"offset":0}"#.to_string();
+    if !is_valid_session_id(&hook_id) {
+        return Ok(empty()); // 非法形态：fail-closed（不拼路径）。
+    }
+    let path = match hook_base_dir() {
+        Some(d) => d.join(format!("{hook_id}.ndjson")),
+        None => return Ok(empty()),
+    };
+    if !path.is_file() {
+        return Ok(empty());
+    }
+    let (lines, new_offset) = match read_complete_lines(&path, offset) {
+        Ok(v) => v,
+        Err(_) => return Ok(empty()),
+    };
+    let payload = serde_json::json!({ "lines": lines, "offset": new_offset });
+    serde_json::to_string(&payload).map_err(|e| format!("序列化失败: {e}"))
+}
+
+/// 会话移除时清理 relay 文件（防 hooks 目录无限积累）。校验同上；删除尽力而为
+/// （文件被占用/不存在均忽略——清理失败不值得打断移除流程）。
+#[tauri::command]
+pub async fn cleanup_hook_events(hook_id: String) -> Result<(), String> {
+    if !is_valid_session_id(&hook_id) {
+        return Ok(());
+    }
+    if let Some(dir) = hook_base_dir() {
+        let _ = std::fs::remove_file(dir.join(format!("{hook_id}.ndjson")));
+        let _ = std::fs::remove_file(dir.join(format!("{hook_id}.settings.json")));
+    }
+    Ok(())
+}
+
 /// 枚举用户级已安装 skills（M⑥ §4，**无 State**，v1 仅用户级、项目级推迟）。
 /// `<home>/.claude/skills/*/SKILL.md` → 行级取 frontmatter `name`/`description`
 /// （非完整 YAML）：`name` 取 `^name:\s*(.+)$` trim 去引号，**缺 name → 目录名兜底**；

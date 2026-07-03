@@ -20,6 +20,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { parseCommand } from "./launch-registry";
+import { buildHookSettingsArg } from "./claude-hooks";
 
 /** 后端 SessionInfo 镜像（serde snake_case）。 */
 export interface SessionInfo {
@@ -340,6 +341,29 @@ export async function createSession(spec?: CreateSpec): Promise<SessionEntry> {
   if (isBareClaudeLaunch(spec?.program, spec?.args)) {
     claudeSessionId = crypto.randomUUID();
     invokeArgs = ["--session-id", claudeSessionId];
+    // G1（2026-07-03）：追加 per-session Notification hook（hooks 数组与用户全局
+    // 合并不覆盖）。attention 由此获得结构化信号（permission_prompt/idle_prompt），
+    // 补 BEL 抓不到的 TUI 权限框场景。
+    // **红队 MUST-FIX（BLOCK）修法**：settings JSON 写**临时文件**、传 `--settings
+    // <path>`——绝不内联 JSON（内联经 npm-shim 的 cmd /c 包裹时 JSON 的 " 转义与
+    // matcher 的 | 被 cmd.exe 误解析：claude 崩 + 命令注入。见 write_hook_settings）。
+    // path = UUID+env 派生无 cmd 元字符。诚实降级：目录/写文件任一失败 → 只注
+    // session-id，attention 回 BEL+退出口径。
+    const dir = await hookOutDir();
+    if (dir !== null) {
+      try {
+        const settingsJson = buildHookSettingsArg(
+          `${dir}\\${claudeSessionId}.ndjson`,
+        );
+        const settingsPath = await invoke<string>("write_hook_settings", {
+          hookId: claudeSessionId,
+          settingsJson,
+        });
+        invokeArgs.push("--settings", settingsPath);
+      } catch {
+        // 写 settings 失败 → 降级（只注 session-id，attention 回 BEL 口径）。
+      }
+    }
   }
   let info: SessionInfo;
   try {
@@ -372,6 +396,21 @@ export async function createSession(spec?: CreateSpec): Promise<SessionEntry> {
   activeId = entry.instanceId;
   notify();
   return entry;
+}
+
+/**
+ * hooks relay 输出目录（G1）：首次 invoke 后缓存（成功路径 / 失败 null 均缓存，
+ * 不重复打后端）。undefined = 尚未取过。
+ */
+let hookDirCache: string | null | undefined;
+async function hookOutDir(): Promise<string | null> {
+  if (hookDirCache !== undefined) return hookDirCache;
+  try {
+    hookDirCache = await invoke<string>("get_hook_out_dir");
+  } catch {
+    hookDirCache = null; // 降级：本会话进程内不再尝试（attention 回 BEL 口径）。
+  }
+  return hookDirCache;
 }
 
 /**
@@ -413,6 +452,12 @@ export async function removeSession(
     await invoke<void>("kill_session", { instanceId });
   } catch {
     // 后端报错也清本地（避免僵尸缩点项；后端同样已清其表项）。
+  }
+  // G1：清理该会话的 hook relay 文件（尽力而为，防 hooks 目录积累；失败不打断移除）。
+  if (entry?.claudeSessionId) {
+    void invoke<void>("cleanup_hook_events", {
+      hookId: entry.claudeSessionId,
+    }).catch(() => {});
   }
   const idx = sessions.findIndex((s) => s.instanceId === instanceId);
   if (idx === -1) return;
