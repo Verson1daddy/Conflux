@@ -123,9 +123,13 @@ Conflux is **V1, Windows-only, and early**. It is a working workbench, not a fin
 
 Feedback and issues are welcome — this is the stage where they shape the product most.
 
-## Contributing
+## About & contributing
 
-Conflux is early and moving fast. If you want to build from source, file an issue, or send a focused PR, please open a discussion first so we can point you at the current contracts. Build instructions are above.
+Conflux is an open-source project built by a student at **South China Normal University (华南师范大学)**, developed in the open — a genuine attempt to make the multi-agent workflow on Windows better.
+
+There's no budget for a code-signing certificate, so when prebuilt installers ship they'll be **unsigned**: Windows SmartScreen will warn that the publisher is unknown. To run anyway, click **More info → Run anyway** — or skip the installer and build from source (instructions above), since all the code is right here.
+
+Conflux is early and moving fast, and the agent-collaboration side is honestly still a work in progress. If you have ideas, hit a bug, or want to help shape where this goes, please **open an issue or discussion, or send a focused PR** (a quick discussion first helps us point you at the current contracts). I'd genuinely love to build a better Windows agent ecosystem together — come say hi.
 
 ## License
 
@@ -226,9 +230,13 @@ Conflux 目前 **V1、仅 Windows、early**。它是一个能用的工作台，�
 
 欢迎反馈与 issue —— 现在正是最能影响产品走向的阶段。
 
-## 贡献
+## 关于与共建
 
-Conflux 尚早、迭代很快。若你想从源码构建、提 issue 或发一个聚焦的 PR，请先开一个 discussion，我们好把当前的契约指给你。构建步骤见上文。
+Conflux 是**华南师范大学**一名学生做的开源项目，在开放中开发——想认真地把 Windows 上的多 agent 工作流做得更好一点。
+
+目前没有预算购买代码签名证书，所以预编译安装包上线后会是**未签名**的：Windows SmartScreen 会提示"发布者未知"。运行方法是点 **更多信息 → 仍要运行**；不放心的话，也可以不用安装包、直接从源码构建（步骤见上文）——所有代码都在这里。
+
+Conflux 还很早、迭代很快，说实话 agent 协作那一块也仍在打磨中。如果你有想法、遇到 bug，或者想一起塑造它的方向，欢迎 **提 issue、开 discussion 或发一个聚焦的 PR**（大改动前先开个 discussion，方便我们把当前契约指给你）。我真心希望能和大家一起，把 Windows 上的 agent 生态做得更好——欢迎来打个招呼。
 
 ## 许可
 
