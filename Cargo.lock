@@ -444,7 +444,7 @@ dependencies = [
 
 [[package]]
 name = "conmux"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "portable-pty",
@@ -457,7 +457,7 @@ dependencies = [
 
 [[package]]
 name = "conmux-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "conmux",

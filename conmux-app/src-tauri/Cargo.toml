@@ -1,6 +1,6 @@
 [package]
 name = "conmux-app"
-version = "0.1.0"
+version = "0.1.1"
 description = "conmux — Windows CLI 大本营 GUI 壳（Milestone ① 骨架）"
 authors = ["dllpang"]
 edition = "2021"
