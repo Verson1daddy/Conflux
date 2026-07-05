@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg">
-    <img alt="Conflux" src="conflux-app/app-icon.png" width="96" height="96">
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/logo-dark.svg">
+    <img alt="Conflux" src=".github/assets/logo-light.svg" width="96" height="96">
   </picture>
 </p>
 
@@ -24,8 +24,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/demo.gif" alt="Conflux in action — placeholder, to be added" width="82%"><br>
-  <sub><i>Demo GIF placeholder — <code>docs/demo.gif</code> (to be added)</i></sub>
+  <sub><i>Demo GIF coming soon.</i></sub>
 </p>
 
 ---
