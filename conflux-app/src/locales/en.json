@@ -1,6 +1,6 @@
 {
   "app.name": "Conflux",
-  "app.version": "v0.1.0-alpha",
+  "app.version": "v0.1.1-alpha",
   "app.windows": "Windows 11",
 
   "statusBar.noActiveAgents": "No active agents",

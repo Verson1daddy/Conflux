@@ -14,6 +14,7 @@
 // tray flow; on success the panel closes and the input clears.
 
 import { type FC, useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { Icon } from "@/components/ui/Icon";
 import { useAgentStore } from "@/stores/agentStore";
 import { getLiveAgentInstances } from "@/lib/workspace-status";
 import { injectStdin } from "@/lib/tauri-bridge";
@@ -100,6 +101,15 @@ const SendToPanel: FC<SendToPanelProps> = ({ visible, onClose }) => {
     return () => clearTimeout(t);
   }, [visible, primaryId]);
 
+  // 收件人对账：面板开着时选中的 agent 若退出/消失（不在 live 列表里），把选择重置到
+  // 当前仍活着的 primary（或 null）。否则 Send 会保持可点却没有可见收件人，点了就注入死 PTY。
+  useEffect(() => {
+    if (!visible) return;
+    if (selectedId && !agentList.some((a) => a.instance_id === selectedId)) {
+      setSelectedId(primaryId);
+    }
+  }, [visible, selectedId, agentList, primaryId]);
+
   // ESC closes the panel
   useEffect(() => {
     if (!visible) return;
@@ -111,7 +121,9 @@ const SendToPanel: FC<SendToPanelProps> = ({ visible, onClose }) => {
   }, [visible, onClose]);
 
   const handleSend = useCallback(async () => {
-    if (!selectedId || !message.trim() || sending) return;
+    // 防御：selectedId 必须仍是活着的 agent，避免向已退出实例的死 PTY 注入并假报成功。
+    if (!selectedId || !agentList.some((a) => a.instance_id === selectedId)) return;
+    if (!message.trim() || sending) return;
     setSending(true);
     setFlash("none");
     setErrorMsg(null);
@@ -130,7 +142,7 @@ const SendToPanel: FC<SendToPanelProps> = ({ visible, onClose }) => {
     } finally {
       setSending(false);
     }
-  }, [selectedId, message, sending, onClose]);
+  }, [selectedId, message, sending, onClose, agentList]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -205,9 +217,7 @@ const SendToPanel: FC<SendToPanelProps> = ({ visible, onClose }) => {
             onClick={onClose}
             title="Close (Esc)"
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M18 6 6 18M6 6l12 12" />
-            </svg>
+            <Icon name="close" size={17} />
           </button>
         </div>
 
@@ -442,10 +452,7 @@ const SendToPanel: FC<SendToPanelProps> = ({ visible, onClose }) => {
                 transform: flash === "success" ? "scale(0.97)" : "scale(1)",
               }}
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z" />
-                <path d="m21.854 2.147-10.94 10.939" />
-              </svg>
+              <Icon name="send" size={16} strokeWidth={2.5} />
               <span>{sending ? "Sending…" : flash === "success" ? "Sent" : flash === "error" ? "Retry" : "Send"}</span>
             </button>
           </div>

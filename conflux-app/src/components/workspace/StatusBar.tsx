@@ -1,6 +1,7 @@
 import { type FC } from "react";
 import { buildStatusSummary } from "@/lib/workspace-status";
 import { useAgentStore } from "@/stores/agentStore";
+import { Icon } from "@/components/ui/Icon";
 
 interface StatusBarProps {
   onOpenSession?: () => void;
@@ -36,10 +37,7 @@ const StatusBar: FC<StatusBarProps> = ({ onOpenSession }) => {
           title="Session event timeline"
           aria-label="Open session event timeline"
         >
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="10"/>
-            <polyline points="12 6 12 12 16 14"/>
-          </svg>
+          <Icon name="clock" size={11} />
           <span className="text-[10px] font-body">Session</span>
         </button>
       )}
@@ -47,7 +45,7 @@ const StatusBar: FC<StatusBarProps> = ({ onOpenSession }) => {
       <div className="flex-1" />
 
       <span className="text-[#6B7280] text-[10px] font-body shrink-0">
-        Conflux v0.1.0-alpha - Windows 11
+        Conflux v0.1.1-alpha - Windows 11
       </span>
     </footer>
   );

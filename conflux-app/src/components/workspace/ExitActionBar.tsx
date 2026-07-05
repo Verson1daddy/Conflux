@@ -7,6 +7,7 @@
 import { type FC } from "react";
 import type { ProcessExitedPayload } from "@/types";
 import type { ExitAction } from "@/hooks/useExitActions";
+import { Icon } from "@/components/ui/Icon";
 
 const SHELL_ADAPTER_PSEUDO_ID = "__shell__";
 
@@ -85,6 +86,9 @@ const ExitActionBar: FC<ExitActionBarProps> = ({ payload, onAction, compact = fa
           background: "rgba(184,212,227,0.16)",
           color: "#E3F1F8",
           fontWeight: 600,
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 4,
         }}
         onClick={(e) => {
           e?.stopPropagation();
@@ -92,7 +96,8 @@ const ExitActionBar: FC<ExitActionBarProps> = ({ payload, onAction, compact = fa
         }}
         aria-label="Restart agent"
       >
-        ⟳ Restart
+        <Icon name="refresh" size={compact ? 14 : 14} />
+        Restart
       </button>
       {!isAlreadyShell && (
         <button
@@ -114,6 +119,9 @@ const ExitActionBar: FC<ExitActionBarProps> = ({ payload, onAction, compact = fa
           border: "1px solid transparent",
           background: "transparent",
           color: "rgba(255,255,255,0.4)",
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 4,
         }}
         onClick={(e) => {
           e?.stopPropagation();
@@ -121,7 +129,8 @@ const ExitActionBar: FC<ExitActionBarProps> = ({ payload, onAction, compact = fa
         }}
         aria-label="Close card"
       >
-        ✕ Close
+        <Icon name="close" size={compact ? 14 : 14} />
+        Close
       </button>
     </div>
   );

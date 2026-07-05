@@ -12,6 +12,7 @@ import {
   summarizeSessionEvent,
 } from "@/lib/session-events";
 import { SessionList } from "@/components/session/SessionList";
+import { Icon } from "@/components/ui/Icon";
 
 // Inlined from deleted hooks/useSessionPlayback.ts
 function useSessionPlayback() {
@@ -21,20 +22,33 @@ function useSessionPlayback() {
   const [currentEventIndex, setCurrentEventIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const playStateRef = useRef({ isPlaying, currentEventIndex, playbackSpeed });
   playStateRef.current = { isPlaying, currentEventIndex, playbackSpeed };
   const eventsRef = useRef(events);
   eventsRef.current = events;
+  // 最近一次 selectSession 的序号——快速切换会话时丢弃过期查询结果（防串台）。
+  const selectReqRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      const result = await listSessions();
-      if (!cancelled) setSessions(result);
+      try {
+        const result = await listSessions();
+        if (!cancelled) setSessions(result);
+      } catch {
+        // 列表拉取失败：保留已有列表，不炸 UI（下次刷新或重开面板重试）。
+      }
     }
     load();
-    return () => { cancelled = true; };
+    // 面板开着时轻量刷新（5s）——让 live 会话的时长/事件数不再冻结在打开那一刻。
+    const refreshId = window.setInterval(load, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(refreshId);
+    };
   }, []);
 
   useEffect(() => {
@@ -49,11 +63,23 @@ function useSessionPlayback() {
   }, [isPlaying, playbackSpeed, events.length]);
 
   const selectSession = useCallback(async (instanceId: string) => {
+    const reqId = ++selectReqRef.current;
     setSelectedSessionId(instanceId);
     setIsPlaying(false);
     setCurrentEventIndex(0);
-    const sessionEvents = await querySessionEvents(instanceId);
-    setEvents(sessionEvents);
+    setError(null);
+    setLoading(true);
+    setEvents([]); // 立即清掉上一会话事件，加载/失败期间不显示旧数据。
+    try {
+      const sessionEvents = await querySessionEvents(instanceId);
+      if (reqId !== selectReqRef.current) return; // 已被更晚的点击取代：丢弃过期结果。
+      setEvents(sessionEvents);
+    } catch {
+      if (reqId !== selectReqRef.current) return;
+      setError("加载会话事件失败，请重试");
+    } finally {
+      if (reqId === selectReqRef.current) setLoading(false);
+    }
   }, []);
 
   const togglePlay = useCallback(() => {
@@ -72,7 +98,7 @@ function useSessionPlayback() {
     setCurrentEventIndex(Math.max(0, Math.min(index, events.length - 1)));
   }, [events.length]);
 
-  return { sessions, selectedSessionId, events, currentEventIndex, isPlaying, playbackSpeed, selectSession, togglePlay, setSpeed, seekTo };
+  return { sessions, selectedSessionId, events, currentEventIndex, isPlaying, playbackSpeed, loading, error, selectSession, togglePlay, setSpeed, seekTo };
 }
 
 /** 回放速度选项 */
@@ -158,6 +184,8 @@ export function SessionPlayback() {
     currentEventIndex,
     isPlaying,
     playbackSpeed,
+    loading,
+    error,
     selectSession,
     togglePlay,
     setSpeed,
@@ -165,6 +193,40 @@ export function SessionPlayback() {
   } = useSessionPlayback();
 
   const timelineRef = useRef<HTMLDivElement>(null);
+
+  // ===== 进度条键盘定位（role=slider + tabIndex=0 需配套键盘处理，否则纯装饰） =====
+  const handleTimelineKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (events.length === 0) return;
+      let handled = true;
+      switch (e.key) {
+        case "ArrowLeft":
+        case "ArrowDown":
+          seekTo(currentEventIndex - 1);
+          break;
+        case "ArrowRight":
+        case "ArrowUp":
+          seekTo(currentEventIndex + 1);
+          break;
+        case "Home":
+          seekTo(0);
+          break;
+        case "End":
+          seekTo(events.length - 1);
+          break;
+        case "PageDown":
+          seekTo(currentEventIndex - 5);
+          break;
+        case "PageUp":
+          seekTo(currentEventIndex + 5);
+          break;
+        default:
+          handled = false;
+      }
+      if (handled) e.preventDefault();
+    },
+    [events.length, currentEventIndex, seekTo]
+  );
 
   // ===== Timeline 点击定位 =====
   const handleTimelineClick = useCallback(
@@ -233,26 +295,9 @@ export function SessionPlayback() {
                 aria-label={isPlaying ? "Pause event timeline" : "Start event timeline"}
               >
                 {isPlaying ? (
-                  /* Pause 图标 */
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 14 14"
-                    fill="currentColor"
-                  >
-                    <rect x="2" y="1" width="4" height="12" rx="1" />
-                    <rect x="8" y="1" width="4" height="12" rx="1" />
-                  </svg>
+                  <Icon name="pause" size={16} />
                 ) : (
-                  /* Play 图标 */
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 14 14"
-                    fill="currentColor"
-                  >
-                    <path d="M3 1.5v11l9-5.5z" />
-                  </svg>
+                  <Icon name="play" size={16} />
                 )}
               </button>
             </div>
@@ -270,8 +315,31 @@ export function SessionPlayback() {
           </div>
         )}
 
-        {/* 有选中会话但无事件 */}
-        {selectedSessionId && events.length === 0 && (
+        {/* 加载中 */}
+        {selectedSessionId && loading && (
+          <div className="flex-1 flex items-center justify-center">
+            <p className="text-sm text-[#6B7280]">Loading events…</p>
+          </div>
+        )}
+
+        {/* 加载失败：明确报错，不静默显示上一个会话的事件或假空态 */}
+        {selectedSessionId && !loading && error && (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center">
+              <p className="text-sm text-[#EF5350]">{error}</p>
+              <button
+                type="button"
+                onClick={() => void selectSession(selectedSessionId)}
+                className="mt-2 text-xs text-[#A8D8EA] hover:underline"
+              >
+                重试
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 有选中会话、已加载、无错误但无事件 */}
+        {selectedSessionId && !loading && !error && events.length === 0 && (
           <div className="flex-1 flex items-center justify-center">
             <p className="text-sm text-[#6B7280]">
               No events recorded for this session
@@ -280,7 +348,7 @@ export function SessionPlayback() {
         )}
 
         {/* 有事件时显示 Timeline + EventList */}
-        {events.length > 0 && (
+        {!loading && !error && events.length > 0 && (
           <>
             {/* ===== Timeline 进度条 ===== */}
             <div className="px-6 py-3 border-b border-[#2A2A2A]">
@@ -304,8 +372,10 @@ export function SessionPlayback() {
                 <div
                   ref={timelineRef}
                   onClick={handleTimelineClick}
-                  className="flex-1 h-2 bg-surface-dark-secondary rounded-full cursor-pointer relative group"
+                  onKeyDown={handleTimelineKeyDown}
+                  className="flex-1 h-2 bg-surface-dark-secondary rounded-full cursor-pointer relative group focus:outline-none focus-visible:ring-2 focus-visible:ring-[#A8D8EA]/50"
                   role="slider"
+                  aria-label="Event timeline position"
                   aria-valuemin={0}
                   aria-valuemax={events.length - 1}
                   aria-valuenow={currentEventIndex}

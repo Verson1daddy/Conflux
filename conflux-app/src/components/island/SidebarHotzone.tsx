@@ -1,44 +1,7 @@
 import { type CSSProperties, type FC, type MouseEvent, type PointerEvent, useRef } from "react";
 import { COMPACT_WINDOW_METRICS, px } from "@/lib/compact-window-metrics";
 import { startCurrentWindowDrag } from "@/lib/window-drag";
-
-function DockTabIcon() {
-  return (
-    <svg
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" />
-      <path d="m22 12-8.58 3.91a2 2 0 0 1-1.66 0L3.18 12" opacity="0.62" />
-      <path d="m22 17-8.58 3.91a2 2 0 0 1-1.66 0L3.18 17" opacity="0.34" />
-    </svg>
-  );
-}
-
-function ChevronLeftIcon() {
-  return (
-    <svg
-      width="20"
-      height="20"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="m15 18-6-6 6-6" />
-    </svg>
-  );
-}
+import { Icon } from "@/components/ui/Icon";
 
 interface SidebarHotzoneProps {
   expanded: boolean;
@@ -141,11 +104,11 @@ export const SidebarHotzone: FC<SidebarHotzoneProps> = ({
       onClick={handleClick}
     >
       <span className="sidebar-hotzone__icon" aria-hidden="true">
-        <DockTabIcon />
+        <Icon name="layers" size={24} />
       </span>
       <span className="sidebar-hotzone__rail" aria-hidden="true" />
       <span className="sidebar-hotzone__chevron" aria-hidden="true">
-        <ChevronLeftIcon />
+        <Icon name="chevron-left" size={20} />
       </span>
     </button>
   );

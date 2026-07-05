@@ -9,6 +9,7 @@ import { type FC, type ComponentPropsWithoutRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { SyntaxHighlighter } from "@/lib/syntax-highlighter";
+import { Icon } from "@/components/ui/Icon";
 import type { CodeBlock } from "@/types/discussion";
 
 // Palette matches DiscussionPanel.tsx light theme
@@ -125,12 +126,6 @@ const IconCopy: FC<{ size?: number }> = ({ size = 13 }) => (
   </svg>
 );
 
-const IconCheck: FC<{ size?: number }> = ({ size = 13 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M20 6 9 17l-5-5"/>
-  </svg>
-);
-
 const CopyButton: FC<{ text: string }> = ({ text }) => {
   // Stable copy state stored on window to persist across re-renders of parent
   const win = window as unknown as Record<string, Record<number, boolean>>;
@@ -181,7 +176,7 @@ const CopyButton: FC<{ text: string }> = ({ text }) => {
         justifyContent: "center",
       }}
     >
-      {copyState[key] ? <IconCheck size={12} /> : <IconCopy size={12} />}
+      {copyState[key] ? <Icon name="check" size={12} /> : <IconCopy size={12} />}
       <span>{copyState[key] ? "Copied" : "Copy"}</span>
     </button>
   );

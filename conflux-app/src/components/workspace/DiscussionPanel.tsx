@@ -21,6 +21,7 @@ import type {
   TurnOrder,
 } from "@/stores/agentStore";
 import type { AgentInstanceInfo, DiscussionSummary } from "@/types";
+import { Icon } from "@/components/ui/Icon";
 import { MessageRenderer } from "./MessageRenderer";
 import { ArtifactsDrawer } from "./ArtifactsDrawer";
 
@@ -58,52 +59,6 @@ function initialsOf(name: string): string {
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return (parts[0][0] + parts[1][0]).toUpperCase();
 }
-
-// ===== Shared icon primitives (inline SVG) =====
-
-interface IconProps { size?: number; className?: string }
-
-const IconX: FC<IconProps> = ({ size = 16 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M18 6 6 18M6 6l12 12" />
-  </svg>
-);
-const IconArrowLeft: FC<IconProps> = ({ size = 14 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M19 12H5M12 19l-7-7 7-7" />
-  </svg>
-);
-const IconArrowRight: FC<IconProps> = ({ size = 14 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M5 12h14M12 5l7 7-7 7" />
-  </svg>
-);
-const IconArrowUp: FC<IconProps> = ({ size = 16 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M12 19V5M5 12l7-7 7 7" />
-  </svg>
-);
-const IconCheck: FC<IconProps> = ({ size = 18 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M20 6 9 17l-5-5" />
-  </svg>
-);
-const IconPause: FC<IconProps> = ({ size = 13 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="6" y="4" width="4" height="16" rx="1"/>
-    <rect x="14" y="4" width="4" height="16" rx="1"/>
-  </svg>
-);
-const IconStop: FC<IconProps> = ({ size = 13 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="5" y="5" width="14" height="14" rx="2"/>
-  </svg>
-);
-const IconPlay: FC<IconProps> = ({ size = 13 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <polygon points="6 3 20 12 6 21 6 3"/>
-  </svg>
-);
 
 // ===== Pill step indicator (matches Pencil stepper) =====
 
@@ -165,7 +120,7 @@ const Header: FC<HeaderProps> = ({ title, titleSubtitle, onBack, onClose }) => (
         aria-label="Back"
         title="Back"
       >
-        <IconArrowLeft size={18} />
+        <Icon name="arrow-left" size={18} />
       </button>
     )}
     <div className="flex flex-col flex-1 min-w-0" style={{ gap: 2 }}>
@@ -198,7 +153,7 @@ const Header: FC<HeaderProps> = ({ title, titleSubtitle, onBack, onClose }) => (
       aria-label="Close"
       title="Close (Esc)"
     >
-      <IconX size={16} />
+      <Icon name="close" size={17} />
     </button>
   </div>
 );
@@ -243,7 +198,7 @@ const Footer: FC<FooterProps> = ({ leftLabel, leftOnClick, rightLabel, rightIcon
           cursor: "pointer",
         }}
       >
-        <IconArrowLeft />
+        <Icon name="arrow-left" size={14} />
         <span>{leftLabel}</span>
       </button>
     ) : <div />}
@@ -267,7 +222,7 @@ const Footer: FC<FooterProps> = ({ leftLabel, leftOnClick, rightLabel, rightIcon
       }}
     >
       <span>{rightLabel}</span>
-      {rightIcon === "arrow" && <IconArrowRight />}
+      {rightIcon === "arrow" && <Icon name="arrow-right" size={16} />}
     </button>
   </div>
 );
@@ -766,9 +721,9 @@ const ChipRow: FC<{ label: string; value: string; onClick: () => void }> = ({ la
         fontFamily: "'Geist Sans', sans-serif",
         fontSize: 12, fontWeight: 600, color: COLORS.textPrimary,
       }}>{value}</span>
-      <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke={COLORS.textMuted} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="m6 9 6 6 6-6"/>
-      </svg>
+      <span className="flex" style={{ color: COLORS.textMuted }}>
+        <Icon name="chevron-down" size={14} />
+      </span>
     </span>
   </button>
 );
@@ -863,7 +818,7 @@ const StepParticipants: FC = () => {
                   className="shrink-0 flex items-center justify-center"
                   style={{ width: 20, height: 20, borderRadius: 9999, color: COLORS.accent }}
                 >
-                  <IconCheck size={18} />
+                  <Icon name="check" size={18} />
                 </div>
               ) : (
                 <div
@@ -933,7 +888,7 @@ const ChatroomHeader: FC<{
           fontSize: 11, fontWeight: 500, color: COLORS.textMuted,
           whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
         }}>
-          Round {round} of {maxRounds} - {paused ? "Paused" : orderLabel}
+          Round {round}{maxRounds > 0 ? ` of ${maxRounds}` : ""} - {paused ? "Paused" : orderLabel}
         </span>
       </div>
       <button
@@ -949,7 +904,7 @@ const ChatroomHeader: FC<{
         }}
         title={paused ? "Resume discussion" : "Pause discussion"}
       >
-        {paused ? <IconPlay /> : <IconPause />}
+        {paused ? <Icon name="play" size={16} /> : <Icon name="pause" size={16} />}
         <span style={{ fontFamily: "'Geist Sans', sans-serif", fontSize: 12, fontWeight: 600 }}>
           {paused ? "Resume" : "Pause"}
         </span>
@@ -967,10 +922,7 @@ const ChatroomHeader: FC<{
         }}
         title={artifactsVisible ? "Hide artifacts" : "Show artifacts"}
       >
-        <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <polyline points="16 18 22 12 16 6"/>
-          <polyline points="8 6 2 12 8 18"/>
-        </svg>
+        <Icon name="code" size={16} />
         <span style={{ fontFamily: "'Geist Sans', sans-serif", fontSize: 12, fontWeight: 600 }}>
           Artifacts
         </span>
@@ -988,7 +940,7 @@ const ChatroomHeader: FC<{
         }}
         title="End discussion"
       >
-        <IconStop />
+        <Icon name="stop" size={16} />
         <span style={{ fontFamily: "'Geist Sans', sans-serif", fontSize: 12, fontWeight: 600 }}>
           End
         </span>
@@ -1207,7 +1159,7 @@ const ChatroomFooter: FC<{
           title="Send (Ctrl+Enter)"
           aria-label="Send"
         >
-          <IconArrowUp />
+          <Icon name="arrow-up" size={16} />
         </button>
       </div>
     </div>

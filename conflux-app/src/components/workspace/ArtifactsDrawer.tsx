@@ -8,6 +8,7 @@
 
 import { type FC, useState, useCallback, useEffect } from "react";
 import { SyntaxHighlighter } from "@/lib/syntax-highlighter";
+import { Icon } from "@/components/ui/Icon";
 import type { DiscussionArtifact } from "@/stores/agentStore";
 
 // Palette: matches DiscussionPanel light theme
@@ -57,33 +58,19 @@ function langLabel(raw: string): string {
   return (LANG_LABELS[raw.toLowerCase()] ?? raw) || "Code";
 }
 
-// ===== Icon components =====
+// ===== Local icon components (no match in shared Icon module) =====
+// IconChevronUp: shared module has no up-chevron (only down/left/right).
+// IconCopy: shared module has no copy/duplicate glyph.
 
-const IconX: FC<{ size?: number }> = ({ size = 16 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M18 6 6 18M6 6l12 12"/>
-  </svg>
-);
 const IconChevronUp: FC<{ size?: number; style?: React.CSSProperties }> = ({ size = 14, style }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={style}>
     <path d="m18 15-6-6-6 6"/>
-  </svg>
-);
-const IconPin: FC<{ size?: number }> = ({ size = 14 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <line x1="12" y1="17" x2="12" y2="22"/>
-    <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17z"/>
   </svg>
 );
 const IconCopy: FC<{ size?: number }> = ({ size = 14 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
     <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-  </svg>
-);
-const IconCheck: FC<{ size?: number }> = ({ size = 14 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M20 6 9 17l-5-5"/>
   </svg>
 );
 
@@ -170,7 +157,7 @@ const ArtifactListItem: FC<ArtifactListItemProps> = ({ artifact, selected, onCli
             transition: "all 0.12s ease",
           }}
         >
-          <IconPin size={12} />
+          <Icon name="pin" size={12} />
         </button>
       </div>
       <pre
@@ -241,7 +228,7 @@ const PreviewPane: FC<{ artifact: DiscussionArtifact; onCopy: () => void; copied
           transition: "all 0.15s ease",
         }}
       >
-        {copied ? <IconCheck size={12} /> : <IconCopy size={12} />}
+        {copied ? <Icon name="check" size={12} strokeWidth={2.4} /> : <IconCopy size={12} />}
         <span>{copied ? "Copied!" : "Copy"}</span>
       </button>
     </div>
@@ -387,7 +374,7 @@ const ArtifactsDrawer: FC<ArtifactsDrawerProps> = ({ artifacts, onTogglePin, onC
           }}
           title="Close artifacts drawer"
         >
-          <IconX size={14} />
+          <Icon name="close" size={16} />
         </button>
       </div>
 

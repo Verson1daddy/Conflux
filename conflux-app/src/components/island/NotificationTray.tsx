@@ -7,28 +7,15 @@ import { type FC, useEffect, useState, useCallback, useRef } from "react";
 import { useIslandStore } from "@/stores/islandStore";
 import { useAgentStore } from "@/stores/agentStore";
 import { injectStdin } from "@/lib/tauri-bridge";
+import { getLiveAgentInstances } from "@/lib/workspace-status";
 import { PTY_ENTER } from "@/lib/constants";
+import { Icon } from "@/components/ui/Icon";
 import type { NotificationItem, NotificationLevel } from "@/types";
 
 interface NotificationTrayProps {
   visible: boolean;
   onClose: () => void;
 }
-
-// ===== Inline SVG icons =====
-
-const ICON_X: FC<{ size: number }> = ({ size }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M18 6 6 18M6 6l12 12" />
-  </svg>
-);
-
-const ICON_SEND: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z" />
-    <path d="m21.854 2.147-10.94 10.939" />
-  </svg>
-);
 
 // ===== Helpers =====
 
@@ -144,7 +131,7 @@ const NotificationCard: FC<NotificationCardProps> = ({ notif, isPinned, onDismis
           aria-label="Dismiss"
           title="Dismiss"
         >
-          <ICON_X size={14} />
+          <Icon name="close" size={14} />
         </button>
       </div>
 
@@ -221,7 +208,9 @@ const NotificationCard: FC<NotificationCardProps> = ({ notif, isPinned, onDismis
             cursor: !reply.trim() || sending ? "not-allowed" : "pointer",
           }}
         >
-          <ICON_SEND size={12} color="#0A0F15" />
+          <span style={{ color: "#0A0F15", display: "inline-flex" }}>
+            <Icon name="send" size={16} strokeWidth={2.5} />
+          </span>
           <span>Send</span>
         </button>
       </div>
@@ -302,10 +291,19 @@ const NotificationTray: FC<NotificationTrayProps> = ({ visible, onClose }) => {
     async (notif: NotificationItem, replyText: string) => {
       // D-0702-001（诚实化）：原实现吞注入错误后仍无条件播 success 动画（假成功）。
       // 现在失败原样抛给卡片显示错误态，只有真注入成功才播 success 移除。
+      //
+      // 死 agent 防护：向已退出实例的 PTY 写入不会抛错（写后即弃），否则会滑到
+      // success 动画=假成功。先确认目标仍活着，不活就抛错让卡片显示失败态。
+      const alive = getLiveAgentInstances(instances).some(
+        (a) => a.instance_id === notif.source_instance_id
+      );
+      if (!alive) {
+        throw new Error("目标 agent 已退出，回复未送达");
+      }
       await injectStdin(notif.source_instance_id, replyText + PTY_ENTER);
       await animateRemoval(notif.id, "success");
     },
-    [animateRemoval]
+    [animateRemoval, instances]
   );
 
   if (!visible) return null;
@@ -382,7 +380,7 @@ const NotificationTray: FC<NotificationTrayProps> = ({ visible, onClose }) => {
             }}
             aria-label="Close"
           >
-            <ICON_X size={14} />
+            <Icon name="close" size={17} />
           </button>
         </div>
 
@@ -411,21 +409,10 @@ const NotificationTray: FC<NotificationTrayProps> = ({ visible, onClose }) => {
             className="flex-1 flex flex-col items-center justify-center"
             style={{ padding: "48px 24px", gap: 12, minHeight: 180 }}
           >
-            {/* Check-circle icon — neutral muted color */}
-            <svg
-              width={40}
-              height={40}
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="#6B7280"
-              strokeWidth={1.4}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M21.801 10A10 10 0 1 1 17 3.335" />
-              <path d="m9 11 3 3L22 4" />
-            </svg>
+            {/* Check icon — neutral muted color */}
+            <span style={{ color: "#6B7280", display: "inline-flex" }}>
+              <Icon name="check" size={44} strokeWidth={1.4} />
+            </span>
             <div
               style={{
                 fontFamily: "'Fraunces Variable', Georgia, serif",

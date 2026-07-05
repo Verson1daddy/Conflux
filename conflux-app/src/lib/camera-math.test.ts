@@ -7,6 +7,7 @@ import {
   cameraSettled,
   clampLogZoom,
   wheelLogDelta,
+  wheelPanDelta,
   anchorWorldPoint,
   panForAnchor,
   LOG_SNAP_EPSILON,
@@ -64,5 +65,23 @@ describe("camera-math（log 空间平滑缩放）", () => {
     expect(cameraSettled(2, 2.0001, { x: 100, y: 200 }, target)).toBe(false);
     expect(cameraSettled(2, 2, { x: 100, y: 201 }, target)).toBe(false);
     expect(cameraSettled(2, 2, { x: 99, y: 200 }, target)).toBe(false);
+  });
+
+  it("wheelPanDelta：像素模式内容随手势走（负号同浏览器滚动），双轴各自独立", () => {
+    // 触控板两指向下（deltaY>0）→ 内容上移（dy<0）；两指向右（deltaX>0）→ 内容左移
+    expect(wheelPanDelta(30, 50, 0, false)).toEqual({ dx: -30, dy: -50 });
+    expect(wheelPanDelta(0, -80, 0, false)).toEqual({ dx: -0, dy: 80 });
+  });
+
+  it("wheelPanDelta：line 模式 ×16（与 wheelLogDelta 同系数）", () => {
+    expect(wheelPanDelta(0, 3, 1, false)).toEqual({ dx: -0, dy: -48 });
+  });
+
+  it("wheelPanDelta：shift+纵滚 = 横移（鼠标滚轮无横轴的兜底）", () => {
+    expect(wheelPanDelta(0, 40, 0, true)).toEqual({ dx: -40, dy: 0 });
+  });
+
+  it("wheelPanDelta：shift 但已有原生 deltaX（触控板横滑）时不改语义", () => {
+    expect(wheelPanDelta(25, 10, 0, true)).toEqual({ dx: -25, dy: -10 });
   });
 });

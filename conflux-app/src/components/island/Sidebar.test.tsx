@@ -229,11 +229,11 @@ describe("Sidebar notifications", () => {
       );
     });
 
-    expect(renderer.root.findAllByProps({ className: "sidebar-panel__empty-mascot" })).toHaveLength(1);
+    expect(renderer.root.findAllByProps({ className: "sidebar-panel__empty-card" })).toHaveLength(1);
     expect(renderer.root.findAllByProps({ className: "sidebar-panel__empty-agent-slot" })).toHaveLength(0);
     expect(renderer.root.findAllByProps({ className: "sidebar-panel__empty-notification-slot" })).toHaveLength(0);
-    expect(nodeContainsText(renderer.root, "暂时还没创建 agent 框架哦")).toBe(true);
-    expect(nodeContainsText(renderer.root, "创建后会在这里显示运行状态和需要处理的事项")).toBe(true);
+    expect(nodeContainsText(renderer.root, "还没有运行中的 agent")).toBe(true);
+    expect(nodeContainsText(renderer.root, "从顶栏「+ Add Agent」接入，运行状态会实时显示在这里")).toBe(true);
     expect(nodeContainsText(renderer.root, "Standing by")).toBe(false);
     expect(nodeContainsText(renderer.root, "Quiet queue")).toBe(false);
     expect(nodeContainsText(renderer.root, "Boundary: monitor, approve, jump back.")).toBe(false);

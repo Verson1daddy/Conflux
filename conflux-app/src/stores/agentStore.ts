@@ -23,6 +23,20 @@ import {
 } from "@/lib/discussion-artifacts";
 import { parseCodeBlocks, toFrontendMessage } from "@/lib/discussion-utils";
 import { getLiveAgentInstances } from "@/lib/workspace-status";
+import {
+  setPrimaryAdapterBackend,
+  setFavoriteAdapters as setFavoriteAdaptersBackend,
+} from "@/lib/tauri-bridge";
+
+// 把后端偏好写入做成「发了就忘、失败静默」——非 Tauri 环境（测试/浏览器）invoke 会抛，
+// 不能让偏好 UI 因此炸；后端 primary_adapter 等是内存态，写失败下次操作/重启再同步即可。
+function fireBackend(run: () => Promise<unknown>): void {
+  try {
+    void run().catch(() => {});
+  } catch {
+    /* bridge 不可用：静默 */
+  }
+}
 
 // ===== Discussion wizard types =====
 
@@ -389,6 +403,8 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   setFavoriteAdapters: (ids) => {
     localStorage.setItem("conflux.favorites", JSON.stringify([...ids]));
     set({ favoriteAdapters: ids });
+    // 接线（原来只写 localStorage，后端 set_favorite_adapters 永不被调）。
+    fireBackend(() => setFavoriteAdaptersBackend([...ids]));
   },
 
   setPrimaryAdapter: (id) => {
@@ -398,6 +414,12 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       localStorage.removeItem("conflux.primaryAdapter");
     }
     set({ primaryAdapter: id });
+    // 接线：把主适配器推给后端——协调路由（find_coordination_target）读的就是它。
+    // 原来只写 localStorage，后端 primary_adapter 永远是 None，主 agent 选择对协调无效。
+    // 后端命令只接非空 id；清除（id=null）后端无对应命令，跳过（下次设置会覆盖）。
+    if (id) {
+      fireBackend(() => setPrimaryAdapterBackend(id));
+    }
   },
 
   updateStatus: (instanceId, status, lastActivityAt) =>
@@ -772,6 +794,24 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
             },
           }));
         });
+    } else {
+      // 没有 discussionId（后端仍在 starting）或 backendState==='failed'：无法送达后端。
+      // 不能把这条乐观消息永远卡在 "pending"（chatroom 会一直显示「Sending to agents…」）——
+      // 立刻对账为 failed 并说明原因，用户才知道没送出、可重发。
+      const reason =
+        state.discussion.backendState === "failed"
+          ? "讨论后端启动失败，消息未送达"
+          : "讨论尚未就绪，消息未送达——请等就绪后重发";
+      set((s) => ({
+        discussion: {
+          ...s.discussion,
+          messages: s.discussion.messages.map((m) =>
+            m.id === optimisticMsg.id
+              ? { ...m, deliveryState: "failed", deliveryError: reason }
+              : m,
+          ),
+        },
+      }));
     }
   },
 

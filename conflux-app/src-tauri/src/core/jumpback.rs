@@ -318,6 +318,40 @@ pub fn degrade_backend_range_target(
     }
 }
 
+/// 死 pane 兜底降级（补 [`degrade_backend_range_target`] 的空白）。
+///
+/// `degrade_backend_range_target` 只处理 **BackendAbs 行级**落点；`Card` 与前端
+/// xterm 源 `TerminalRange` 落点若其来源 pane 已死（`pane_alive=false`），前端
+/// `focusCard` 会**静默 no-op**（卡片已不在画布）——点了 Jump 什么都不发生。
+/// 这里把它降级为 `FallbackContext`，让用户看到「这条线索已失效」而非以为按钮坏了
+/// （§5「不静默失败」）。已是 `FallbackContext` / 无 instance / pane 仍活 → 原样返回。
+pub fn degrade_dead_pane_target(target: JumpBackTarget, pane_alive: bool) -> JumpBackTarget {
+    if pane_alive || target.target_kind == JumpKind::FallbackContext {
+        return target;
+    }
+    // 需要 instance 才谈得上"聚焦卡片"；无 instance 的落点前端已走 fallback，勿动。
+    let instance_label = match target.instance_id.as_ref() {
+        Some(i) => i.0.clone(),
+        None => return target,
+    };
+    match target.target_kind {
+        JumpKind::Card | JumpKind::Terminal | JumpKind::TerminalRange => JumpBackTarget {
+            jump_back_target_id: target.jump_back_target_id,
+            target_kind: JumpKind::FallbackContext,
+            instance_id: target.instance_id,
+            card_id: target.card_id,
+            terminal_range: None,
+            cwd: target.cwd,
+            fallback_summary: Some(format!(
+                "原落点已失效（agent 已退出或其卡片已关闭）：{}",
+                instance_label
+            )),
+            confidence: JumpConfidence::Low,
+        },
+        _ => target,
+    }
+}
+
 /// 为事件生成一句人类可读摘要（兜底落点用，避免静默失败）。
 fn event_summary(event: &ConfluxEvent) -> String {
     match event {

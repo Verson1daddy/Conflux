@@ -1,6 +1,6 @@
 [package]
 name = "conflux"
-version = "0.1.0"
+version = "0.1.1"
 description = "Multi-Agent CLI Dynamic Island for Windows"
 authors = ["dllpang"]
 edition = "2021"

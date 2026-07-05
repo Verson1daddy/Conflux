@@ -59,6 +59,8 @@ interface WorkspaceState {
   fitAll: (viewportWidth: number, viewportHeight: number) => void;
   /** Auto-arrange all cards into a compact grid with consistent gap */
   autoArrange: () => void;
+  /** 均匀网格排列：把所有卡摆进等尺寸单元格的行列网格（pinned 靠前）。 */
+  gridArrange: () => void;
   /** jump-back 聚焦高亮脉冲的目标卡（一次性，动画后清空） */
   pulseCardId: string | null;
   setPulseCard: (id: string | null) => void;
@@ -282,21 +284,53 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       if (state.cards.length === 0) return state;
       const GAP = 16;
       const START = 24;
-
-      // Sort: pinned first, then wider cards for better packing
+      // 尊重 AutoPack 面板的两个下拉（原来完全忽略 → 换选项重排结果不变 = 死控件）。
+      const config = state.autoPackConfig;
       const agentInstances = useAgentStore.getState().instances;
+
+      // ① 排序：pinned 恒在前；其余按 sort_strategy。
       const sorted = [...state.cards].sort((a: CardLayout, b: CardLayout) => {
-        const aPinned = agentInstances.get(a.instance_id)?.is_pinned ? 1 : 0;
-        const bPinned = agentInstances.get(b.instance_id)?.is_pinned ? 1 : 0;
+        const ia = agentInstances.get(a.instance_id);
+        const ib = agentInstances.get(b.instance_id);
+        const aPinned = ia?.is_pinned ? 1 : 0;
+        const bPinned = ib?.is_pinned ? 1 : 0;
         if (aPinned !== bPinned) return bPinned - aPinned;
-        return b.size.width * b.size.height - a.size.width * a.size.height;
+        if (config.sort_strategy === "by_created_time") {
+          return (ia?.created_at ?? 0) - (ib?.created_at ?? 0);
+        }
+        if (config.sort_strategy === "by_framework_group") {
+          const ga = ia?.adapter_id ?? "";
+          const gb = ib?.adapter_id ?? "";
+          if (ga !== gb) return ga < gb ? -1 : 1;
+          return (ib?.last_activity_at ?? 0) - (ia?.last_activity_at ?? 0);
+        }
+        // by_activity（默认）：最近活跃在前。
+        return (ib?.last_activity_at ?? 0) - (ia?.last_activity_at ?? 0);
       });
 
-      // Simple row-based packing: fill row left→right, wrap when exceeding
-      // a reasonable max width (~3 cards wide or 2000px, whichever is smaller).
+      // ② 尺寸：size_preset。uniform=统一到当前最大；shuffle=范围内随机（钳到最小卡尺寸）；
+      //    smart=保持各卡原尺寸。
+      const MIN_W = 320;
+      const MIN_H = 220;
+      const sizeOverride = new Map<string, Size>();
+      if (config.size_preset === "uniform") {
+        const uw = state.cards.reduce((m, c) => Math.max(m, c.size.width), MIN_W);
+        const uh = state.cards.reduce((m, c) => Math.max(m, c.size.height), MIN_H);
+        for (const c of state.cards) sizeOverride.set(c.instance_id, { width: uw, height: uh });
+      } else if (config.size_preset === "shuffle") {
+        for (const c of state.cards) {
+          sizeOverride.set(c.instance_id, {
+            width: Math.max(MIN_W, Math.round(c.size.width * (0.9 + Math.random() * 0.4))),
+            height: Math.max(MIN_H, Math.round(c.size.height * (0.9 + Math.random() * 0.4))),
+          });
+        }
+      }
+      const sizeOf = (c: CardLayout): Size => sizeOverride.get(c.instance_id) ?? c.size;
+
+      // ③ 行打包（用生效尺寸）：左→右填行，超宽换行。
       const maxRowW = Math.max(
         1400,
-        sorted.reduce((sum: number, c: CardLayout) => sum + c.size.width, 0) / Math.ceil(Math.sqrt(sorted.length)) + GAP * 4
+        sorted.reduce((sum: number, c: CardLayout) => sum + sizeOf(c).width, 0) / Math.ceil(Math.sqrt(sorted.length)) + GAP * 4
       );
 
       const placed: { id: string; x: number; y: number }[] = [];
@@ -305,22 +339,72 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       let rowH = 0;
 
       for (const card of sorted) {
-        if (curX + card.size.width > maxRowW && curX > START) {
-          // Wrap to next row
+        const s = sizeOf(card);
+        if (curX + s.width > maxRowW && curX > START) {
           curX = START;
           curY += rowH + GAP;
           rowH = 0;
         }
         placed.push({ id: card.instance_id, x: curX, y: curY });
-        curX += card.size.width + GAP;
-        rowH = Math.max(rowH, card.size.height);
+        curX += s.width + GAP;
+        rowH = Math.max(rowH, s.height);
       }
 
       const posMap = new Map(placed.map((p) => [p.id, { x: p.x, y: p.y }]));
       const cards = state.cards.map((c: CardLayout) => {
         const np = posMap.get(c.instance_id);
+        const ns = sizeOverride.get(c.instance_id);
+        if (!np && !ns) return c;
+        return {
+          ...c,
+          position: np ? { x: np.x, y: np.y } : c.position,
+          size: ns ?? c.size,
+        };
+      });
+      return { cards };
+    }),
+
+  gridArrange: () =>
+    set((state: WorkspaceState) => {
+      if (state.cards.length === 0) return state;
+      const GAP = 16;
+      const START = 24;
+
+      // 列数取 ceil(sqrt(n))，逼近方形网格；单元格统一取所有卡的最大宽/高，
+      // 卡在各自单元格内居中——尺寸不一时对齐仍整齐（真「行列对齐」，而非只锁拖拽）。
+      const n = state.cards.length;
+      const cols = Math.max(1, Math.ceil(Math.sqrt(n)));
+      const cellW = state.cards.reduce((m, c) => Math.max(m, c.size.width), 0);
+      const cellH = state.cards.reduce((m, c) => Math.max(m, c.size.height), 0);
+
+      // pinned 靠前（与 autoArrange 排序意图一致），其余保持既有顺序（稳定）。
+      const agentInstances = useAgentStore.getState().instances;
+      const sorted = state.cards
+        .map((card, index) => ({ card, index }))
+        .sort((a, b) => {
+          const aPinned = agentInstances.get(a.card.instance_id)?.is_pinned ? 1 : 0;
+          const bPinned = agentInstances.get(b.card.instance_id)?.is_pinned ? 1 : 0;
+          if (aPinned !== bPinned) return bPinned - aPinned;
+          return a.index - b.index;
+        })
+        .map((e) => e.card);
+
+      const posMap = new Map<string, Position>();
+      sorted.forEach((card, i) => {
+        const row = Math.floor(i / cols);
+        const col = i % cols;
+        const cellX = START + col * (cellW + GAP);
+        const cellY = START + row * (cellH + GAP);
+        posMap.set(card.instance_id, {
+          x: Math.round(cellX + (cellW - card.size.width) / 2),
+          y: Math.round(cellY + (cellH - card.size.height) / 2),
+        });
+      });
+
+      const cards = state.cards.map((c: CardLayout) => {
+        const np = posMap.get(c.instance_id);
         if (!np) return c;
-        return { ...c, position: { x: np.x, y: np.y } };
+        return { ...c, position: np };
       });
       return { cards };
     }),

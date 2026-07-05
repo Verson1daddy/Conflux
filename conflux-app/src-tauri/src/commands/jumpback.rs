@@ -14,7 +14,9 @@
 
 use tauri::State;
 
-use crate::core::jumpback::{degrade_backend_range_target, JumpBackTarget};
+use crate::core::jumpback::{
+    degrade_backend_range_target, degrade_dead_pane_target, JumpBackTarget,
+};
 use crate::core::ConfluxError;
 use crate::persistence::jumpback as db_jumpback;
 use crate::AppState;
@@ -44,7 +46,12 @@ pub async fn get_jump_back_target(
                 .instance_id
                 .as_ref()
                 .and_then(|id| state.pane_runtime.scrollback_window(&id.0));
-            degrade_backend_range_target(target, window)
+            // scrollback_window = host.pane_state(id).ok()——Some ⇔ pane 仍活。
+            let pane_alive = window.is_some();
+            let degraded = degrade_backend_range_target(target, window);
+            // 补降级：Card / xterm-源 TerminalRange 落点若 pane 已死，前端 focusCard
+            // 会静默 no-op——降级 FallbackContext 让用户看到「线索已失效」。
+            degrade_dead_pane_target(degraded, pane_alive)
         }
         None => {
             // 未知 id：合成兜底落点（不静默失败——给用户可见上下文）。
@@ -184,5 +191,51 @@ mod tests {
             None,
         );
         assert_eq!(degrade_backend_range_target(xterm.clone(), None), xterm);
+    }
+
+    /// 死 pane 兜底降级：Card / Xterm-TerminalRange 落点在 pane 死时 → FallbackContext；
+    /// pane 活、已是 Fallback、无 instance → 原样（不静默 no-op，也不重复降级）。
+    #[test]
+    fn test_degrade_dead_pane_target_chain() {
+        use crate::core::jumpback::degrade_dead_pane_target;
+
+        let card = JumpBackTarget::card(InstanceId("i".to_string()), None);
+
+        // pane 死 → Card 降级 FallbackContext（保留 instance 展示，summary 非空）
+        let dead = degrade_dead_pane_target(card.clone(), false);
+        assert_eq!(dead.target_kind, JumpKind::FallbackContext);
+        assert_eq!(dead.confidence, JumpConfidence::Low);
+        assert_eq!(dead.instance_id, card.instance_id, "保留 instance 展示");
+        assert!(dead.fallback_summary.as_deref().unwrap_or("").contains("失效"));
+
+        // pane 活 → 原样
+        assert_eq!(degrade_dead_pane_target(card.clone(), true), card);
+
+        // Xterm 源 TerminalRange + pane 死 → 也降级（前端精确滚动无处可滚）
+        let xterm = JumpBackTarget::terminal_range(
+            InstanceId("i".to_string()),
+            TerminalRange {
+                start_line: 3,
+                end_line: 9,
+                coord_space: CoordSpace::Xterm,
+            },
+            None,
+        );
+        assert_eq!(
+            degrade_dead_pane_target(xterm, false).target_kind,
+            JumpKind::FallbackContext
+        );
+
+        // 已是 FallbackContext → 原样（不重复降级）
+        let fb = JumpBackTarget::fallback(
+            "x".to_string(),
+            Some(InstanceId("i".to_string())),
+            None,
+        );
+        assert_eq!(degrade_dead_pane_target(fb.clone(), false), fb);
+
+        // 无 instance → 原样（前端本就走 fallback）
+        let no_inst = JumpBackTarget::fallback("y".to_string(), None, None);
+        assert_eq!(degrade_dead_pane_target(no_inst.clone(), false), no_inst);
     }
 }

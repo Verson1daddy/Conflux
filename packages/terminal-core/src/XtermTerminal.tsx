@@ -65,6 +65,10 @@ interface XtermTerminalProps {
   isExitDetected?: () => boolean;
   /** 轮询兜底合成退出 payload 用的 adapter_id（事件路径用后端真值，无需此项）。 */
   adapterId?: string;
+  /** 输入闸（宿主控制）：进程退出后终端仍可见/可滚动，但不该再收键——否则用户敲的
+   *  字会静默注入已死的 PTY（无本地回显、无反馈）。true 时禁用 stdin + 停光标闪烁。
+   *  terminal-core 保持 agent 无关：由宿主（conflux=exitState）决定何时置真。 */
+  inputDisabled?: boolean;
 }
 
 interface LoadedWebglAddon {
@@ -140,6 +144,7 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
   onPtyExit,
   isExitDetected,
   adapterId,
+  inputDisabled = false,
 }) => {
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -157,6 +162,16 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
       }
     }
   }, [cardWidth]);
+
+  // 输入闸随 prop 变化即时生效（退出后置真）：onData 闭包读 ref；xterm 层也停 stdin。
+  const inputDisabledRef = useRef(inputDisabled);
+  inputDisabledRef.current = inputDisabled;
+  useEffect(() => {
+    const term = terminalRef.current;
+    if (!term) return;
+    term.options.disableStdin = !interactive || inputDisabled;
+    term.options.cursorBlink = interactive && !inputDisabled;
+  }, [inputDisabled, interactive]);
 
   // 批1 根治：allowPreviewResizeSync 入 ref（每渲染同步），挂载 effect 的闭包
   // 读 ref 而非快照——prop 变更即时生效，消除"必须重挂载才能换行为"的旧约束
@@ -197,10 +212,10 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
       fontWeightBold: 600,
       lineHeight: 1.2,
       letterSpacing: 0,
-      cursorBlink: interactive,
+      cursorBlink: interactive && !inputDisabled,
       cursorStyle: "block",
       cursorWidth: 2,
-      disableStdin: !interactive,
+      disableStdin: !interactive || inputDisabled,
       // Opaque — WebGL renderer requires this; DOM fallback also looks
       // crisper against a solid background.
       allowTransparency: false,
@@ -354,6 +369,8 @@ const XtermTerminal: FC<XtermTerminalProps> = ({
       });
 
       inputDisposable = terminal.onData((data) => {
+        // 退出后闸住：不把键注入死 PTY（disableStdin 通常已拦住，这里兜底防竞态）。
+        if (inputDisabledRef.current) return;
         inputController.handleData(data);
       });
     }

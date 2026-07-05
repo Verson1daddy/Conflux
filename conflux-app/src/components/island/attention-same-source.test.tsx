@@ -52,11 +52,28 @@ function mockIslandStore() {
   }));
 }
 
-function mockAgentStore() {
+/** 一个活着的实例（ended_at=null / 未隐藏）——权限项的来源 agent 需活着才渲染 Allow/Deny。 */
+function liveInstance(instanceId: string) {
+  return {
+    instance_id: instanceId,
+    adapter_id: "claude-code",
+    adapter_name: "Claude Code",
+    display_name: null,
+    status: "coding",
+    working_dir: null,
+    created_at: 1000,
+    last_activity_at: 2000,
+    ended_at: null,
+    hidden: false,
+  };
+}
+
+function mockAgentStore(liveIds: string[] = []) {
+  const instances = new Map(liveIds.map((id) => [id, liveInstance(id)]));
   vi.doMock("@/stores/agentStore", () => ({
     agentDisplayLabel: (agent: { instance_id: string }) => agent.instance_id,
     useAgentStore: (selector: (state: { instances: Map<string, unknown> }) => unknown) =>
-      selector({ instances: new Map() }),
+      selector({ instances }),
   }));
 }
 
@@ -79,10 +96,12 @@ describe("control-plane attention same-source projection (§17.1)", () => {
     vi.resetModules();
     mockSharedAttention(items);
     mockIslandStore();
-    mockAgentStore();
+    // 权限项的来源 agent 都活着 → Sidebar 渲染 Allow/Deny（非孤儿清除态）。
+    mockAgentStore(items.map((item) => item.instance_id));
     vi.doMock("@/lib/tauri-bridge", () => ({
       focusAgentCard: vi.fn(),
       respondToPermission: vi.fn(),
+      ignoreAttentionItem: vi.fn(),
     }));
     vi.doMock("@/lib/window-drag", () => ({
       startCurrentWindowDrag: vi.fn().mockResolvedValue(undefined),

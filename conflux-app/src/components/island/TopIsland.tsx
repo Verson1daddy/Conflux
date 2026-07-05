@@ -12,6 +12,7 @@ import { getLiveAgentInstances } from "@/lib/workspace-status";
 import { useIslandStore } from "@/stores/islandStore";
 import { useActivePermissions } from "@/stores/attentionStore";
 import { useAgentStore } from "@/stores/agentStore";
+import { Icon } from "@/components/ui/Icon";
 import { ConfluxBrandMark } from "./ConfluxBrandMark";
 
 interface TopIslandProps {
@@ -23,62 +24,6 @@ interface TopIslandProps {
 }
 
 export type TopIslandPresentation = "collapsed" | "expanded";
-
-function ChevronDownIcon({ color = "rgba(255,255,255,0.72)" }: { color?: string }) {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke={color}
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="m6 9 6 6 6-6" />
-    </svg>
-  );
-}
-
-function BellIcon({ color = "rgba(255,255,255,0.7)" }: { color?: string }) {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke={color}
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 8-3 8h18s-3-1-3-8" />
-      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-    </svg>
-  );
-}
-
-function PencilIcon({ color = "rgba(255,255,255,0.7)" }: { color?: string }) {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke={color}
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M12 20h9" />
-      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
-    </svg>
-  );
-}
 
 export const TopIsland: FC<TopIslandProps> = ({
   presentation = "collapsed",
@@ -229,7 +174,9 @@ export const TopIsland: FC<TopIslandProps> = ({
         onPointerDown={stopCapsuleActionPropagation}
         onPointerUp={stopCapsuleActionPropagation}
       >
-        <BellIcon />
+        <span style={{ color: "rgba(255,255,255,0.7)", display: "inline-flex" }}>
+          <Icon name="bell" size={14} />
+        </span>
         {unreadCount > 0 && (
           <span className="top-island-capsule__action-badge" aria-hidden="true" />
         )}
@@ -242,7 +189,9 @@ export const TopIsland: FC<TopIslandProps> = ({
         onPointerDown={stopCapsuleActionPropagation}
         onPointerUp={stopCapsuleActionPropagation}
       >
-        <PencilIcon />
+        <span style={{ color: "rgba(255,255,255,0.7)", display: "inline-flex" }}>
+          <Icon name="edit" size={14} />
+        </span>
       </button>
       <button
         type="button"
@@ -252,7 +201,9 @@ export const TopIsland: FC<TopIslandProps> = ({
         onPointerDown={stopCapsuleActionPropagation}
         onPointerUp={stopCapsuleActionPropagation}
       >
-        <ChevronDownIcon />
+        <span style={{ color: "rgba(255,255,255,0.72)", display: "inline-flex" }}>
+          <Icon name="chevron-down" size={14} />
+        </span>
       </button>
     </span>
   );

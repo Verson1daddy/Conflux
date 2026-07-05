@@ -13,6 +13,7 @@ import { getAgentTree } from "@/lib/tauri-bridge";
 import type { AgentStatus } from "@/types";
 import { useExitActions } from "@/hooks/useExitActions";
 import { useTerminalTheme } from "@/hooks/useTerminalTheme";
+import { Icon, type IconName } from "@/components/ui/Icon";
 import { ExitActionBar } from "./ExitActionBar";
 
 const XtermTerminal = lazy(() =>
@@ -25,17 +26,12 @@ const XtermTerminal = lazy(() =>
 
 type ShieldTier = "autonomous" | "smart" | "manual";
 
-const SHIELD_META: Record<ShieldTier, { icon: string; color: string; label: string; desc: string }> = {
+const SHIELD_META: Record<ShieldTier, { icon: IconName; color: string; label: string; desc: string }> = {
   autonomous: { icon: "shield-check", color: "#34C759", label: "Autonomous", desc: "All commands auto-approved" },
   smart:      { icon: "shield-alert", color: "#FFD60A", label: "Smart",      desc: "Only destructive actions need confirm" },
   manual:     { icon: "shield-off",   color: "#FF6B6B", label: "Manual",     desc: "Every tool call requires approval" },
 };
 const SHIELD_ORDER: ShieldTier[] = ["autonomous", "smart", "manual"];
-const SHIELD_PATHS: Record<string, string> = {
-  "shield-check": "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1zM9 12l2 2 4-4",
-  "shield-alert": "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1zM12 8v4M12 16h.01",
-  "shield-off":   "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z",
-};
 
 // ===== Palette (mirrors tailwind tokens so it matches design exactly) =====
 
@@ -67,28 +63,6 @@ const STATUS_META: Record<
   done: { color: COLORS.success, label: "Done" },
   error: { color: COLORS.error, label: "Error" },
 };
-
-// ===== Inline SVG icons (lucide subset) =====
-
-const Icon: FC<{ path: string; size?: number }> = ({ path, size = 14 }) => (
-  <svg
-    width={size}
-    height={size}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-  >
-    <path d={path} />
-  </svg>
-);
-
-const PATH_MINIMIZE = "M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7";
-const PATH_X = "M18 6 6 18M6 6l12 12";
-const PATH_TIMER = "M10 2h4M12 14l3-3M12 22a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z";
-const PATH_MSG = "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z";
 
 // ===== Props =====
 
@@ -255,6 +229,12 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
   );
 
   const statusMeta = STATUS_META[status] ?? STATUS_META.idle;
+  // 进程已退出（非 demo）时，标题状态胶囊不能再显示 Running/Thinking——退出后没有活进程，
+  // 显示绿色「Running」会误导用户以为 agent 还在跑（collapsed 卡片退出后已换成动作条）。
+  const isExited = Boolean(exitState) && !isDemo;
+  const displayMeta = isExited
+    ? { color: COLORS.textMuted, label: "Exited" }
+    : statusMeta;
 
   // ===== Closing animation state =====
   const [isClosing, setIsClosing] = useState(false);
@@ -345,9 +325,7 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
               onClick={() => setShieldOpen((v) => !v)}
               title={`Permissions: ${SHIELD_META[shieldTier].label}`}
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d={SHIELD_PATHS[SHIELD_META[shieldTier].icon]} />
-              </svg>
+              <Icon name={SHIELD_META[shieldTier].icon} size={16} />
             </button>
             {shieldOpen && (() => {
               // Portal to document.body — bypasses overflow:hidden AND the
@@ -385,9 +363,9 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
                         border: "none", cursor: "pointer",
                       }}
                     >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={meta.color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d={SHIELD_PATHS[meta.icon]} />
-                      </svg>
+                      <span style={{ color: meta.color, display: "inline-flex" }}>
+                        <Icon name={meta.icon} size={16} />
+                      </span>
                       <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 1 }}>
                         <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 12, fontWeight: 600, color: "#F2F2F2" }}>
                           {meta.label}
@@ -397,9 +375,9 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
                         </span>
                       </div>
                       {isSel && (
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={meta.color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="m9 12 2 2 4-4" />
-                        </svg>
+                        <span style={{ display: "inline-flex", color: meta.color }}>
+                          <Icon name="check" size={14} strokeWidth={2.5} />
+                        </span>
                       )}
                     </button>
                   );
@@ -409,14 +387,14 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
               );
             })()}
           </div>
-          {/* Running pill */}
+          {/* Status pill — 退出后降级为「Exited」，不再假装 Running */}
           <div
             className="flex items-center shrink-0"
             style={{
               gap: 6,
               padding: "4px 10px",
               borderRadius: 9999,
-              background: `${statusMeta.color}20`,
+              background: `${displayMeta.color}20`,
             }}
           >
             <span
@@ -424,7 +402,7 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
               style={{
                 width: 6,
                 height: 6,
-                background: statusMeta.color,
+                background: displayMeta.color,
               }}
             />
             <span
@@ -432,10 +410,10 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
                 fontFamily: "'Geist Sans',sans-serif",
                 fontSize: 11,
                 fontWeight: 500,
-                color: statusMeta.color,
+                color: displayMeta.color,
               }}
             >
-              {statusMeta.label}
+              {displayMeta.label}
             </span>
           </div>
           <button
@@ -444,7 +422,7 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
             onClick={handleClose}
             title="Minimize (Esc)"
           >
-            <Icon path={PATH_MINIMIZE} size={16} />
+            <Icon name="minimize" size={17} />
           </button>
           <button
             className="shrink-0 flex items-center justify-center"
@@ -452,7 +430,7 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
             onClick={handleClose}
             title="Close (Esc)"
           >
-            <Icon path={PATH_X} size={16} />
+            <Icon name="close" size={17} />
           </button>
         </div>
 
@@ -467,24 +445,10 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
               borderRight: `1px solid ${COLORS.borderSoft}`,
             }}
           >
-            {/* Sub-agents placeholder */}
-            <div style={{
-              flex: 1, display: "flex", flexDirection: "column",
-              alignItems: "center", justifyContent: "center", gap: 8,
-              borderBottom: `1px solid ${COLORS.borderSoft}`, padding: 16,
-            }}>
-              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#6B7280" strokeWidth="1.5">
-                <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
-                <circle cx="9" cy="7" r="4"/>
-                <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
-                <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-              </svg>
-              <span style={{ fontFamily: "'Geist Sans', sans-serif", fontSize: 12, color: "#6B7280", textAlign: "center" }}>
-                No sub-agents yet
-              </span>
-            </div>
-
-            {/* Agent tree — read from store, placeholder when empty */}
+            {/* Agent tree — read from store, placeholder when empty.
+                （原先此上方还有一个恒显示的「No sub-agents yet」占位块——即使真的有
+                子 agent 也永远显示，误导用户。已删除：下方 AGENT TREE 本就渲染完整的
+                子 agent 树，空时回退「No activity detected」。） */}
             <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
               <div
                 style={{
@@ -560,6 +524,7 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
                   instanceId={instanceId}
                   content={isDemo ? demoContent : undefined}
                   interactive
+                  inputDisabled={isExited}
                   subscribeToPty={!isDemo}
                   cardWidth={embedded ? undefined : 800}
                   onPtyExit={(p) =>
@@ -599,7 +564,7 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
             borderTop: `1px solid ${COLORS.borderSoft}`,
           }}
         >
-          <FooterItem icon={PATH_TIMER} label={instance?.created_at ? formatElapsed(Date.now() - instance.created_at) : "\u2014"} />
+          <FooterItem label={instance?.created_at ? formatElapsed(Date.now() - instance.created_at) : "\u2014"} />
           <div className="flex-1" />
           <button
             data-no-expand
@@ -620,7 +585,7 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
             title="Open discussion"
             aria-label="Open discussion"
           >
-            <Icon path={PATH_MSG} size={12} />
+            <Icon name="message" size={16} />
             <span
               style={{
                 fontFamily: "'Geist Sans',sans-serif",
@@ -686,12 +651,12 @@ const ExpandedAgentCard: FC<ExpandedAgentCardProps> = ({ instanceId, embedded = 
 
 // ===== Small footer helpers =====
 
-const FooterItem: FC<{ icon: string; label: string }> = ({ icon, label }) => (
+const FooterItem: FC<{ label: string }> = ({ label }) => (
   <div
     className="flex items-center"
     style={{ gap: 6, color: COLORS.textMuted }}
   >
-    <Icon path={icon} size={12} />
+    <Icon name="clock" size={12} />
     <span
       style={{
         fontFamily: "'Geist Sans',sans-serif",

@@ -19,6 +19,7 @@ import {
   DEFAULT_CARD_ACCENT_COLOR,
 } from "@/lib/agent-visuals";
 import { pickWorkingDirectory } from "@/lib/working-directory";
+import { Icon, type IconName } from "@/components/ui/Icon";
 import { useAgentStore } from "@/stores/agentStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import type { AdapterInfo, AdapterAuthStatus, AdapterId, AgentInstanceInfo, CardLayout } from "@/types";
@@ -81,72 +82,21 @@ interface AddAgentModalProps {
 interface VendorMeta {
   vendor: string;
   caption: string;
-  icon: (props: { size: number; color: string }) => JSX.Element;
+  icon: IconName;
 }
 
-const ICON_SPARKLES = ({ size, color }: { size: number; color: string }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="m12 3-1.9 5.8a2 2 0 0 1-1.287 1.288L3 12l5.8 1.9a2 2 0 0 1 1.288 1.287L12 21l1.9-5.8a2 2 0 0 1 1.287-1.288L21 12l-5.8-1.9a2 2 0 0 1-1.288-1.287Z" />
-    <path d="M5 3v4M3 5h4M19 17v4M17 19h4" />
-  </svg>
-);
-
-const ICON_TERMINAL = ({ size, color }: { size: number; color: string }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="m7 11 2-2-2-2" /><path d="M11 13h4" /><rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
-  </svg>
-);
-
-const ICON_GIT_BRANCH = ({ size, color }: { size: number; color: string }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <line x1="6" x2="6" y1="3" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" />
-    <path d="M18 9a9 9 0 0 1-9 9" />
-  </svg>
-);
-
-const ICON_SQUARE_CODE = ({ size, color }: { size: number; color: string }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect width="18" height="18" x="3" y="3" rx="2" /><path d="m10 10-2 2 2 2" /><path d="m14 14 2-2-2-2" />
-  </svg>
-);
-
-const ICON_BOX = ({ size, color }: { size: number; color: string }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
-    <path d="m3.3 7 8.7 5 8.7-5" /><path d="M12 22V12" />
-  </svg>
-);
-
-const ICON_FOLDER = ({ size, color }: { size: number; color: string }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-  </svg>
-);
-
-const ICON_X = ({ size, color }: { size: number; color: string }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M18 6 6 18M6 6l12 12" />
-  </svg>
-);
-
-const ICON_ARROW_RIGHT = ({ size, color }: { size: number; color: string }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M5 12h14M12 5l7 7-7 7" />
-  </svg>
-);
-
 const VENDOR_META: Record<string, VendorMeta> = {
-  "claude-code": { vendor: "anthropic", caption: "anthropic - flagship agent framework", icon: ICON_SPARKLES },
-  codex: { vendor: "openai", caption: "openai - code-focused reasoning", icon: ICON_TERMINAL },
-  aider: { vendor: "paul-gauthier", caption: "paul-gauthier - git-aware pair programmer", icon: ICON_GIT_BRANCH },
-  opencode: { vendor: "opencode", caption: "opencode - PR review & codebase triage", icon: ICON_SQUARE_CODE },
+  "claude-code": { vendor: "anthropic", caption: "anthropic - flagship agent framework", icon: "sparkles" },
+  codex: { vendor: "openai", caption: "openai - code-focused reasoning", icon: "terminal" },
+  aider: { vendor: "paul-gauthier", caption: "paul-gauthier - git-aware pair programmer", icon: "git-branch" },
+  opencode: { vendor: "opencode", caption: "opencode - PR review & codebase triage", icon: "code" },
 };
 
 function metaFor(adapterId: string): VendorMeta {
   return VENDOR_META[adapterId] ?? {
     vendor: adapterId,
     caption: `${adapterId} - custom adapter`,
-    icon: ICON_BOX,
+    icon: "box",
   };
 }
 
@@ -488,7 +438,7 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
             }}
             aria-label="Close"
           >
-            <ICON_X size={16} color="currentColor" />
+            <Icon name="close" size={17} />
           </button>
         </div>
 
@@ -522,7 +472,6 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
             const renderAdapterRow = (adapter: AdapterInfo) => {
               const isSelected = selectedId === adapter.id;
               const meta = metaFor(adapter.id);
-              const IconComp = meta.icon;
               const authStatus = authStatuses.get(adapter.id);
               const runtimeBadges = buildAdapterRuntimeBadges(authStatus, backendPreviewOnly);
               return (
@@ -548,7 +497,9 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
                       background: isSelected ? "rgba(184,212,227,0.15)" : "rgba(255,255,255,0.055)",
                     }}
                   >
-                    <IconComp size={18} color={isSelected ? "#B8D4E3" : "#B8B3B0"} />
+                    <span style={{ color: isSelected ? "#B8D4E3" : "#B8B3B0", display: "inline-flex" }}>
+                      <Icon name={meta.icon} size={18} />
+                    </span>
                   </div>
 
                   {/* Name + caption */}
@@ -658,16 +609,16 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
                       <span style={sectionLabelStyle}>
                         {showAllExpanded ? "Hide other frameworks" : "Show all frameworks"}
                       </span>
-                      <svg
-                        width={12} height={12} viewBox="0 0 24 24" fill="none"
-                        stroke="#6B7280" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                      <span
                         style={{
+                          color: "#6B7280",
+                          display: "inline-flex",
                           transform: showAllExpanded ? "rotate(180deg)" : "rotate(0deg)",
                           transition: "transform 0.15s",
                         }}
                       >
-                        <path d="m6 9 6 6 6-6" />
-                      </svg>
+                        <Icon name="chevron-down" size={14} />
+                      </span>
                     </button>
                     {showAllExpanded && (
                       <div className="flex flex-col" style={{ gap: 8 }}>
@@ -683,7 +634,9 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
           {/* Working Directory section */}
           <div className="flex flex-col" style={{ gap: 10, marginTop: 6 }}>
             <div className="flex items-center" style={{ gap: 8 }}>
-              <ICON_FOLDER size={12} color="#6B7280" />
+              <span style={{ color: "#6B7280", display: "inline-flex" }}>
+                <Icon name="folder" size={14} />
+              </span>
               <span
                 style={{
                   fontFamily: "'Geist Sans', sans-serif",
@@ -728,7 +681,7 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
                 title="Choose working directory"
                 aria-label="Choose working directory"
               >
-                <ICON_FOLDER size={14} color="currentColor" />
+                <Icon name="folder" size={16} />
               </button>
             </div>
             <span
@@ -871,7 +824,7 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
               cursor: createDisabled ? "not-allowed" : "pointer",
             }}
           >
-            <ICON_ARROW_RIGHT size={14} color="#0A0F15" />
+            <Icon name="arrow-right" size={16} strokeWidth={2.5} />
             <span>{creating ? "Creating..." : "Create Agent"}</span>
           </button>
         </div>
@@ -908,11 +861,9 @@ const AddAgentModal: FC<AddAgentModalProps> = ({ visible, onClose }) => {
                     display: "flex", alignItems: "center", justifyContent: "center",
                   }}
                 >
-                  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#FFB800" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="12" cy="12" r="10" />
-                    <line x1="12" x2="12" y1="8" y2="12" />
-                    <line x1="12" x2="12.01" y1="16" y2="16" />
-                  </svg>
+                  <span style={{ color: "#FFB800", display: "inline-flex" }}>
+                    <Icon name="info" size={16} />
+                  </span>
                 </div>
                 <span
                   style={{

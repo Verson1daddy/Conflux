@@ -4,7 +4,17 @@
 // Settings mix local UI preferences with backend adapter registry reads.
 
 import { type FC, useEffect, useMemo, useState } from "react";
+import { open as openExternal } from "@tauri-apps/plugin-shell";
+import { Icon, type IconName } from "@/components/ui/Icon";
 import { useAgentStore } from "@/stores/agentStore";
+
+// GitHub 仓库 + 联系邮箱（About tab 两个链接的真实落点）。
+const CONFLUX_REPO_URL = "https://github.com/Verson1daddy/Conflux";
+const CONFLUX_CONTACT_MAILTO = "mailto:2287710676@qq.com";
+function openExternalSafe(target: string): void {
+  // 非 Tauri（dev 浏览器）invoke 会抛——best-effort，失败静默不炸 UI。
+  void openExternal(target).catch(() => {});
+}
 import { useIslandStore } from "@/stores/islandStore";
 import { listAdapters, switchIslandMode } from "@/lib/tauri-bridge";
 import { getTerminalThemes, setTerminalTheme } from "@/lib/terminal-theme";
@@ -18,124 +28,41 @@ import type { AdapterInfo, CloseAction, IslandMode } from "@/types";
 interface SettingsPanelProps {
   visible: boolean;
   onClose: () => void;
+  /** 打开时定位到的初始 tab（如搜索面板点 adapter 结果 → "adapters"）。省略=frameworks。 */
+  initialTab?: SettingsTab;
 }
 
-type SettingsTab = "frameworks" | "permissions" | "appearance" | "adapters" | "about";
+export type SettingsTab = "frameworks" | "permissions" | "appearance" | "adapters" | "about";
 type PermissionTier = "manual" | "smart" | "autonomous";
 type CloseActionPreference = "ask" | CloseAction;
 
 interface NavItem {
   id: SettingsTab;
   label: string;
-  icon: FC<{ size: number; color: string }>;
+  icon: IconName;
 }
 
 interface TierCard {
   id: PermissionTier;
   name: string;
   description: string;
-  icon: FC<{ size: number; color: string }>;
+  icon: IconName;
 }
-
-// ===== Icons =====
-
-const ICON_SHIELD: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />
-    <path d="m9 12 2 2 4-4" />
-  </svg>
-);
-
-const ICON_PALETTE: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="13.5" cy="6.5" r=".5" fill={color} /><circle cx="17.5" cy="10.5" r=".5" fill={color} />
-    <circle cx="8.5" cy="7.5" r=".5" fill={color} /><circle cx="6.5" cy="12.5" r=".5" fill={color} />
-    <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z" />
-  </svg>
-);
-
-const ICON_PLUG: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M12 22v-5" /><path d="M9 8V2" /><path d="M15 8V2" /><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z" />
-  </svg>
-);
-
-const ICON_INFO: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="12" cy="12" r="10" /><path d="M12 16v-4M12 8h.01" />
-  </svg>
-);
-
-const ICON_HAND: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2" /><path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2" />
-    <path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8" />
-    <path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15" />
-  </svg>
-);
-
-const ICON_SPARKLES: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="m12 3-1.9 5.8a2 2 0 0 1-1.287 1.288L3 12l5.8 1.9a2 2 0 0 1 1.288 1.287L12 21l1.9-5.8a2 2 0 0 1 1.287-1.288L21 12l-5.8-1.9a2 2 0 0 1-1.288-1.287Z" />
-    <path d="M5 3v4M3 5h4M19 17v4M17 19h4" />
-  </svg>
-);
-
-const ICON_ZAP: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z" />
-  </svg>
-);
-
-const ICON_CHECK: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="12" cy="12" r="10" /><path d="m9 12 2 2 4-4" />
-  </svg>
-);
-
-const ICON_X: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M18 6 6 18M6 6l12 12" />
-  </svg>
-);
-
-const ICON_LAYERS: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" />
-    <path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65" />
-    <path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65" />
-  </svg>
-);
-
-// ===== Additional icons for About =====
-
-const ICON_GITHUB: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4" />
-    <path d="M9 18c-4.51 2-5-2-7-2" />
-  </svg>
-);
-
-const ICON_HEART: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z" />
-  </svg>
-);
 
 // ===== Data =====
 
 const NAV_ITEMS: NavItem[] = [
-  { id: "frameworks", label: "Frameworks", icon: ICON_LAYERS },
-  { id: "permissions", label: "Permissions", icon: ICON_SHIELD },
-  { id: "appearance", label: "Appearance", icon: ICON_PALETTE },
-  { id: "adapters", label: "Adapters", icon: ICON_PLUG },
-  { id: "about", label: "About", icon: ICON_INFO },
+  { id: "frameworks", label: "Frameworks", icon: "layers" },
+  { id: "permissions", label: "Permissions", icon: "shield" },
+  { id: "appearance", label: "Appearance", icon: "palette" },
+  { id: "adapters", label: "Adapters", icon: "plug" },
+  { id: "about", label: "About", icon: "info" },
 ];
 
 const TIER_CARDS: TierCard[] = [
-  { id: "manual", name: "Manual", description: "Confirm every tool call. Maximum oversight, slowest flow.", icon: ICON_HAND },
-  { id: "smart", name: "Smart", description: "Auto-approve safe ops. Prompts only on destructive actions.", icon: ICON_SPARKLES },
-  { id: "autonomous", name: "Autonomous", description: "Hands-off execution. Agent owns the full loop until it calls done.", icon: ICON_ZAP },
+  { id: "manual", name: "Manual", description: "Confirm every tool call. Maximum oversight, slowest flow.", icon: "hand" },
+  { id: "smart", name: "Smart", description: "Auto-approve safe ops. Prompts only on destructive actions.", icon: "sparkles" },
+  { id: "autonomous", name: "Autonomous", description: "Hands-off execution. Agent owns the full loop until it calls done.", icon: "zap" },
 ];
 
 // ===== Appearance data =====
@@ -167,8 +94,9 @@ const TECH_STACK = [
 
 // ===== Component =====
 
-const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
-  const [activeTab, setActiveTab] = useState<SettingsTab>("frameworks");
+const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose, initialTab }) => {
+  // 面板每次打开都重新挂载（App 条件渲染），故初始 tab 直接由 prop 播种即可，无需 effect。
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? "frameworks");
   const terminalTheme = useTerminalTheme();
   const [tier, setTier] = useState<PermissionTier>("smart");
 
@@ -311,7 +239,7 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
             aria-label="Close"
             title="Close settings (Esc)"
           >
-            <ICON_X size={16} color="currentColor" />
+            <Icon name="close" size={17} />
           </button>
         </div>
 
@@ -327,7 +255,6 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
           >
             {NAV_ITEMS.map((item) => {
               const isActive = activeTab === item.id;
-              const IconComp = item.icon;
               return (
                 <button
                   key={item.id}
@@ -342,7 +269,9 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                     border: isActive ? "1px solid #B8D4E3" : "1px solid transparent",
                   }}
                 >
-                  <IconComp size={15} color={isActive ? "#B8D4E3" : "#6B7280"} />
+                  <span className="shrink-0 inline-flex" style={{ color: isActive ? "#B8D4E3" : "#6B7280" }}>
+                    <Icon name={item.icon} size={16} />
+                  </span>
                   <span
                     style={{
                       fontFamily: "'Geist Sans',sans-serif",
@@ -457,7 +386,11 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                           }}
                           title={adapter.isFavorite ? "Remove from favorites" : "Add to favorites"}
                         >
-                          {adapter.isFavorite && <ICON_CHECK size={12} color="#0A0F15" />}
+                          {adapter.isFavorite && (
+                            <span className="inline-flex" style={{ color: "#0A0F15" }}>
+                              <Icon name="check" size={12} />
+                            </span>
+                          )}
                         </button>
 
                         <div className="flex-1 min-w-0 flex flex-col" style={{ gap: 2 }}>
@@ -542,7 +475,6 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                 <div className="flex flex-col" style={{ gap: 10 }}>
                   {TIER_CARDS.map((card) => {
                     const isSelected = tier === card.id;
-                    const IconComp = card.icon;
                     return (
                       <button
                         key={card.id}
@@ -560,7 +492,9 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                           opacity: isSelected ? 1 : 0.72,
                         }}
                       >
-                        <IconComp size={22} color={isSelected ? "#B8D4E3" : "#B8B3B0"} />
+                        <span className="shrink-0 inline-flex" style={{ color: isSelected ? "#B8D4E3" : "#B8B3B0" }}>
+                          <Icon name={card.icon} size={22} />
+                        </span>
                         <div className="flex-1 min-w-0 flex flex-col" style={{ gap: 4 }}>
                           <span
                             style={{
@@ -582,7 +516,11 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                             {card.description}
                           </span>
                         </div>
-                        {isSelected && <ICON_CHECK size={18} color="#B8D4E3" />}
+                        {isSelected && (
+                          <span className="inline-flex" style={{ color: "#B8D4E3" }}>
+                            <Icon name="check" size={18} />
+                          </span>
+                        )}
                       </button>
                     );
                   })}
@@ -835,7 +773,9 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                             background: "rgba(255,255,255,0.055)",
                           }}
                         >
-                          <ICON_PLUG size={18} color="#B8B3B0" />
+                          <span className="inline-flex" style={{ color: "#B8B3B0" }}>
+                            <Icon name="plug" size={18} />
+                          </span>
                         </div>
                         <div className="flex-1 min-w-0 flex flex-col" style={{ gap: 3 }}>
                           <div className="flex items-center" style={{ gap: 8 }}>
@@ -944,11 +884,13 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
 
                 <div style={{ height: 1, background: "rgba(255,255,255,0.06)" }} />
 
-                {/* Links */}
+                {/* Links — 接线：原来两个 div 只有 cursor:pointer 无 onClick（死链）。 */}
                 <div className="flex" style={{ gap: 12 }}>
-                  <div
+                  <button
+                    type="button"
                     className="flex items-center"
                     title="Open GitHub repository"
+                    onClick={() => openExternalSafe(CONFLUX_REPO_URL)}
                     style={{
                       gap: 6, padding: "8px 14px", borderRadius: 8,
                       background: "rgba(255,255,255,0.04)",
@@ -956,14 +898,20 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                       cursor: "pointer",
                     }}
                   >
-                    <ICON_GITHUB size={14} color="#B8B3B0" />
+                    <span className="inline-flex" style={{ color: "#B8B3B0" }}>
+                      <Icon name="github" size={16} />
+                    </span>
                     <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 12, color: "#B8B3B0" }}>
                       GitHub
                     </span>
-                  </div>
-                  <div
+                  </button>
+                  {/* 原「Sponsor」无落点、且与项目「学生开源·不收钱·欢迎联系」定位相悖——
+                      改为真实可用的「Contact」邮件链接（作者联系邮箱）。 */}
+                  <button
+                    type="button"
                     className="flex items-center"
-                    title="Sponsor this project"
+                    title="Contact the author by email"
+                    onClick={() => openExternalSafe(CONFLUX_CONTACT_MAILTO)}
                     style={{
                       gap: 6, padding: "8px 14px", borderRadius: 8,
                       background: "rgba(255,255,255,0.04)",
@@ -971,11 +919,13 @@ const SettingsPanel: FC<SettingsPanelProps> = ({ visible, onClose }) => {
                       cursor: "pointer",
                     }}
                   >
-                    <ICON_HEART size={14} color="#B8B3B0" />
-                    <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 12, color: "#B8B3B0" }}>
-                      Sponsor
+                    <span className="inline-flex" style={{ color: "#B8B3B0" }}>
+                      <Icon name="heart" size={16} />
                     </span>
-                  </div>
+                    <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 12, color: "#B8B3B0" }}>
+                      Contact
+                    </span>
+                  </button>
                 </div>
 
                 <p style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 10, color: "#6B728080", margin: 0, lineHeight: 1.5 }}>

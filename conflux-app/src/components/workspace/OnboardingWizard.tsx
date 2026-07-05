@@ -8,6 +8,7 @@
 // On complete: persists favorites, primary, optionally creates first agent.
 
 import { type FC, useCallback, useEffect, useMemo, useState } from "react";
+import { Icon } from "@/components/ui/Icon";
 import { createAgentInstance, detectAdapterAuth } from "@/lib/tauri-bridge";
 import { getCreateDisabledReason } from "@/lib/adapter-runtime";
 import { useAgentStore } from "@/stores/agentStore";
@@ -47,32 +48,6 @@ function blockedAdapterStatus(adapterId: string, message: string): AdapterAuthSt
     session_message: "Session restore support is pending for V1 hardening",
   };
 }
-
-// ===== Inline SVG icons =====
-
-const CheckIcon: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-    <path d="m9 12 2 2 4-4" />
-  </svg>
-);
-
-const ArrowRightIcon: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M5 12h14M12 5l7 7-7 7" />
-  </svg>
-);
-
-const ArrowLeftIcon: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M19 12H5M12 19l-7-7 7-7" />
-  </svg>
-);
-
-const ChevronDownIcon: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="m6 9 6 6 6-6" />
-  </svg>
-);
 
 // ===== Component =====
 
@@ -397,7 +372,11 @@ const OnboardingWizard: FC<OnboardingWizardProps> = ({ visible = true, onComplet
                   border: isSel ? "none" : "1px solid rgba(255,255,255,0.15)",
                   transition: "background 0.15s",
                 }}>
-                  {isSel && <CheckIcon size={14} color="#0A0F15" />}
+                  {isSel && (
+                    <span style={{ color: "#0A0F15", display: "inline-flex" }}>
+                      <Icon name="check" size={14} />
+                    </span>
+                  )}
                 </div>
               </button>
             );
@@ -540,7 +519,9 @@ const OnboardingWizard: FC<OnboardingWizardProps> = ({ visible = true, onComplet
                   }}>
                     {currentAdapter?.name || "Select framework"}
                   </span>
-                  <ChevronDownIcon size={16} color="#6B7280" />
+                  <span style={{ color: "#6B7280", display: "inline-flex" }}>
+                    <Icon name="chevron-down" size={16} />
+                  </span>
                 </button>
                 {dropdownOpen && (
                   <div style={{
@@ -740,7 +721,9 @@ const OnboardingWizard: FC<OnboardingWizardProps> = ({ visible = true, onComplet
                 cursor: "pointer",
               }}
             >
-              <ArrowLeftIcon size={14} color="#B8B3B0" />
+              <span style={{ color: "#B8B3B0", display: "inline-flex" }}>
+                <Icon name="arrow-left" size={14} />
+              </span>
               <span>Back</span>
             </button>
           )}
@@ -819,7 +802,11 @@ const OnboardingWizard: FC<OnboardingWizardProps> = ({ visible = true, onComplet
                 {step === 2 && "Get Started"}
                 {step === 3 && (creating ? "Creating..." : "Create Agent")}
               </span>
-              {!(step === 3 && creating) && <ArrowRightIcon size={14} color="#0A0F15" />}
+              {!(step === 3 && creating) && (
+                <span style={{ color: "#0A0F15", display: "inline-flex" }}>
+                  <Icon name="arrow-right" size={16} />
+                </span>
+              )}
             </button>
           </div>
         </div>

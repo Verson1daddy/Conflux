@@ -5,6 +5,7 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { Icon } from "@/components/ui/Icon";
 import type {
   LayoutMode,
   PackSortStrategy,
@@ -45,13 +46,15 @@ const SIZE_PRESETS: { value: CardSizePreset; label: string }[] = [
 interface LayoutManagerProps {
   /** Callback to trigger AutoPack from the hook */
   onAutoPack: () => void;
+  /** Callback to arrange cards into a uniform grid + fit（点 Grid 时触发）。 */
+  onGridArrange?: () => void;
 }
 
 /**
  * LayoutManager renders a floating toolbar for layout mode switching and
  * AutoPack configuration. Positioned in the top-right corner of the canvas.
  */
-function LayoutManager({ onAutoPack }: LayoutManagerProps) {
+function LayoutManager({ onAutoPack, onGridArrange }: LayoutManagerProps) {
   // 批3 §3：整 store 解构会让任意 workspace 变更（zoom/pan 提交、selectCard、
   // pulseCard…）都重渲染工具条——改细粒度 selector（action 引用稳定）。
   const layoutMode = useWorkspaceStore((s) => s.layoutMode);
@@ -92,8 +95,12 @@ function LayoutManager({ onAutoPack }: LayoutManagerProps) {
       } else {
         setDropdownOpen(false);
       }
+      // Grid 不再只是锁拖拽——点它就把卡真正排进行列网格并 fit 进视口。
+      if (mode === "grid") {
+        onGridArrange?.();
+      }
     },
-    [setLayoutMode]
+    [setLayoutMode, onGridArrange]
   );
 
   // ===== AutoPack config change handlers =====
@@ -139,7 +146,7 @@ function LayoutManager({ onAutoPack }: LayoutManagerProps) {
           onClick={() => setCollapsed((v) => !v)}
           title={collapsed ? "Expand layout toolbar" : "Collapse layout toolbar"}
         >
-          {collapsed ? "◂" : "▸"}
+          <Icon name={collapsed ? "chevron-left" : "chevron-right"} size={14} />
         </button>
 
         {!collapsed && (
@@ -173,7 +180,7 @@ function LayoutManager({ onAutoPack }: LayoutManagerProps) {
                 onClick={toggleDropdown}
                 title="AutoPack settings"
               >
-                ▾
+                <Icon name="chevron-down" size={14} />
               </button>
             )}
           </>

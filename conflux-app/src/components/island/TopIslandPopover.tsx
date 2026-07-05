@@ -14,8 +14,13 @@ import {
   px,
 } from "@/lib/compact-window-metrics";
 import { getLiveAgentInstances } from "@/lib/workspace-status";
-import { respondToPermission, setTopIslandPopoverHeight } from "@/lib/tauri-bridge";
+import {
+  respondToPermission,
+  ignoreAttentionItem,
+  setTopIslandPopoverHeight,
+} from "@/lib/tauri-bridge";
 import { executeJumpBack } from "@/lib/jump-back";
+import { formatPermissionSummary } from "@/lib/attention-format";
 import { useIslandStore } from "@/stores/islandStore";
 import { useActivePermissions } from "@/stores/attentionStore";
 import { useAgentStore } from "@/stores/agentStore";
@@ -114,6 +119,19 @@ export const TopIslandPopover: FC<TopIslandPopoverProps> = ({
   const primaryAgent = liveAgents[0];
   const replyTargetLabel = formatAgentLabel(primaryAgent);
 
+  // 权限请求的来源 agent 是否仍活着。孤儿权限（agent 已退出/关闭）无法再注入 Y/N，
+  // Allow/Deny 会静默失败并把请求永久卡在队列里——此时必须能「清除」而非「回应」。
+  const permissionAgent = useMemo(
+    () =>
+      permissionRequest
+        ? liveAgents.find(
+            (agent) => agent.instance_id === permissionRequest.instance_id
+          )
+        : undefined,
+    [liveAgents, permissionRequest]
+  );
+  const isPermissionOrphaned = Boolean(permissionRequest) && !permissionAgent;
+
   const visualState = useMemo(
     () =>
       resolveTopIslandState({
@@ -139,12 +157,6 @@ export const TopIslandPopover: FC<TopIslandPopoverProps> = ({
 
     return "No active agents or unread notifications.";
   }, [activeCount, permissionRequest, unreadNotification, visualState]);
-
-  const statusLine = useMemo(
-    () =>
-      `${activeCount} active / ${permissions.length} permission / ${unreadCount} unread`,
-    [activeCount, permissions.length, unreadCount]
-  );
 
   const bubblePosition = useMemo(() => {
     if (typeof window === "undefined") {
@@ -217,15 +229,11 @@ export const TopIslandPopover: FC<TopIslandPopoverProps> = ({
     unreadNotifications.length,
     replyDraft,
     summary,
-    statusLine,
+    isPermissionOrphaned,
   ]);
 
   async function handlePermissionDecision(decision: PermissionDecision) {
-    if (
-      !permissionRequest ||
-      !permissionRequest.interaction_id ||
-      pendingDecisionRef.current
-    ) {
+    if (!permissionRequest || pendingDecisionRef.current) {
       return;
     }
 
@@ -233,15 +241,39 @@ export const TopIslandPopover: FC<TopIslandPopoverProps> = ({
     setPendingDecision(decision);
 
     try {
-      // 唯一注入路径（MF-1）：注入 + 后端 resolve 对应 AttentionItem + emit 新快照。
-      // 不在前端移除，attentionStore 收到 attention_updated 后整体替换、自然丢弃已处置项。
-      await respondToPermission(
-        permissionRequest.instance_id,
-        permissionRequest.interaction_id,
-        decision
-      );
+      if (isPermissionOrphaned || !permissionRequest.interaction_id) {
+        // 孤儿权限（agent 已退出）/ 无 interaction：没有活着的 PTY 可注入 Y/N，
+        // 不假装回应——直接从注意力队列清除，避免请求永久卡住。
+        await ignoreAttentionItem(permissionRequest.attention_item_id);
+      } else {
+        // 唯一注入路径（MF-1）：注入 + 后端 resolve 对应 AttentionItem + emit 新快照。
+        // 不在前端移除，attentionStore 收到 attention_updated 后整体替换、自然丢弃已处置项。
+        await respondToPermission(
+          permissionRequest.instance_id,
+          permissionRequest.interaction_id,
+          decision
+        );
+      }
     } catch {
-      // Keep the request available so the user can retry from the bubble.
+      // 保留请求，用户可重试或点「清除请求」。
+    } finally {
+      pendingDecisionRef.current = false;
+      setPendingDecision(null);
+    }
+  }
+
+  // 逃生口：无条件从注意力队列清除本请求（不注入 agent）。用于孤儿权限，
+  // 或用户就是想忽略这条。走后端 ignore（落审计 + emit 新快照，前端不本地删）。
+  async function handleClearRequest() {
+    if (!permissionRequest || pendingDecisionRef.current) {
+      return;
+    }
+    pendingDecisionRef.current = true;
+    setPendingDecision("deny");
+    try {
+      await ignoreAttentionItem(permissionRequest.attention_item_id);
+    } catch {
+      /* 后端不可用（demo）：静默，快照不变 */
     } finally {
       pendingDecisionRef.current = false;
       setPendingDecision(null);
@@ -262,16 +294,32 @@ export const TopIslandPopover: FC<TopIslandPopoverProps> = ({
   }
 
   function renderDetailsBody() {
+    // 权限态：给用户真正要看的——哪个 agent、请求什么、是否已成孤儿——
+    // 而不是「Mode: Top-centered capsule」这类内部调试字段。
+    if (visualState === "permission" && permissionRequest) {
+      return (
+        <div className="top-island-bubble__body">
+          <div className="top-island-bubble__summary-row">
+            <span className="top-island-bubble__label">Agent</span>
+            <span className="top-island-bubble__value">
+              {isPermissionOrphaned
+                ? "已退出（孤儿请求）"
+                : formatAgentLabel(permissionAgent)}
+            </span>
+          </div>
+          <p className="top-island-bubble__summary">
+            {formatPermissionSummary(permissionRequest.payload_summary)}
+          </p>
+          {isPermissionOrphaned && (
+            <p className="top-island-bubble__hint">
+              请求它的 agent 已经退出，无法再回应——点「清除请求」把它移出队列。
+            </p>
+          )}
+        </div>
+      );
+    }
     return (
       <div className="top-island-bubble__body">
-        <div className="top-island-bubble__summary-row">
-          <span className="top-island-bubble__label">Mode</span>
-          <span className="top-island-bubble__value">Top-centered capsule</span>
-        </div>
-        <div className="top-island-bubble__summary-row">
-          <span className="top-island-bubble__label">Status</span>
-          <span className="top-island-bubble__value">{statusLine}</span>
-        </div>
         <p className="top-island-bubble__summary">{summary}</p>
       </div>
     );
@@ -391,22 +439,36 @@ export const TopIslandPopover: FC<TopIslandPopoverProps> = ({
 
       {permissionRequest && (
         <div className="top-island-bubble__permission-actions">
-          <button
-            type="button"
-            onClick={() => void handlePermissionDecision("approve")}
-            className="top-island-popover__button top-island-bubble__button top-island-popover__button--primary top-island-bubble__button--primary"
-            disabled={pendingDecision !== null}
-          >
-            Allow
-          </button>
-          <button
-            type="button"
-            onClick={() => void handlePermissionDecision("deny")}
-            className="top-island-popover__button top-island-bubble__button top-island-popover__button--secondary top-island-bubble__button--secondary"
-            disabled={pendingDecision !== null}
-          >
-            Deny
-          </button>
+          {isPermissionOrphaned ? (
+            // 孤儿权限：Allow/Deny 无处可发，主操作直接是「清除请求」。
+            <button
+              type="button"
+              onClick={() => void handleClearRequest()}
+              className="top-island-popover__button top-island-bubble__button top-island-popover__button--primary top-island-bubble__button--primary"
+              disabled={pendingDecision !== null}
+            >
+              清除请求
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => void handlePermissionDecision("approve")}
+                className="top-island-popover__button top-island-bubble__button top-island-popover__button--primary top-island-bubble__button--primary"
+                disabled={pendingDecision !== null}
+              >
+                Allow
+              </button>
+              <button
+                type="button"
+                onClick={() => void handlePermissionDecision("deny")}
+                className="top-island-popover__button top-island-bubble__button top-island-popover__button--secondary top-island-bubble__button--secondary"
+                disabled={pendingDecision !== null}
+              >
+                Deny
+              </button>
+            </>
+          )}
           {permissionRequest.jump_back_target_id && (
             <button
               type="button"
@@ -417,6 +479,18 @@ export const TopIslandPopover: FC<TopIslandPopoverProps> = ({
               className="top-island-popover__button top-island-bubble__button top-island-popover__button--secondary top-island-bubble__button--secondary"
             >
               Jump
+            </button>
+          )}
+          {!isPermissionOrphaned && (
+            // 活跃权限也给个逃生口：卡住 / 就是想忽略时，清出队列而不回应 agent。
+            <button
+              type="button"
+              onClick={() => void handleClearRequest()}
+              className="top-island-popover__button top-island-bubble__button top-island-popover__button--secondary top-island-bubble__button--secondary"
+              disabled={pendingDecision !== null}
+              title="从注意力队列移除本请求，不向 agent 注入回应"
+            >
+              清除
             </button>
           )}
         </div>
@@ -434,8 +508,9 @@ export const TopIslandPopover: FC<TopIslandPopoverProps> = ({
           type="button"
           onClick={onClose}
           className="top-island-popover__button top-island-bubble__button top-island-popover__button--secondary top-island-bubble__button--secondary"
+          title="收起浮层（不影响队列里的请求）"
         >
-          Dismiss
+          Close
         </button>
       </div>
     </div>

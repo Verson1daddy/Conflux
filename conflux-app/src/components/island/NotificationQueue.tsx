@@ -4,12 +4,13 @@
 
 import { type FC, useState, useCallback } from "react";
 import { useIslandStore } from "@/stores/islandStore";
+import { Icon, type IconName } from "@/components/ui/Icon";
 import type { NotificationItem, NotificationLevel } from "@/types";
 
 // ===== 级别图标与颜色映射 =====
 
 interface LevelStyle {
-  icon: string;
+  icon: IconName;
   color: string;
   bgColor: string;
   pulse: boolean;
@@ -17,25 +18,25 @@ interface LevelStyle {
 
 const LEVEL_STYLES: Record<NotificationLevel, LevelStyle> = {
   info: {
-    icon: "\u2139",
+    icon: "info",
     color: "text-accent",
     bgColor: "bg-accent/10",
     pulse: false,
   },
   warning: {
-    icon: "\u26A0",
+    icon: "alert",
     color: "text-yellow-400",
     bgColor: "bg-yellow-400/10",
     pulse: false,
   },
   error: {
-    icon: "\u2716",
+    icon: "close",
     color: "text-red-400",
     bgColor: "bg-red-400/10",
     pulse: true,
   },
   permission_required: {
-    icon: "\uD83D\uDD12",
+    icon: "shield",
     color: "text-yellow-400",
     bgColor: "bg-yellow-400/10",
     pulse: true,
@@ -105,7 +106,7 @@ const NotificationItemRow: FC<NotificationItemRowProps> = ({
           `}
           aria-hidden="true"
         >
-          {style.icon}
+          <Icon name={style.icon} size={12} />
         </span>
 
         {/* 来源名称 */}

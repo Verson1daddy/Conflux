@@ -1,6 +1,10 @@
 import { useCallback, useEffect } from "react";
 import { useAgentStore } from "@/stores/agentStore";
-import { getAgentTree, listAgentInstances } from "@/lib/tauri-bridge";
+import {
+  getAgentTree,
+  getPinnedInstances,
+  listAgentInstances,
+} from "@/lib/tauri-bridge";
 import {
   onAgentStatusChanged,
   onSubAgentCompleted,
@@ -26,6 +30,15 @@ export function useAgentInstancesSync(options: UseAgentInstancesOptions = {}) {
     try {
       const list = await listAgentInstances();
       setInstances(list);
+
+      // 接线：从后端 pin 真源回填 is_pinned。原来 hydratePins/getPinnedInstances 从不被调，
+      // pin 重启后前端归零，而后端协调仍按 pinned 路由 → 前后端错位。
+      try {
+        const pinned = await getPinnedInstances();
+        useAgentStore.getState().hydratePins(pinned);
+      } catch {
+        // 后端未就绪 / 无 pin：忽略。
+      }
 
       if (!hydrateTrees) {
         return;

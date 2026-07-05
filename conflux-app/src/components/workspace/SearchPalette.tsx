@@ -6,45 +6,8 @@
 import { type FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getLiveAgentInstances } from "@/lib/workspace-status";
 import { useAgentStore } from "@/stores/agentStore";
-
-// ===== Icons =====
-
-const ICON_SEARCH: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" />
-  </svg>
-);
-
-const ICON_TERMINAL: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="m7 11 2-2-2-2" /><path d="M11 13h4" /><rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
-  </svg>
-);
-
-const ICON_PLUS: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M5 12h14M12 5v14" />
-  </svg>
-);
-
-const ICON_SETTINGS: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
-    <circle cx="12" cy="12" r="3" />
-  </svg>
-);
-
-const ICON_MSG: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-  </svg>
-);
-
-const ICON_PLUG: FC<{ size: number; color: string }> = ({ size, color }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M12 22v-5" /><path d="M9 8V2" /><path d="M15 8V2" /><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z" />
-  </svg>
-);
+import { Icon, type IconName } from "@/components/ui/Icon";
+import type { SettingsTab } from "./SettingsPanel";
 
 // ===== Types =====
 
@@ -53,7 +16,7 @@ interface SearchItem {
   type: "agent" | "adapter" | "command";
   title: string;
   subtitle: string;
-  icon: FC<{ size: number; color: string }>;
+  icon: IconName;
   action: () => void;
 }
 
@@ -61,7 +24,7 @@ interface SearchPaletteProps {
   visible: boolean;
   onClose: () => void;
   onAddAgent?: () => void;
-  onSettings?: () => void;
+  onSettings?: (tab?: SettingsTab) => void;
   onDiscussion?: () => void;
   onDiscussionReview?: () => void;
 }
@@ -114,16 +77,16 @@ const SearchPalette: FC<SearchPaletteProps> = ({
 
     // Commands
     if (onAddAgent) {
-      result.push({ id: "cmd-new-agent", type: "command", title: "New Agent", subtitle: "Create a new agent session", icon: ICON_PLUS, action: () => { onClose(); onAddAgent(); } });
+      result.push({ id: "cmd-new-agent", type: "command", title: "New Agent", subtitle: "Create a new agent session", icon: "plus", action: () => { onClose(); onAddAgent(); } });
     }
     if (onSettings) {
-      result.push({ id: "cmd-settings", type: "command", title: "Settings", subtitle: "Open settings panel", icon: ICON_SETTINGS, action: () => { onClose(); onSettings(); } });
+      result.push({ id: "cmd-settings", type: "command", title: "Settings", subtitle: "Open settings panel", icon: "settings", action: () => { onClose(); onSettings(); } });
     }
     if (onDiscussion) {
-      result.push({ id: "cmd-discussion", type: "command", title: "New Discussion", subtitle: "Start a multi-agent discussion", icon: ICON_MSG, action: () => { onClose(); onDiscussion(); } });
+      result.push({ id: "cmd-discussion", type: "command", title: "New Discussion", subtitle: "Start a multi-agent discussion", icon: "message", action: () => { onClose(); onDiscussion(); } });
     }
     if (onDiscussionReview) {
-      result.push({ id: "cmd-discussion-review", type: "command", title: "Last Discussion Review", subtitle: "Open the most recently saved discussion review", icon: ICON_MSG, action: () => { onClose(); onDiscussionReview(); } });
+      result.push({ id: "cmd-discussion-review", type: "command", title: "Last Discussion Review", subtitle: "Open the most recently saved discussion review", icon: "message", action: () => { onClose(); onDiscussionReview(); } });
     }
 
     // Agent instances
@@ -133,7 +96,7 @@ const SearchPalette: FC<SearchPaletteProps> = ({
         type: "agent",
         title: inst.display_name ? `${inst.adapter_name} · ${inst.display_name}` : inst.adapter_name,
         subtitle: `${inst.instance_id.slice(0, 8)}… · ${inst.status}`,
-        icon: ICON_TERMINAL,
+        icon: "terminal",
         action: () => { onClose(); setExpandedCard(inst.instance_id); },
       });
     });
@@ -150,8 +113,8 @@ const SearchPalette: FC<SearchPaletteProps> = ({
         type: "adapter",
         title: a.name,
         subtitle: `${a.vendor} · adapter`,
-        icon: ICON_PLUG,
-        action: () => { /* navigate to adapters tab in settings */ onClose(); onSettings?.(); },
+        icon: "plug",
+        action: () => { onClose(); onSettings?.("adapters"); },
       });
     }
 
@@ -235,7 +198,6 @@ const SearchPalette: FC<SearchPaletteProps> = ({
   const renderItem = (item: SearchItem) => {
     const idx = globalIdx++;
     const isSel = idx === selectedIdx;
-    const Icon = item.icon;
     return (
       <button
         key={item.id}
@@ -253,7 +215,9 @@ const SearchPalette: FC<SearchPaletteProps> = ({
           width: 28, height: 28, borderRadius: 6,
           background: isSel ? "rgba(184,212,227,0.12)" : "rgba(255,255,255,0.05)",
         }}>
-          <Icon size={14} color={isSel ? "#B8D4E3" : "#6B7280"} />
+          <span style={{ color: isSel ? "#B8D4E3" : "#6B7280", display: "inline-flex" }}>
+            <Icon name={item.icon} size={14} />
+          </span>
         </div>
         <div className="flex-1 min-w-0 flex flex-col" style={{ gap: 2 }}>
           <span className="truncate" style={{
@@ -319,7 +283,9 @@ const SearchPalette: FC<SearchPaletteProps> = ({
       >
         {/* Search input row */}
         <div className="flex items-center shrink-0" style={{ padding: "16px 20px", gap: 12 }}>
-          <ICON_SEARCH size={18} color="#6B7280" />
+          <span style={{ color: "#6B7280", display: "inline-flex" }}>
+            <Icon name="search" size={18} />
+          </span>
           <input
             ref={inputRef}
             type="text"
@@ -356,7 +322,9 @@ const SearchPalette: FC<SearchPaletteProps> = ({
         >
           {grouped.flat.length === 0 ? (
             <div className="flex flex-col items-center justify-center" style={{ padding: "40px 0", gap: 8 }}>
-              <ICON_SEARCH size={24} color="#6B728060" />
+              <span style={{ color: "#6B728060", display: "inline-flex" }}>
+                <Icon name="search" size={28} />
+              </span>
               <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 13, color: "#6B7280" }}>
                 No results for "{query}"
               </span>

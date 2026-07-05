@@ -41,7 +41,10 @@ function publishNotification(
   void showSystemNotification({
     title: notification.source_adapter_name || "Conflux",
     body: notification.content,
-    tag: notification.id,
+    // OS 去重 tag 必须在两个 webview（主窗 + 灵动岛窗）里算出一致值，否则同一事件
+    // 会弹两条系统 toast。notification.id 含 Math.random()（每窗不同）不能用——改用
+    // 事件稳定字段派生（与 permission/expiry 用 request.id / attention_item_id 同思路）。
+    tag: `${notification.level}:${notification.source_instance_id}:${notification.created_at}`,
   });
 }
 

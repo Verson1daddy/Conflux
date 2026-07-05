@@ -1,5 +1,6 @@
 import { type FC, useEffect, useState } from "react";
 import type { CloseAction } from "@/types";
+import { Icon } from "@/components/ui/Icon";
 
 interface CloseConfirmModalProps {
   visible: boolean;
@@ -189,18 +190,9 @@ const CloseConfirmModal: FC<CloseConfirmModalProps> = ({
             }}
           >
             {remember && (
-              <svg
-                width="10"
-                height="10"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="#B8D4E3"
-                strokeWidth="3"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M20 6 9 17l-5-5" />
-              </svg>
+              <span style={{ color: "#B8D4E3", display: "flex" }}>
+                <Icon name="check" size={10} strokeWidth={3} />
+              </span>
             )}
           </span>
           <span

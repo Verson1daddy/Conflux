@@ -23,6 +23,8 @@ import type { CardLayout, AgentStatus, Position, LayoutMode } from "@/types";
 import { useExitActions } from "@/hooks/useExitActions";
 import { useTerminalTheme } from "@/hooks/useTerminalTheme";
 import { ExitActionBar } from "./ExitActionBar";
+import { Icon } from "@/components/ui/Icon";
+import type { IconName } from "@/components/ui/Icon";
 const XtermTerminal = lazy(() =>
   import("./XtermTerminal").then((module) => ({
     default: module.XtermTerminal,
@@ -47,20 +49,13 @@ function preloadExpandedChunk() {
 
 type ShieldTier = "autonomous" | "smart" | "manual";
 
-const SHIELD_META: Record<ShieldTier, { icon: string; color: string; label: string; desc: string }> = {
+const SHIELD_META: Record<ShieldTier, { icon: IconName; color: string; label: string; desc: string }> = {
   autonomous: { icon: "shield-check", color: "#34C759", label: "Autonomous", desc: "All commands auto-approved" },
   smart:      { icon: "shield-alert", color: "#FFD60A", label: "Smart",      desc: "Only destructive actions need confirm" },
   manual:     { icon: "shield-off",   color: "#FF6B6B", label: "Manual",     desc: "Every tool call requires approval" },
 };
 
 const SHIELD_ORDER: ShieldTier[] = ["autonomous", "smart", "manual"];
-
-// Shield SVG paths (lucide subset)
-const SHIELD_PATHS: Record<string, string> = {
-  "shield-check": "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1zM9 12l2 2 4-4",
-  "shield-alert": "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1zM12 8v4M12 16h.01",
-  "shield-off":   "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z",
-};
 
 // ===== Vendor badge mapping =====
 
@@ -875,9 +870,7 @@ function AgentCardImpl({
             onClick={(e) => { e.stopPropagation(); setShieldOpen((v) => !v); }}
             title={`Permissions: ${SHIELD_META[shieldTier].label}`}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d={SHIELD_PATHS[SHIELD_META[shieldTier].icon]} />
-            </svg>
+            <Icon name={SHIELD_META[shieldTier].icon} size={16} />
           </button>
           {shieldOpen && (() => {
             // Portal to document.body — bypasses overflow:hidden on the
@@ -913,9 +906,9 @@ function AgentCardImpl({
                       border: "none", cursor: "pointer",
                     }}
                   >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={meta.color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d={SHIELD_PATHS[meta.icon]} />
-                    </svg>
+                    <span style={{ color: meta.color, display: "inline-flex" }}>
+                      <Icon name={meta.icon} size={16} />
+                    </span>
                     <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 1 }}>
                       <span style={{ fontFamily: "'Geist Sans',sans-serif", fontSize: 12, fontWeight: 600, color: "#F2F2F2" }}>
                         {meta.label}
@@ -925,9 +918,9 @@ function AgentCardImpl({
                       </span>
                     </div>
                     {isSel && (
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={meta.color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="m9 12 2 2 4-4" />
-                      </svg>
+                      <span style={{ color: meta.color, display: "inline-flex" }}>
+                        <Icon name="check" size={14} strokeWidth={2.5} />
+                      </span>
                     )}
                   </button>
                 );
@@ -951,9 +944,7 @@ function AgentCardImpl({
           title="Expand card to focused view (double-click also works)"
           aria-label="Expand card to focused view"
         >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
-          </svg>
+          <Icon name="maximize" size={13} />
         </button>
         <button
           data-no-expand
@@ -977,9 +968,7 @@ function AgentCardImpl({
           title="Close agent (destroy PTY process)"
           aria-label="Close agent"
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M18 6 6 18M6 6l12 12" />
-          </svg>
+          <Icon name="close" size={14} />
         </button>
         <button
           data-no-expand

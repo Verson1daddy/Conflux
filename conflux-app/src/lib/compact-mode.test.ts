@@ -300,23 +300,32 @@ async function renderSidebarAssistantPanel(input: {
       selector({
         instances:
           input.instances ??
-          new Map([
-            [
-              "agent-1",
-              {
-                instance_id: "agent-1",
-                name: "Research Alpha",
-                created_at: Date.now() - 25_000,
-                status: "coding",
-              },
-            ],
-          ]),
+          // 一条待处理权限意味着它的来源 agent 还活着（ended_at=null）——默认为每条权限
+          // 造一个活体实例，Sidebar 才会渲染 Allow/Deny（否则新的孤儿检测会走清除态）。
+          new Map(
+            (input.permissions ?? []).map((permission) => {
+              const instanceId = permission.instance_id ?? "agent-1";
+              return [
+                instanceId,
+                {
+                  instance_id: instanceId,
+                  name: "Research Alpha",
+                  created_at: Date.now() - 25_000,
+                  last_activity_at: Date.now() - 5_000,
+                  status: "coding",
+                  ended_at: null,
+                  hidden: false,
+                },
+              ];
+            })
+          ),
       }),
   }));
   mockAttentionStore(input.permissions);
   vi.doMock("@/lib/tauri-bridge", () => ({
     focusAgentCard,
     respondToPermission: respondToPermissionMock,
+    ignoreAttentionItem: vi.fn().mockResolvedValue(undefined),
   }));
 
   try {
@@ -573,6 +582,7 @@ async function renderTopIslandPopoverWithIslandState(input: {
   anchor?: { x: number; y: number };
   viewport?: { innerWidth: number; innerHeight: number };
   respondToPermissionMock?: ReturnType<typeof vi.fn>;
+  ignoreAttentionItemMock?: ReturnType<typeof vi.fn>;
   onClose?: () => void;
 }) {
   vi.resetModules();
@@ -588,6 +598,8 @@ async function renderTopIslandPopoverWithIslandState(input: {
   const clearNotification = vi.fn();
   const respondToPermissionMock =
     input.respondToPermissionMock ?? vi.fn().mockResolvedValue(undefined);
+  const ignoreAttentionItemMock =
+    input.ignoreAttentionItemMock ?? vi.fn().mockResolvedValue(undefined);
 
   vi.doMock("@/stores/islandStore", () => ({
     useIslandStore: (
@@ -645,6 +657,7 @@ async function renderTopIslandPopoverWithIslandState(input: {
   mockAttentionStore(input.pendingPermissions);
   vi.doMock("@/lib/tauri-bridge", () => ({
     respondToPermission: respondToPermissionMock,
+    ignoreAttentionItem: ignoreAttentionItemMock,
   }));
 
   try {
@@ -667,6 +680,7 @@ async function renderTopIslandPopoverWithIslandState(input: {
       removePermissionRequest,
       renderer,
       respondToPermissionMock,
+      ignoreAttentionItemMock,
     };
   } catch (error) {
     vi.doUnmock("@/stores/islandStore");
@@ -2226,7 +2240,6 @@ describe("compact-mode", () => {
 
     try {
       const json = JSON.stringify(renderer.toJSON());
-      expect(json).toContain("Attention");
       expect(json).toContain("Assistant rail");
       expect(json).toContain("Open workspace");
       expect(json).toContain("Dismiss");
@@ -2234,10 +2247,15 @@ describe("compact-mode", () => {
       expect(json).toContain("Needs attention");
 
       const buttons = renderer.root.findAllByType("button");
-      const openWorkspaceButton = buttons.find(
-        (node) => node.props.children === "Open workspace"
-      );
-      const dismissButton = buttons.find((node) => node.props.children === "Dismiss");
+      // "Open workspace" 现在含图标 → children 是 [<Icon/>, "Open workspace"] 数组，
+      // 不再是纯字符串；用文本包含判定兼容两种形态。
+      const hasChildText = (node: TestRenderer.ReactTestInstance, label: string) => {
+        const c = node.props.children;
+        if (c === label) return true;
+        return Array.isArray(c) && c.some((x) => typeof x === "string" && x.includes(label));
+      };
+      const openWorkspaceButton = buttons.find((node) => hasChildText(node, "Open workspace"));
+      const dismissButton = buttons.find((node) => hasChildText(node, "Dismiss"));
 
       expect(openWorkspaceButton).toBeDefined();
       expect(dismissButton).toBeDefined();
@@ -2464,8 +2482,9 @@ describe("compact-mode", () => {
       expect(popoverRoot.props.style["--top-island-popover-width"]).toBe("232px");
       expect(popoverRoot.props.style["--top-island-popover-measure-height"]).toBe("168px");
       expect(buttonLabels).toContain("Open workspace");
-      expect(buttonLabels).toContain("Dismiss");
-      expect(JSON.stringify(renderer.toJSON())).toContain("Mode");
+      expect(buttonLabels).toContain("Close");
+      // active/idle 态只显摘要（已去掉「Mode: Top-centered capsule」等内部调试行，改为用户可读内容）。
+      expect(JSON.stringify(renderer.toJSON())).toContain("Workspace ready");
     } finally {
       await act(async () => {
         renderer.unmount();
@@ -2567,6 +2586,8 @@ describe("compact-mode", () => {
         },
       ],
       unreadCount: 1,
+      // 权限的 agent 仍活着（agent-1），走正常 respond 路径；孤儿态另有测试覆盖。
+      activeStatuses: ["coding", "coding"],
       respondToPermissionMock: vi.fn().mockRejectedValue(new Error("permission failed")),
     });
 
@@ -2598,6 +2619,55 @@ describe("compact-mode", () => {
     }
   });
 
+  it("clears an orphaned permission (dead agent) instead of injecting a response", async () => {
+    const ignoreAttentionItemMock = vi.fn().mockResolvedValue(undefined);
+    const respondToPermissionMock = vi.fn().mockResolvedValue(undefined);
+    const { renderer } = await renderTopIslandPopoverWithIslandState({
+      pendingPermissions: [
+        {
+          id: "perm-orphan",
+          instance_id: "agent-gone",
+          action: "shell",
+          description: "Need approval",
+        },
+      ],
+      notifications: [],
+      unreadCount: 0,
+      // 不设 activeStatuses → 无活跃 agent → agent-gone 是孤儿。
+      respondToPermissionMock,
+      ignoreAttentionItemMock,
+    });
+
+    try {
+      const buttonLabels = renderer.root
+        .findAllByType("button")
+        .map((node) => node.props.children)
+        .filter((child) => typeof child === "string");
+      // 孤儿态：主操作是「清除请求」，不再显 Allow/Deny（无处可注入）。
+      expect(buttonLabels).toContain("清除请求");
+      expect(buttonLabels).not.toContain("Allow");
+
+      const clearButton = renderer.root
+        .findAllByType("button")
+        .find((node) => node.props.children === "清除请求");
+
+      await act(async () => {
+        clearButton?.props.onClick();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // 清除走 ignoreAttentionItem（移出队列），绝不假装向已死 agent 注入回应。
+      expect(ignoreAttentionItemMock).toHaveBeenCalledWith("attn-perm-orphan");
+      expect(respondToPermissionMock).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => {
+        renderer.unmount();
+      });
+      cleanupTopIslandMocks();
+    }
+  });
+
   it("suppresses repeated top island permission submissions while one is pending", async () => {
     let resolvePermission!: () => void;
     const respondToPermissionMock = vi.fn(
@@ -2620,6 +2690,8 @@ describe("compact-mode", () => {
       ],
       notifications: [],
       unreadCount: 0,
+      // agent-1 活着 → 走 respond 路径（本测试验证 pending 抑制）。
+      activeStatuses: ["coding", "coding"],
       respondToPermissionMock,
     });
 

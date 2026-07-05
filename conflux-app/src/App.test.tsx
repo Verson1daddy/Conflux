@@ -64,14 +64,21 @@ describe("App event bridge", () => {
     vi.doMock("./hooks/useIsFullscreen", () => ({
       useIsFullscreen: () => false,
     }));
-    vi.doMock("./stores/agentStore", () => ({
-      useAgentStore: (selector: (state: unknown) => unknown) =>
-        selector({
-          expandedCardId: null,
-          discussion: { open: false },
-          openDiscussionWizard,
-        }),
-    }));
+    vi.doMock("./stores/agentStore", () => {
+      const agentState = {
+        expandedCardId: null,
+        discussion: { open: false },
+        openDiscussionWizard,
+        primaryAdapter: null,
+        favoriteAdapters: new Set<string>(),
+      };
+      return {
+        useAgentStore: Object.assign(
+          (selector: (state: unknown) => unknown) => selector(agentState),
+          { getState: () => agentState }
+        ),
+      };
+    });
     vi.doMock("./stores/islandStore", () => ({
       useIslandStore: (selector: (state: unknown) => unknown) =>
         selector({ setMode: setIslandMode }),
@@ -148,14 +155,21 @@ describe("App event bridge", () => {
     vi.doMock("./hooks/useIsFullscreen", () => ({
       useIsFullscreen: () => false,
     }));
-    vi.doMock("./stores/agentStore", () => ({
-      useAgentStore: (selector: (state: unknown) => unknown) =>
-        selector({
-          expandedCardId: null,
-          discussion: { open: false },
-          openDiscussionWizard: vi.fn(),
-        }),
-    }));
+    vi.doMock("./stores/agentStore", () => {
+      const agentState = {
+        expandedCardId: null,
+        discussion: { open: false },
+        openDiscussionWizard: vi.fn(),
+        primaryAdapter: null,
+        favoriteAdapters: new Set<string>(),
+      };
+      return {
+        useAgentStore: Object.assign(
+          (selector: (state: unknown) => unknown) => selector(agentState),
+          { getState: () => agentState }
+        ),
+      };
+    });
     vi.doMock("./stores/islandStore", () => ({
       useIslandStore: (selector: (state: unknown) => unknown) =>
         selector({ setMode: vi.fn() }),
@@ -238,14 +252,21 @@ describe("App event bridge", () => {
     vi.doMock("./hooks/useIsFullscreen", () => ({
       useIsFullscreen: () => false,
     }));
-    vi.doMock("./stores/agentStore", () => ({
-      useAgentStore: (selector: (state: unknown) => unknown) =>
-        selector({
-          expandedCardId: null,
-          discussion: { open: false },
-          openDiscussionWizard: vi.fn(),
-        }),
-    }));
+    vi.doMock("./stores/agentStore", () => {
+      const agentState = {
+        expandedCardId: null,
+        discussion: { open: false },
+        openDiscussionWizard: vi.fn(),
+        primaryAdapter: null,
+        favoriteAdapters: new Set<string>(),
+      };
+      return {
+        useAgentStore: Object.assign(
+          (selector: (state: unknown) => unknown) => selector(agentState),
+          { getState: () => agentState }
+        ),
+      };
+    });
     vi.doMock("./stores/islandStore", () => ({
       useIslandStore: (selector: (state: unknown) => unknown) =>
         selector({ setMode: vi.fn() }),

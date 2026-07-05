@@ -8,6 +8,8 @@ import {
 import {
   quitApplication,
   showCompactModeOnly,
+  setPrimaryAdapterBackend,
+  setFavoriteAdapters as setFavoriteAdaptersBackend,
 } from "./lib/tauri-bridge";
 import { TOP_BAR_COMPACT_MODE } from "./lib/workspace-compact-mode";
 import { CloseConfirmModal } from "./components/workspace/CloseConfirmModal";
@@ -26,6 +28,7 @@ import { dispatchJumpTarget } from "./lib/jump-back";
 import { scrollTerminalToLine } from "./lib/xterm-registry";
 import { initTerminalThemes } from "./lib/terminal-theme";
 import type { CloseAction } from "./types";
+import type { SettingsTab } from "./components/workspace/SettingsPanel";
 
 const AddAgentModal = lazy(() =>
   import("./components/workspace/AddAgentModal").then((module) => ({
@@ -84,6 +87,12 @@ export default function App() {
   const [addAgentOpen, setAddAgentOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // 打开设置时的初始 tab（搜索面板点 adapter 结果 → "adapters"；其它入口 undefined=frameworks）。
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | undefined>(undefined);
+  const openSettings = useCallback((tab?: SettingsTab) => {
+    setSettingsTab(tab);
+    setSettingsOpen(true);
+  }, []);
   const [sendToOpen, setSendToOpen] = useState(false);
   const [sessionVisible, setSessionVisible] = useState(false);
   const [discussionReviewVisible, setDiscussionReviewVisible] = useState(false);
@@ -191,6 +200,19 @@ export default function App() {
     };
   }, []);
 
+  // 启动对账：把 localStorage 恢复的适配器偏好推回后端。后端 primary_adapter/favorites
+  // 是内存态（重启归零），协调路由读的就是它——不推的话，重启后主 agent 选择对后端无效
+  // 直到用户重选。setter 覆盖会话内改动，这里覆盖「重启后恢复」。
+  useEffect(() => {
+    const { primaryAdapter, favoriteAdapters } = useAgentStore.getState();
+    if (primaryAdapter) {
+      void setPrimaryAdapterBackend(primaryAdapter).catch(() => {});
+    }
+    if (favoriteAdapters.size > 0) {
+      void setFavoriteAdaptersBackend([...favoriteAdapters]).catch(() => {});
+    }
+  }, []);
+
   useEffect(() => {
     const onKey = async (e: KeyboardEvent) => {
       if (e.key === "F11") {
@@ -294,7 +316,7 @@ export default function App() {
         onDiscussionOpen={handleDiscussionOpen}
         onAddAgent={() => setAddAgentOpen(true)}
         onSearch={() => setSearchOpen(true)}
-        onSettings={() => setSettingsOpen(true)}
+        onSettings={() => openSettings()}
         onToggleFullscreen={handleToggleFullscreen}
         onClose={handleClose}
       />
@@ -318,13 +340,13 @@ export default function App() {
             visible={searchOpen}
             onClose={() => setSearchOpen(false)}
             onAddAgent={() => setAddAgentOpen(true)}
-            onSettings={() => setSettingsOpen(true)}
+            onSettings={openSettings}
             onDiscussion={handleDiscussionOpen}
             onDiscussionReview={handleDiscussionReviewOpen}
           />
         )}
         {settingsOpen && (
-          <SettingsPanel visible={settingsOpen} onClose={() => setSettingsOpen(false)} />
+          <SettingsPanel visible={settingsOpen} onClose={() => setSettingsOpen(false)} initialTab={settingsTab} />
         )}
         {sendToOpen && (
           <SendToPanel visible={sendToOpen} onClose={() => setSendToOpen(false)} />

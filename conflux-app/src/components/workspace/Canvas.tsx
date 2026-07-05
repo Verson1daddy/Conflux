@@ -19,6 +19,7 @@ import {
 import { onJumpBackRequested } from "@/lib/event-listener";
 import { AgentCard } from "./AgentCard";
 import { LayoutManager } from "./LayoutManager";
+import { Icon } from "@/components/ui/Icon";
 import {
   resolveGridLevels,
   CROSS_ARM_PX,
@@ -32,6 +33,7 @@ import {
   cameraSettled,
   clampLogZoom,
   wheelLogDelta,
+  wheelPanDelta,
   anchorWorldPoint,
   panForAnchor,
   type AnchorWorld,
@@ -61,6 +63,7 @@ function CanvasImpl({ isFullscreen }: CanvasProps) {
   const setPan = useWorkspaceStore((s) => s.setPan);
 
   const autoArrange = useWorkspaceStore((s) => s.autoArrange);
+  const gridArrange = useWorkspaceStore((s) => s.gridArrange);
   const { triggerAutoPack } = useWorkspaceLayout();
   const [pinnedFilter, setPinnedFilter] = useState(false);
   const knownCardCount = useMemo(
@@ -348,7 +351,26 @@ function CanvasImpl({ isFullscreen }: CanvasProps) {
     if (!el) return;
 
     const onWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey && !e.metaKey) return;
+      if (!e.ctrlKey && !e.metaKey) {
+        // 触控板两指滑动 / 裸滚轮 = 平移画布（Figma/Miro 惯例；触控板用户
+        // 没有中键拖拽，这是他们唯一自然的平移手势）。终端区让位：预览卡
+        // 非交互态 wheel 会冒泡到此（terminal-wheel 只对交互终端停传播），
+        // scrollback 滚动优先，不做双动作。
+        if ((e.target as HTMLElement).closest?.('[data-testid="xterm-terminal-shell"]')) {
+          return;
+        }
+        e.preventDefault();
+        // 用户输入接管相机（同拖拽打断纪律）：锁 zoom target + 清两种飞行模式。
+        targetLogZoomRef.current = logZoomRef.current;
+        zoomAnchorRef.current = null;
+        targetPanRef.current = null;
+        const { dx, dy } = wheelPanDelta(e.deltaX, e.deltaY, e.deltaMode, e.shiftKey);
+        livePan.current = { x: livePan.current.x + dx, y: livePan.current.y + dy };
+        markInteraction();
+        applyTransform();
+        scheduleCommit();
+        return;
+      }
       e.preventDefault();
       const rect = el.getBoundingClientRect();
       const cursor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
@@ -368,7 +390,7 @@ function CanvasImpl({ isFullscreen }: CanvasProps) {
 
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [stepZoomAnimation]);
+  }, [stepZoomAnimation, markInteraction, applyTransform, scheduleCommit]);
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
@@ -497,6 +519,26 @@ function CanvasImpl({ isFullscreen }: CanvasProps) {
     if (!next) return;
     flyToViewport(next.zoom, next.pan);
   }, [autoArrange, flyToViewport, visibleCards]);
+
+  // Grid 模式：把卡摆进均匀行列网格再 fit 进视口（否则重排后视口没动=看不到变化）。
+  // 修复「点 Grid 什么都不动、只是禁了拖拽」的死按钮。
+  const handleGridArrange = useCallback(() => {
+    gridArrange();
+    const el = containerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const visibleIds = new Set(visibleCards.map((c) => c.instance_id));
+    const arranged = useWorkspaceStore
+      .getState()
+      .cards.filter((c) => visibleIds.has(c.instance_id));
+    const next = fitCardsIntoViewport({
+      cards: arranged,
+      viewportWidth: rect.width,
+      viewportHeight: rect.height,
+    });
+    if (!next) return;
+    flyToViewport(next.zoom, next.pan);
+  }, [gridArrange, flyToViewport, visibleCards]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -644,7 +686,7 @@ function CanvasImpl({ isFullscreen }: CanvasProps) {
         })}
       </div>
 
-      <LayoutManager onAutoPack={triggerAutoPack} />
+      <LayoutManager onAutoPack={triggerAutoPack} onGridArrange={handleGridArrange} />
 
       <div className="absolute bottom-4 left-4 z-20 flex items-center gap-2">
         <span
@@ -659,18 +701,7 @@ function CanvasImpl({ isFullscreen }: CanvasProps) {
           onClick={handleFitAll}
           title="Fit all cards in view"
         >
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
-          </svg>
+          <Icon name="maximize" size={16} />
         </button>
         <button
           className="glass rounded-md px-2 py-1 text-[10px] font-mono text-white/40 hover:text-white/70 transition-colors"
@@ -678,21 +709,7 @@ function CanvasImpl({ isFullscreen }: CanvasProps) {
           onClick={handleAutoArrange}
           title="Auto-arrange cards"
         >
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <rect x="3" y="3" width="7" height="7" rx="1" />
-            <rect x="14" y="3" width="7" height="7" rx="1" />
-            <rect x="3" y="14" width="7" height="7" rx="1" />
-            <rect x="14" y="14" width="7" height="7" rx="1" />
-          </svg>
+          <Icon name="grid" size={16} />
         </button>
         <button
           className={`glass rounded-md px-2 py-1 text-[10px] font-mono transition-colors flex items-center gap-1 ${

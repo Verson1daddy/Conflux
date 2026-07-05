@@ -24,6 +24,7 @@
     "core:path:default",
     "core:resources:default",
     "dialog:allow-open",
-    "shell:default"
+    "shell:default",
+    "shell:allow-open"
   ]
 }

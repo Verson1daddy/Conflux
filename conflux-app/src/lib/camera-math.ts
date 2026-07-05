@@ -29,6 +29,20 @@ export function wheelLogDelta(deltaY: number, deltaMode: number): number {
   return -deltaY * (deltaMode === 1 ? 16 : 1) * WHEEL_LOG_STEP;
 }
 
+/** 裸 wheel（无 Ctrl/Meta）→ 画布平移增量（屏幕像素）。画布类应用惯例
+ *  （Figma/Miro）：两指滑动/滚轮 = 平移，内容随手势方向走（负号同浏览器滚动）。
+ *  触控板双指横滑自带 deltaX；鼠标滚轮无横轴，shift+纵滚 = 横移。 */
+export function wheelPanDelta(
+  deltaX: number,
+  deltaY: number,
+  deltaMode: number,
+  shiftKey: boolean,
+): { dx: number; dy: number } {
+  const k = deltaMode === 1 ? 16 : 1;
+  if (shiftKey && deltaX === 0) return { dx: -deltaY * k, dy: 0 };
+  return { dx: -deltaX * k, dy: -deltaY * k };
+}
+
 /** 帧率无关指数趋近内核（无 snap，纯曲线）。 */
 function expApproach(current: number, target: number, dtMs: number, tauMs: number): number {
   return current + (target - current) * (1 - Math.exp(-dtMs / tauMs));

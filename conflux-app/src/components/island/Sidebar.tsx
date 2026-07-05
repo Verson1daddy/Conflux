@@ -6,12 +6,21 @@ import {
   useDeferredAttentionItems,
 } from "@/stores/attentionStore";
 import { useAgentStore, agentDisplayLabel } from "@/stores/agentStore";
-import { focusAgentCard, respondToPermission } from "@/lib/tauri-bridge";
+import {
+  focusAgentCard,
+  respondToPermission,
+  ignoreAttentionItem,
+} from "@/lib/tauri-bridge";
 import { executeJumpBack } from "@/lib/jump-back";
 import { COMPACT_WINDOW_METRICS, px } from "@/lib/compact-window-metrics";
 import { getLiveAgentInstances } from "@/lib/workspace-status";
+import {
+  formatPermissionSummary,
+  formatRelativeTime,
+} from "@/lib/attention-format";
 import type { AgentStatus, NotificationItem, PermissionDecision } from "@/types";
 import type { AttentionItem } from "@/types/interaction";
+import { Icon } from "@/components/ui/Icon";
 import { ConfluxBrandMark } from "./ConfluxBrandMark";
 
 interface SidebarProps {
@@ -33,116 +42,21 @@ function formatRemindTime(remindAt: number | null): string {
 
 const STATUS_DOT_COLORS: Record<AgentStatus, string> = {
   idle: "#6B7280",
-  thinking: "#FFB800",
-  coding: "#34C759",
-  waiting_permission: "#FFB800",
-  done: "#34C759",
-  error: "#FF3B30",
+  thinking: "#F5B547",
+  coding: "#4ADE80",
+  waiting_permission: "#F5B547",
+  done: "#4ADE80",
+  error: "#FF6B60",
 };
 
 const STATUS_LABELS: Record<AgentStatus, string> = {
   idle: "Idle",
-  thinking: "Thinking...",
-  coding: "Writing...",
+  thinking: "Thinking…",
+  coding: "Writing…",
   waiting_permission: "Awaiting approval",
   done: "Done",
   error: "Error",
 };
-
-function CloseIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M18 6 6 18" />
-      <path d="m6 6 12 12" />
-    </svg>
-  );
-}
-
-function MoveIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M12 3v18" />
-      <path d="m7 8 5-5 5 5" />
-      <path d="m7 16 5 5 5-5" />
-    </svg>
-  );
-}
-
-function ShieldIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" />
-    </svg>
-  );
-}
-
-function CheckIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="m5 12 5 5L20 7" />
-    </svg>
-  );
-}
-
-function AlertIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" />
-      <path d="M12 9v4" />
-      <path d="M12 17h.01" />
-    </svg>
-  );
-}
 
 function formatElapsedTime(timestamp: number): string {
   if (timestamp <= 0) return "--";
@@ -156,65 +70,35 @@ function formatElapsedTime(timestamp: number): string {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
-function formatNotificationTime(timestamp: number): string {
-  if (timestamp <= 0) return "just now";
-
-  const diffMs = Math.max(0, Date.now() - timestamp);
-  const diffMin = Math.floor(diffMs / 60000);
-
-  if (diffMin <= 0) return "just now";
-  if (diffMin === 1) return "1 min ago";
-  return `${diffMin} min ago`;
-}
-
 function notificationPresentation(notification: NotificationItem) {
   if (notification.level === "permission_required") {
-    return {
-      icon: <ShieldIcon />,
-      tone: "warning",
-      title: "Permission Request",
-    } as const;
+    return { icon: <Icon name="shield" size={16} />, tone: "warning", title: "Permission Request" } as const;
   }
-
   if (notification.level === "error") {
-    return {
-      icon: <AlertIcon />,
-      tone: "error",
-      title: notification.source_adapter_name || "Error",
-    } as const;
+    return { icon: <Icon name="alert" size={16} />, tone: "error", title: notification.source_adapter_name || "Error" } as const;
   }
-
-  return {
-    icon: <CheckIcon />,
-    tone: "info",
-    title: notification.source_adapter_name || "Task Complete",
-  } as const;
+  return { icon: <Icon name="check" size={16} />, tone: "info", title: notification.source_adapter_name || "Task Complete" } as const;
 }
 
+/** 空态：没有运行中的 agent。诚实交代「还没有」+ 怎么接入，不编造运行数据、不用卡通吉祥物。 */
 function SidebarEmptyAgentState() {
   return (
-    <div className="sidebar-panel__empty-mascot" aria-label="暂时还没创建 agent 框架哦">
-      <div className="sidebar-panel__mascot-figure" aria-hidden="true">
-        <span className="sidebar-panel__mascot-hair" />
-        <span className="sidebar-panel__mascot-face">
-          <span className="sidebar-panel__mascot-eye sidebar-panel__mascot-eye--left" />
-          <span className="sidebar-panel__mascot-eye sidebar-panel__mascot-eye--right" />
-          <span className="sidebar-panel__mascot-mouth" />
-        </span>
-        <span className="sidebar-panel__mascot-bow" />
-      </div>
+    <div className="sidebar-panel__empty-card" aria-label="还没有运行中的 agent">
+      <span className="sidebar-panel__empty-glyph" aria-hidden="true">
+        <Icon name="terminal" size={26} strokeWidth={1.6} />
+      </span>
       <span className="sidebar-panel__empty-copy">
-        <span className="sidebar-panel__empty-title">暂时还没创建 agent 框架哦</span>
-        <span className="sidebar-panel__empty-text">创建后会在这里显示运行状态和需要处理的事项</span>
+        <span className="sidebar-panel__empty-title">还没有运行中的 agent</span>
+        <span className="sidebar-panel__empty-text">
+          从顶栏「+ Add Agent」接入，运行状态会实时显示在这里
+        </span>
       </span>
     </div>
   );
 }
 
 function SidebarEmptyNotificationState() {
-  return (
-    <p className="sidebar-panel__empty-quiet">暂无需要处理的事项</p>
-  );
+  return <p className="sidebar-panel__empty-quiet">暂无需要处理的事项</p>;
 }
 
 export const Sidebar: FC<SidebarProps> = ({
@@ -239,6 +123,12 @@ export const Sidebar: FC<SidebarProps> = ({
         (a, b) => b.last_activity_at - a.last_activity_at
       ),
     [instances]
+  );
+  // 活着的实例 id 集合——权限项的来源 agent 若不在其中即为「孤儿」（已退出/关闭），
+  // 无法再注入 Y/N，必须给「清除请求」而不是假装能 Allow/Deny（与 TopIsland 同口径）。
+  const liveIds = useMemo(
+    () => new Set(agents.map((agent) => agent.instance_id)),
+    [agents]
   );
 
   // 活动通知（error / task-completed）：权限请求不再镜像进通知队列。
@@ -279,15 +169,27 @@ export const Sidebar: FC<SidebarProps> = ({
     }
   }, []);
 
+  const markPending = useCallback((key: string, on: boolean) => {
+    if (on) {
+      pendingRef.current.add(key);
+      setPendingIds((prev) => new Set(prev).add(key));
+    } else {
+      pendingRef.current.delete(key);
+      setPendingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  }, []);
+
   const handlePermissionDecision = useCallback(
     async (item: AttentionItem, decision: PermissionDecision) => {
       if (!item.interaction_id) return;
       const key = item.attention_item_id;
       if (pendingRef.current.has(key)) return;
 
-      pendingRef.current.add(key);
-      setPendingIds((prev) => new Set(prev).add(key));
-
+      markPending(key, true);
       try {
         // 唯一注入路径（MF-1）：注入 + 后端 resolve 对应 AttentionItem + emit 新快照。
         // 不在前端手动移除——attentionStore 收到 attention_updated 后整体替换、自然丢弃。
@@ -295,15 +197,29 @@ export const Sidebar: FC<SidebarProps> = ({
       } catch {
         // Keep the permission request visible so the user can retry.
       } finally {
-        pendingRef.current.delete(key);
-        setPendingIds((prev) => {
-          const next = new Set(prev);
-          next.delete(key);
-          return next;
-        });
+        markPending(key, false);
       }
     },
-    []
+    [markPending]
+  );
+
+  // 逃生口：从注意力队列清除本请求（不向 agent 注入）。孤儿权限的唯一出路，
+  // 也给活跃权限一个「卡住就清掉」的退路。走后端 ignore（落审计 + emit 新快照）。
+  const handleClearRequest = useCallback(
+    async (item: AttentionItem) => {
+      const key = item.attention_item_id;
+      if (pendingRef.current.has(key)) return;
+
+      markPending(key, true);
+      try {
+        await ignoreAttentionItem(item.attention_item_id);
+      } catch {
+        // 后端不可用（demo）：静默，快照不变。
+      } finally {
+        markPending(key, false);
+      }
+    },
+    [markPending]
   );
 
   return (
@@ -320,16 +236,6 @@ export const Sidebar: FC<SidebarProps> = ({
       }
     >
       <div className="sidebar-panel__spine">
-        <div
-          className="sidebar-panel__drag-handle"
-          onPointerDown={(event) => {
-            if (event.button !== 0) return;
-            event.stopPropagation();
-            onDragStart?.();
-            void startCurrentWindowDrag();
-          }}
-          aria-hidden="true"
-        />
         <button
           type="button"
           className="sidebar-panel__header-action"
@@ -341,7 +247,7 @@ export const Sidebar: FC<SidebarProps> = ({
           title="Undock compact sidebar"
           disabled={!onUndock}
         >
-          <MoveIcon />
+          <Icon name="move" size={16} />
         </button>
         <button
           type="button"
@@ -351,9 +257,20 @@ export const Sidebar: FC<SidebarProps> = ({
             event.stopPropagation();
           }}
           aria-label="Dismiss compact sidebar"
+          title="Dismiss compact sidebar"
         >
-          <CloseIcon />
+          <Icon name="close" size={16} />
         </button>
+        <div
+          className="sidebar-panel__drag-handle"
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            event.stopPropagation();
+            onDragStart?.();
+            void startCurrentWindowDrag();
+          }}
+          aria-hidden="true"
+        />
       </div>
 
       <div
@@ -377,8 +294,8 @@ export const Sidebar: FC<SidebarProps> = ({
             </span>
           </div>
         </header>
+
         <div className="sidebar-panel__body sidebar-panel__body--stack">
-          <p className="sidebar-panel__eyebrow">Attention</p>
           <section className="sidebar-panel__section sidebar-panel__section--plain sidebar-panel__section--agents">
             <div className="sidebar-panel__section-header">
               <span className="sidebar-panel__section-label">Live agents</span>
@@ -422,50 +339,63 @@ export const Sidebar: FC<SidebarProps> = ({
           </section>
 
           <section className="sidebar-panel__section sidebar-panel__section--plain sidebar-panel__section--notifications">
-          <div className="sidebar-panel__section-header">
-            <span className="sidebar-panel__section-label">Needs attention</span>
-            <span className="sidebar-panel__section-count">
-              {attentionCount}
-            </span>
-          </div>
+            <div className="sidebar-panel__section-header">
+              <span className="sidebar-panel__section-label">Needs attention</span>
+              <span className="sidebar-panel__section-count">{attentionCount}</span>
+            </div>
 
-          <div className="sidebar-panel__list">
-            {visiblePermissions.length === 0 && activityNotifications.length === 0 ? (
-              <SidebarEmptyNotificationState />
-            ) : (
-              <>
-                {visiblePermissions.map((item) => {
-                  const isPending = pendingIds.has(item.attention_item_id);
-                  const canRespond = Boolean(item.interaction_id);
+            <div className="sidebar-panel__list">
+              {visiblePermissions.length === 0 && activityNotifications.length === 0 ? (
+                <SidebarEmptyNotificationState />
+              ) : (
+                <>
+                  {visiblePermissions.map((item) => {
+                    const isPending = pendingIds.has(item.attention_item_id);
+                    const isOrphaned = !liveIds.has(item.instance_id);
+                    const canRespond = Boolean(item.interaction_id) && !isOrphaned;
+                    const sourceAgent = agents.find(
+                      (agent) => agent.instance_id === item.instance_id
+                    );
 
-                  return (
-                    <div
-                      key={item.attention_item_id}
-                      className="sidebar-panel__notification sidebar-panel__notification--jumpable"
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => void handleJumpBack(item)}
-                    >
+                    return (
                       <div
-                        className="sidebar-panel__notification-icon"
-                        data-level="warning"
-                        aria-hidden="true"
+                        key={item.attention_item_id}
+                        className="sidebar-panel__notification sidebar-panel__notification--jumpable"
+                        data-orphaned={isOrphaned ? "true" : undefined}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => void handleJumpBack(item)}
                       >
-                        <ShieldIcon />
-                      </div>
-
-                      <div className="sidebar-panel__notification-copy">
-                        <div className="sidebar-panel__notification-row">
-                          <span className="sidebar-panel__notification-title">
-                            Permission Request
-                          </span>
-                          <span className="sidebar-panel__notification-time">
-                            {formatNotificationTime(item.created_at)}
-                          </span>
+                        <div
+                          className="sidebar-panel__notification-icon"
+                          data-level={isOrphaned ? "muted" : "warning"}
+                          aria-hidden="true"
+                        >
+                          {isOrphaned ? <Icon name="power-off" size={16} /> : <Icon name="shield" size={16} />}
                         </div>
 
-                        <p className="sidebar-panel__notification-body">
-                          {item.payload_summary}
+                        <div className="sidebar-panel__notification-copy">
+                          <div className="sidebar-panel__notification-row">
+                            <span className="sidebar-panel__notification-title">
+                              {sourceAgent
+                                ? agentDisplayLabel(sourceAgent)
+                                : "权限请求"}
+                            </span>
+                            <span className="sidebar-panel__notification-time">
+                              {formatRelativeTime(item.created_at)}
+                            </span>
+                          </div>
+
+                          <p className="sidebar-panel__notification-body">
+                            {formatPermissionSummary(item.payload_summary)}
+                          </p>
+
+                          {isOrphaned && (
+                            <span className="sidebar-panel__orphan-note">
+                              请求它的 agent 已退出，无法再回应
+                            </span>
+                          )}
+
                           {item.signal_source === "scrape" && (
                             <span
                               className="signal-scrape-badge"
@@ -474,99 +404,113 @@ export const Sidebar: FC<SidebarProps> = ({
                               刮屏推断 · 可能误报
                             </span>
                           )}
-                        </p>
 
-                        <div className="sidebar-panel__permission-actions">
-                          <button
-                            type="button"
-                            className="sidebar-panel__mini-action sidebar-panel__mini-action--approve"
-                            onClick={(e) => {
-                              e?.stopPropagation();
-                              void handlePermissionDecision(item, "approve");
-                            }}
-                            disabled={isPending || !canRespond}
-                          >
-                            Allow
-                          </button>
-                          <button
-                            type="button"
-                            className="sidebar-panel__mini-action"
-                            onClick={(e) => {
-                              e?.stopPropagation();
-                              void handlePermissionDecision(item, "deny");
-                            }}
-                            disabled={isPending || !canRespond}
-                          >
-                            Deny
-                          </button>
+                          <div className="sidebar-panel__permission-actions">
+                            {isOrphaned ? (
+                              <button
+                                type="button"
+                                className="sidebar-panel__mini-action sidebar-panel__mini-action--clear"
+                                onClick={(e) => {
+                                  e?.stopPropagation();
+                                  void handleClearRequest(item);
+                                }}
+                                disabled={isPending}
+                              >
+                                清除请求
+                              </button>
+                            ) : (
+                              <>
+                                <button
+                                  type="button"
+                                  className="sidebar-panel__mini-action sidebar-panel__mini-action--approve"
+                                  onClick={(e) => {
+                                    e?.stopPropagation();
+                                    void handlePermissionDecision(item, "approve");
+                                  }}
+                                  disabled={isPending || !canRespond}
+                                >
+                                  Allow
+                                </button>
+                                <button
+                                  type="button"
+                                  className="sidebar-panel__mini-action"
+                                  onClick={(e) => {
+                                    e?.stopPropagation();
+                                    void handlePermissionDecision(item, "deny");
+                                  }}
+                                  disabled={isPending || !canRespond}
+                                >
+                                  Deny
+                                </button>
+                              </>
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
 
-                {activityNotifications.map((notification) => {
-                  const presentation = notificationPresentation(notification);
+                  {activityNotifications.map((notification) => {
+                    const presentation = notificationPresentation(notification);
 
-                  return (
-                    <div key={notification.id} className="sidebar-panel__notification">
-                      <div
-                        className="sidebar-panel__notification-icon"
-                        data-level={presentation.tone}
-                        aria-hidden="true"
-                      >
-                        {presentation.icon}
-                      </div>
-
-                      <div className="sidebar-panel__notification-copy">
-                        <div className="sidebar-panel__notification-row">
-                          <span className="sidebar-panel__notification-title">
-                            {presentation.title}
-                          </span>
-                          <span className="sidebar-panel__notification-time">
-                            {formatNotificationTime(notification.created_at)}
-                          </span>
+                    return (
+                      <div key={notification.id} className="sidebar-panel__notification">
+                        <div
+                          className="sidebar-panel__notification-icon"
+                          data-level={presentation.tone}
+                          aria-hidden="true"
+                        >
+                          {presentation.icon}
                         </div>
 
-                        <p className="sidebar-panel__notification-body">
-                          {notification.content}
-                        </p>
-                      </div>
-                    </div>
-                  );
-                })}
-              </>
-            )}
+                        <div className="sidebar-panel__notification-copy">
+                          <div className="sidebar-panel__notification-row">
+                            <span className="sidebar-panel__notification-title">
+                              {presentation.title}
+                            </span>
+                            <span className="sidebar-panel__notification-time">
+                              {formatRelativeTime(notification.created_at)}
+                            </span>
+                          </div>
 
-            {deferredItems.length > 0 && (
-              <>
-                <button
-                  type="button"
-                  className="sidebar-deferred-row"
-                  data-testid="sidebar-deferred-row"
-                  onClick={() => setDeferredOpen((v) => !v)}
-                >
-                  已推迟 {deferredItems.length} 项 · 最近提醒{" "}
-                  {formatRemindTime(deferredItems[0].remind_at)}
-                </button>
-                {deferredOpen &&
-                  deferredItems.map((item) => (
-                    <div
-                      key={item.attention_item_id}
-                      className="sidebar-deferred-item"
-                    >
-                      <span className="sidebar-deferred-item__summary">
-                        {item.payload_summary}
-                      </span>
-                      <span className="sidebar-deferred-item__time">
-                        {formatRemindTime(item.remind_at)}
-                      </span>
-                    </div>
-                  ))}
-              </>
-            )}
-          </div>
+                          <p className="sidebar-panel__notification-body">
+                            {notification.content}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+
+              {deferredItems.length > 0 && (
+                <>
+                  <button
+                    type="button"
+                    className="sidebar-deferred-row"
+                    data-testid="sidebar-deferred-row"
+                    onClick={() => setDeferredOpen((v) => !v)}
+                  >
+                    已推迟 {deferredItems.length} 项 · 最近提醒{" "}
+                    {formatRemindTime(deferredItems[0].remind_at)}
+                  </button>
+                  {deferredOpen &&
+                    deferredItems.map((item) => (
+                      <div key={item.attention_item_id} className="sidebar-deferred-item">
+                        <span className="sidebar-deferred-item__summary">
+                          {item.payload_summary}
+                        </span>
+                        <span className="sidebar-deferred-item__time">
+                          {formatRemindTime(item.remind_at)}
+                        </span>
+                      </div>
+                    ))}
+                </>
+              )}
+            </div>
           </section>
+
+          <div className="sidebar-panel__spring" aria-hidden="true" />
 
           <div className="sidebar-panel__footer">
             <button
@@ -577,6 +521,7 @@ export const Sidebar: FC<SidebarProps> = ({
                 event.stopPropagation();
               }}
             >
+              <Icon name="maximize" size={16} />
               Open workspace
             </button>
             <button
