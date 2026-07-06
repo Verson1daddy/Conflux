@@ -132,7 +132,7 @@ Conflux is early and moving fast, and the agent-collaboration side is honestly s
 
 ## License
 
-Licensed under **MIT OR Apache-2.0** (as declared for the `conmux` crate). A root license file has not yet been committed to this repository — that will land before any prebuilt binaries are distributed.
+Licensed under **MIT OR Apache-2.0** — see [LICENSE-MIT](LICENSE-MIT) / [LICENSE-APACHE](LICENSE-APACHE) at the repository root.
 
 ---
 
@@ -239,4 +239,19 @@ Conflux 还很早、迭代很快，说实话 agent 协作那一块也仍在打�
 
 ## 许可
 
-采用 **MIT OR Apache-2.0**（如 `conmux` crate 所声明）。仓库根目录尚未提交 license 文件 —— 在分发任何预编译产物之前会补上。
+采用 **MIT OR Apache-2.0** —— license 文件见仓库根目录：[LICENSE-MIT](LICENSE-MIT) / [LICENSE-APACHE](LICENSE-APACHE)。
+
+---
+
+## Star History · 星标历史
+
+<a href="https://www.star-history.com/#Verson1daddy/Conflux&Verson1daddy/Conmux&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=Verson1daddy/Conflux,Verson1daddy/Conmux&type=Date&theme=dark">
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=Verson1daddy/Conflux,Verson1daddy/Conmux&type=Date" width="620">
+  </picture>
+</a>
+
+> 如果这个项目对您真的有帮助的话！还请 star star，fork fork！感谢各位！🌾
+>
+> If it genuinely helps you — please star star, fork fork! Thank you all! ⭐
